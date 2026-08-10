@@ -5,7 +5,7 @@ giving the AI root and hoping for the best.
 
 The pitch, compressed: you tell your machine something is broken, and an agent
 figures out what's wrong and fixes it — with a plan, a second opinion, a
-checkpoint, and a way to undo the hole thing if it makes things worse.
+checkpoint, and a way to undo the whole thing if it makes things worse.
 
 > You type "why is my Wi-Fi not working?" → a planner agent proposes a
 > diagnosis plan → a second agent tries to punch holes in that plan → the
