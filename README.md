@@ -1,118 +1,125 @@
 # Aios
 
-**Aios** — *Artificially Intelligent Operating System* — is a design for an AI
-that manages your OS and hardware the way an agent should: as a bounded,
-accountable, reversible process, never as an unchecked authority.
+Aios is my attempt at an operating system layer an AI can actually run, without
+giving the AI root and hoping for the best.
 
-Say *"my Wi-Fi is acting up"* and Aios decomposes that into diagnosis,
-planning, verification, staged execution, and recovery — calling specialized
-agents per subsystem, treating every model output as a **proposal** rather
-than a command, and keeping every consequential change testable and
-reversible.
+The pitch, compressed: you tell your machine something is broken, and an agent
+figures out what's wrong and fixes it — with a plan, a second opinion, a
+checkpoint, and a way to undo the hole thing if it makes things worse.
+
+> You type "why is my Wi-Fi not working?" → a planner agent proposes a
+> diagnosis plan → a second agent tries to punch holes in that plan → the
+> policy broker checks that each step is actually allowed → the change gets
+> staged, health-checked, and committed or rolled back.
+
+Every model output is a proposal, not a command. Nothing just happens.
 
 [![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue)](LICENSE)
 [![CI](https://github.com/cse-creative-systems-engineering/aios/actions/workflows/ci.yml/badge.svg)](https://github.com/cse-creative-systems-engineering/aios/actions/workflows/ci.yml)
 
----
+## The problem I'm trying to solve
 
-## The problem this is trying to solve
+Language models are genuinely good at figuring out what to do. They are bad at
+being trusted to do it. They can be talked into anything by a prompt hiding in
+a downloaded file, they hallucinate plausible-sounding plans, and they act on
+state that is older than they think it is.
 
-Language models are good at figuring out *what to do* and terrible at being
-*trusted to do it*. An AI that manages an OS needs access to powerful
-operations — and that same AI can be misled by a prompt hiding in a downloaded
-file, hallucinate a plausible-but-wrong plan, or act on stale state.
+So the interesting question is not "how capable can we make the agent". It's
+"how do you get the capability without giving away the machine." Most AI
+tooling that touches the OS is a shell wrapper with extra steps. I'd rather
+spend the effort on the boring part: making sure the agent can't do anything
+that isn't planned, permitted, and reversible.
 
-The design question is not *"how capable can we make the agent"* but *"how do
-we keep an intelligent system from becoming an uncontrolled safety or security
-boundary."* That question is largely unsolved, and it's wide open.
+## The rule everything else follows
 
-## The governing principle
+> No component gets to both decide what to do and have the authority to do it.
 
-> **No component should both make an autonomous decision and possess
-> unrestricted authority to execute it.**
+The whole design is that sentence, unfolded. To make it concrete, the system
+is split into three planes:
 
-Aios splits the answer into three planes:
+- **Agent plane.** The chatty stuff: the planner, a verification agent that
+  argues with it, subsystem specialists. Probabilistic. They propose, analyze,
+  and explain. By default they hold no authority over the OS at all.
+- **Enforcement plane.** The boring stuff that keeps the project honest: the
+  policy broker, infrastructure guardian, staged transaction executor, audit
+  log. Deterministic. Permission is granted here, actions are gated here, adn
+  every move gets recorded here.
+- **Trust plane.** Boot verification, watchdogs, recovery images. The layer
+  that has to keep working when everything above it is broken.
 
-| Plane | What lives there | Trust model |
-|---|---|---|
-| **Agent plane** | Conversational facade, Planner, Verification agent, subsystem specialists | Probabilistic. Agents propose, analyze, explain, monitor — they hold no OS authority by default |
-| **Enforcement plane** | Policy Broker, Infrastructure Guardian, Staged Transaction Executor, audit log | Deterministic. Grants, gates, stages, and records every action |
-| **Trust plane** | Boot verification, watchdogs, recovery images, kernel primitives | Lowest-level integrity. Must keep working if both other planes fail |
+The priority is explicit: Aios should lose its intelligence before it loses
+the ability to recover safely. Closer to the hardware means more deterministic,
+not less. Models may recommend. The hard limits are enforced by code that
+can't be talked into anything.
 
-And the rule that outranks every other: *Aios should lose intelligence before
-it loses the ability to recover safely.* The closer a component gets to
-hardware, the more deterministic and constrained it must be — AI may diagnose,
-predict, and recommend; deterministic controllers enforce the hard limits.
+## What actually happens when you ask for something
 
-## How an action actually happens
-
-No agent "just does" anything. Every consequential action is a staged
-transaction through the enforcement plane:
+No agent "just does" anything. Every consequential action flows like this:
 
 ```text
-User intent
-  → Planner proposes a structured plan
-  → Verification agent independently challenges it
-  → Policy Broker validates capability + clearance
-  → Guardian checks invariants (risk 2+)
-  → User approves (risk 3+, scoped to this plan)
-  → Executor checkpoints, stages, health-verifies
-  → Committed, or rolled back
+you ask for something
+  → planner proposes a structured plan
+  → verification agent tries to break the plan
+  → policy broker checks capability + clearance on every step
+  → guardian checks safety invariants (risk level 2+)
+  → you approve (risk level 3+, and only this plan)
+  → executor checkpoints, stages, runs health checks
+  → committed, or rolled back automatically
 ```
 
-Authorization is **two-dimensional** — an agent needs both a valid capability
-(resource + operation) and sufficient clearance (tool risk level 0–4), granted
-by different mechanisms. Risk levels 0–1 skip the heavyweight path; levels 3–4
-require scoped, expiring user approval bound to a plan hash.
+Permission is two-dimensional: an agent needs a capability (a specific
+operation on a specific resource) and clearance (the risk level of the tool).
+Those come from different places, and you can't trade one for the other.
+Low-risk read-only stuff skips the ceremony. Anything touching the boot path
+or firmware requires a scoped, expiring approval tied to the exact plan.
 
-## Where things stand
+## Where the project actually is
 
-**The design is done and frozen.** This repo is 18 documents and 5
-architecture decision records (~9,000 lines) that pin down the security model,
-authorization, protocol, state machines, and milestone plan tightly enough to
-implement from. Every contract is written to be implemented from, and every
-claim is traceable to a requirement.
+Honest status: there is no runnable Aios yet. There is a complete design for
+one.
 
-What is **not** done is the implementation — that's the interesting part, and
-it's deliberately where you come in:
+That design is 18 documents and five decision records, about 9,000 lines,
+covering the security model, the capability system, the internal message
+protocol, the action state machine, and a milestone plan with acceptance
+criteria. I did the design first on purpose: the hard problems here are about
+what an agent is *allowed* to do, and those are cheaper to get wrong on paper
+than in production code. Right now the repo builds a trivial Rust scaffold,
+mostly so the CI badge has something to do.
 
-- **M0 — Design foundation ✅** 18 docs + 5 ADRs frozen for M1; core contracts 8/8
-- **M1 — In-process simulation 🔨** The next milestone, and the best entry
-  point. Build the Policy Broker, Guardian, Staged Transaction Executor,
-  System Graph, and action state machine in one process with mock hardware and
-  mock models. No kernel, no real devices, no GPUs — just prove the contracts
-  actually work together. 3–4 weeks.
-- **M2–M5** Real Linux discovery → local model runtime → dual-agent
-  orchestration → transactions and staging
-- **M6** First hardware specialist: Wi-Fi, end-to-end (discover → diagnose →
-  stage → verify) — the vertical slice that validates the whole architecture
+Milestones, briefly:
 
-## Ways to get involved
+- **M0 — Design foundation.** Done. Docs frozen for M1.
+- **M1 — In-process simulation.** Not started. This is the next thing and the
+  best place to start contributing. A real broker, real guardian, real state
+  machine, running against fake hardware and fake models in one process. No
+  kernel, no devices, no GPU. Its whole job is to find where the design is
+  wrong.
+- **M2–M5.** Real Linux device discovery (read-only) → a local model runtime →
+  planner and verifier talking to real state → checkpoint/stage/rollback
+  against real services.
+- **M6.** The first real hardware specialist: Wi-Fi, end to end. Discover,
+  diagnose, stage a driver, verify, roll back if it's worse. The vertical
+  slice that proves whether the whole architecture works.
 
-- **Build M1.** The [milestone](docs/implementation-roadmap.md#milestone-1-in-process-simulation)
-  has explicit acceptance criteria and a
-  [testing strategy](docs/testing-strategy.md) ready for it. Start with the
-  broker — it's the trusted computing base, and every decision path is
-  specified.
-- **Attack the design.** The docs are frozen *until M1 proves them wrong.*
-  Find the flaw in the capability model, the state machine, or a threat model
-  gap? Open an issue — the security model expects to be stress-tested.
-- **Write a test.** The [testing strategy](docs/testing-strategy.md) lists
-  whole families of safety-specific tests (capability escalation, fail-closed,
-  secret leakage, prompt injection resistance) that are specified but
-  unwritten.
-- **Design a specialist package.** The
-  [agent package](docs/agent-packages.md) format is specified end-to-end —
-  write the package manifest for a domain you know well.
-- **Read the design and tell us what's broken.** The
-  [suggested reading order](#reading-order) takes an afternoon.
+## What I need help with
 
-The docs are frozen by rule, not by pride: contract changes happen when a
-milestone surfaces a real blocker, and every change is recorded as an ADR.
-Fail-fast is a project rule, not just a code rule — a milestone is only
-complete when its acceptance tests pass.
+- **Build M1.** The milestone has explicit acceptance criteria and the testing
+  strategy is already written. If you pick one component, pick the policy
+  broker: it's the trusted one, the one that must never be wrong, and the
+  design is most specific about it.
+- **Find the flaw.** The docs are "frozen" in the sense that changing them is
+  deliberately annoying, not forbidden. When the first real code contradicts
+  them, the code wins. If you read something and it's wrong, an issue is the
+  cheapest way to fix it — and I'd rather hear it now than after someone's
+  Wi-Fi driver is mid-rollback.
+- **Write the safety tests.** The testing strategy specifies whole families of
+  tests that don't exist yet: capability escalation, fail-closed behavior,
+  secret leakage, prompt-injection resistance. Described in detail, not
+  written.
+- **Author a specialist package.** The package format is fully specified.
+  Pick a domain you know and write the manifest for it.
 
-## Architecture at a glance
+## Architecture, in one diagram
 
 ```mermaid
 flowchart LR
@@ -135,62 +142,57 @@ flowchart LR
     class B,G,E enforcement
 ```
 
-The **dual-agent bridge** is deliberate: Planner and Verification are separate
-roles that may use different models, prompts, or tools, so correlated blind
-spots are less likely — but their agreement is *advisory* until the
-enforcement plane accepts it. Specialists expose **bounded, typed tools**
-(`observe_device`, `diagnose_fault`, `stage_change`) — never
-`run_any_command`. The **System Graph** tracks hardware, services, agents,
-capabilities, and recovery paths, but it is a map, not a permission authority:
-when graph data is stale, missing, or conflicting, the system fails closed.
+The dual-agent thing is deliberate. The planner and the verification agent are
+separate roles, potentially running different models with different prompts, so
+the two of them don't share the same blind spots. But their agreement is still
+just a proposal until the enforcement plane accepts it. Specialists only ever
+expose bounded tools — `observe_device`, `diagnose_fault`, `stage_change` —
+never anything liek "run this command for me." The System Graph tracks hardware, services,
+agents, and recovery paths, but it's a map, not a permissions database. If the
+map is stale or wrong, the system assumes the worst.
 
-## The document set
+## The documents
 
-| Document | What it pins down |
+| Document | What's in it |
 |---|---|
-| [architecture.md](docs/architecture.md) | Vision, principles, the three planes, specialist model |
-| [security-model.md](docs/security-model.md) | Threat model, trusted computing base, compromise scenarios |
-| [capability-model.md](docs/capability-model.md) | Principals, resources, capability tokens, broker decision algorithm, Rust types |
-| [message-protocol.md](docs/message-protocol.md) | Typed internal protocol, delivery semantics, error handling |
-| [action-state-machine.md](docs/action-state-machine.md) | Transaction states, checkpoints, crash and power-loss recovery |
-| [system-graph.md](docs/system-graph.md) | Node/edge types, provenance, staleness, conflict handling |
-| [agent-packages.md](docs/agent-packages.md) | Signed package manifests, registry, lifecycle |
-| [model-routing.md](docs/model-routing.md) | Provider tiers, offline fallback, data-class consent |
-| [human-interaction.md](docs/human-interaction.md) | Approval, escalation, facade trust, user-absent recovery |
-| [testing-strategy.md](docs/testing-strategy.md) | Six test layers, safety-specific tests, evaluations |
-| [observability.md](docs/observability.md) | Audit log, tracing, metrics, health read model |
-| [requirements.md](docs/requirements.md) | 32 traceable requirements (safety, functional, perf, reliability) |
+| [architecture.md](docs/architecture.md) | The vision, the three planes, how specialists fit |
+| [security-model.md](docs/security-model.md) | What's trusted, what isn't, and what happens if it breaks |
+| [capability-model.md](docs/capability-model.md) | Who's allowed to do what, and the broker's decision rules |
+| [message-protocol.md](docs/message-protocol.md) | The typed messages agents actually exchange |
+| [action-state-machine.md](docs/action-state-machine.md) | Transaction states, checkpoints, crash recovery |
+| [system-graph.md](docs/system-graph.md) | How hardware and services are tracked, staleness handling |
+| [agent-packages.md](docs/agent-packages.md) | What an installable agent contains and how it's signed |
+| [model-routing.md](docs/model-routing.md) | Local vs internet models, offline behavior, data consent |
+| [human-interaction.md](docs/human-interaction.md) | Approvals, escalations, what the user actually sees |
+| [testing-strategy.md](docs/testing-strategy.md) | Six layers of tests, including the unwritten ones |
+| [observability.md](docs/observability.md) | The audit log and tracing |
+| [requirements.md](docs/requirements.md) | 32 traceable requirements, all the REQ-SAF-* ones included |
 | [implementation-roadmap.md](docs/implementation-roadmap.md) | Milestones M0–M8 with acceptance criteria |
-| [glossary.md](docs/glossary.md) | Shared terminology |
-| [doc-progress.md](docs/doc-progress.md) | Live status tracker with dependency graph |
-| [decisions/](docs/decisions/) | ADR-0001–0005, the accepted architectural decisions |
+| [glossary.md](docs/glossary.md) | Terms |
+| [doc-progress.md](docs/doc-progress.md) | What's done and what's stuck |
+| [decisions/](docs/decisions/) | ADR-0001 through ADR-0005 |
 
-### Reading order
-
-glossary → requirements → security-model → capability-model →
+Reading order: glossary → requirements → security-model → capability-model →
 message-protocol → action-state-machine → system-graph → agent-packages →
-model-routing → human-interaction.
+model-routing → human-interaction. Takes an afternoon.
 
-## Quick start
+## Building
 
-The repo is a minimal Rust 2024 binary scaffold — enough to verify the
-toolchain, not yet the system.
+There isn't much to build yet, but the toolchain is real:
 
 ```bash
 cargo check    # verify the scaffold compiles
 cargo test     # run tests
 ```
 
-Real implementation starts at M1; see the
-[roadmap](docs/implementation-roadmap.md#milestone-1-in-process-simulation)
-for what M1 must prove.
+Real implementation starts at M1; the roadmap says what M1 has to prove.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Security vulnerabilities: see
+[CONTRIBUTING.md](CONTRIBUTING.md) has the details. Security problems:
 [SECURITY.md](SECURITY.md).
 
 ## License
 
-PolyForm Noncommercial — see [LICENSE](LICENSE). Use, study, modify, and
-contribute freely. No commercial use without permission.
+PolyForm Noncommercial — see [LICENSE](LICENSE). Study and contribute freely.
+No commercial use without permission.
