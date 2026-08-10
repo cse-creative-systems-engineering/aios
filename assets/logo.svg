@@ -1,24 +1,141 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="Aios logo — the AIOS wordmark with its red decision gate">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="AIOS logo">
   <defs>
+    <!-- Deep tech background -->
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#1a1a2e"/>
-      <stop offset="1" stop-color="#0f3460"/>
+      <stop offset="0" stop-color="#0b1024"/>
+      <stop offset="0.55" stop-color="#101a3a"/>
+      <stop offset="1" stop-color="#0a1330"/>
     </linearGradient>
-    <radialGradient id="glow" cx="0.5" cy="0.42" r="0.55">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.07"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+
+    <!-- Soft inner glow / spotlight -->
+    <radialGradient id="spot" cx="0.5" cy="0.38" r="0.6">
+      <stop offset="0" stop-color="#7aa2ff" stop-opacity="0.22"/>
+      <stop offset="0.55" stop-color="#3b5fb6" stop-opacity="0.08"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0"/>
     </radialGradient>
+
+    <!-- Cyan-to-magenta gradient for the "AI" accent -->
+    <linearGradient id="aiAccent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#22d3ee"/>
+      <stop offset="1" stop-color="#a855f7"/>
+    </linearGradient>
+
+    <!-- Outer ring stroke gradient -->
+    <linearGradient id="ring" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#22d3ee" stop-opacity="0.9"/>
+      <stop offset="1" stop-color="#a855f7" stop-opacity="0.9"/>
+    </linearGradient>
+
+    <!-- Subtle micro-grid pattern -->
+    <pattern id="grid" x="0" y="0" width="48" height="48" patternUnits="userSpaceOnUse">
+      <path d="M48 0H0V48" fill="none" stroke="#ffffff" stroke-opacity="0.045" stroke-width="1"/>
+    </pattern>
+
+    <!-- Rounded corner clip for the whole tile -->
+    <clipPath id="tile">
+      <rect x="0" y="0" width="1024" height="1024" rx="208" ry="208"/>
+    </clipPath>
   </defs>
 
-  <rect width="1024" height="1024" fill="url(#bg)"/>
-  <rect width="1024" height="1024" fill="url(#glow)"/>
+  <g clip-path="url(#tile)">
+    <!-- Background -->
+    <rect width="1024" height="1024" fill="url(#bg)"/>
+    <rect width="1024" height="1024" fill="url(#grid)"/>
+    <rect width="1024" height="1024" fill="url(#spot)"/>
 
-  <!-- AIOS wordmark, Montserrat ExtraBold -->
-  <text x="512" y="619.5"
-        font-family="Montserrat, 'Helvetica Neue', Arial, sans-serif"
-        font-size="300" font-weight="800"
-        fill="#ffffff" text-anchor="middle">AIOS</text>
+    <!-- Decorative circuit traces (corners) -->
+    <g stroke="#22d3ee" stroke-opacity="0.35" stroke-width="3" fill="none" stroke-linecap="round">
+      <path d="M 96 200 H 200 V 280"/>
+      <path d="M 96 260 H 160"/>
+      <circle cx="200" cy="280" r="6" fill="#22d3ee" stroke="none"/>
+      <circle cx="160" cy="260" r="4" fill="#22d3ee" stroke="none"/>
 
-  <!-- The decision gate: red bar spanning the A's crossbar -->
-  <rect x="165.2" y="530.3" width="186" height="38.1" rx="19.05" fill="#e94560"/>
+      <path d="M 928 200 H 824 V 280"/>
+      <path d="M 928 260 H 864"/>
+      <circle cx="824" cy="280" r="6" fill="#22d3ee" stroke="none"/>
+      <circle cx="864" cy="260" r="4" fill="#22d3ee" stroke="none"/>
+
+      <path d="M 96 824 H 200 V 744"/>
+      <path d="M 96 764 H 160"/>
+      <circle cx="200" cy="744" r="6" fill="#a855f7" stroke="none"/>
+      <circle cx="160" cy="764" r="4" fill="#a855f7" stroke="none"/>
+
+      <path d="M 928 824 H 824 V 744"/>
+      <path d="M 928 764 H 864"/>
+      <circle cx="824" cy="744" r="6" fill="#a855f7" stroke="none"/>
+      <circle cx="864" cy="764" r="4" fill="#a855f7" stroke="none"/>
+    </g>
+
+    <!-- Faint orbital ring -->
+    <ellipse cx="512" cy="540" rx="360" ry="92" fill="none"
+             stroke="url(#ring)" stroke-opacity="0.35" stroke-width="2"/>
+
+    <!-- ===== AIOS wordmark =====
+         Hand-built from primitives so it renders identically everywhere
+         (no font dependency), and so the "AI" can carry the gradient. -->
+
+    <!-- A  (left, gradient) -->
+    <g>
+      <path d="M 156 720
+               L 286 304
+               L 362 304
+               L 492 720
+               L 414 720
+               L 384 642
+               L 264 642
+               L 234 720 Z"
+            fill="url(#aiAccent)"/>
+      <!-- counter triangle (negative space -> bg color) -->
+      <path d="M 302 576
+               L 324 498
+               L 346 576 Z" fill="#0b1024"/>
+    </g>
+
+    <!-- I  (slim & modern, white) -->
+    <rect x="528" y="304" width="76" height="416" rx="14" fill="#ffffff"/>
+
+    <!-- O  (geometric ring, white) -->
+    <rect x="644" y="304" width="184" height="416" rx="92"
+          fill="none" stroke="#ffffff" stroke-width="64"/>
+
+    <!-- S  (white, filled compound glyph, tucked inside the safe area) -->
+    <path fill="#ffffff"
+          d="M 936 360
+             C 916 326, 880 304, 836 304
+             C 752 304, 696 360, 696 420
+             C 696 480, 744 516, 808 540
+             C 856 558, 872 568, 872 580
+             C 872 600, 848 612, 820 612
+             C 776 612, 740 596, 720 568
+             L 668 624
+             C 700 676, 752 720, 820 720
+             C 904 720, 952 660, 952 580
+             C 952 520, 908 484, 840 460
+             C 792 442, 776 432, 776 416
+             C 776 396, 800 384, 836 384
+             C 872 384, 900 400, 916 424 Z"/>
+
+    <!-- Decision-gate accent: thin bar across the A's crossbar,
+         echoing the original concept but in the new accent color -->
+    <rect x="234" y="558" width="228" height="14" rx="7"
+          fill="url(#aiAccent)" opacity="0.95"/>
+
+    <!-- Tiny "node" dots above the wordmark to feel like an AI graph -->
+    <g fill="#22d3ee">
+      <circle cx="396" cy="244" r="6"/>
+      <circle cx="512" cy="232" r="8"/>
+      <circle cx="628" cy="244" r="6"/>
+    </g>
+    <g stroke="#22d3ee" stroke-width="2" opacity="0.7">
+      <line x1="396" y1="244" x2="512" y2="232"/>
+      <line x1="512" y1="232" x2="628" y2="244"/>
+    </g>
+
+    <!-- Subtle baseline rule -->
+    <rect x="156" y="780" width="808" height="2" fill="#ffffff" opacity="0.08"/>
+
+    <!-- Outer rounded border for crisp avatar framing -->
+    <rect x="6" y="6" width="1012" height="1012" rx="204" ry="204"
+          fill="none" stroke="url(#ring)" stroke-width="6" stroke-opacity="0.55"/>
+  </g>
 </svg>
