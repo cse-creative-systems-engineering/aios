@@ -1,0 +1,41 @@
+name: Feature request
+description: Suggest an idea for Aios
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The design doc set is frozen for M1. Features for M2+ are welcome as
+        design input and will be considered against the roadmap.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the gap or pain point. Feature requests are stronger with a concrete use case.
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: How might Aios address this?
+    validations:
+      required: true
+  - type: dropdown
+    id: milestone
+    attributes:
+      label: Target milestone
+      description: Where do you think this belongs?
+      options:
+        - M1 (in-process simulation)
+        - M2+
+        - Design doc / ADR
+        - Unsure
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any workarounds or alternatives you evaluated?

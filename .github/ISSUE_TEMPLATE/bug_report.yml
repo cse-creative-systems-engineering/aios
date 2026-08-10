@@ -1,0 +1,54 @@
+name: Bug report
+description: Report a bug in the Aios codebase or a flaw in the frozen design docs
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this. The doc set is frozen for M1 —
+        if this is a design issue, note which section is affected.
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: What part of the system does this affect?
+      options:
+        - Broker
+        - Guardian
+        - Executor / State machine
+        - Message protocol
+        - System graph
+        - Agent packages
+        - Model routing
+        - Human interaction
+        - Docs / design
+        - Build / tooling
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: A clear and concise description of the bug.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+      description: What should have happened instead?
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction steps
+      description: Steps to reproduce, or the doc section that is inconsistent.
+      placeholder: |
+        1. ...
+        2. ...
+  - type: textarea
+    id: context
+    attributes:
+      label: Environment / additional context
+      description: Rust version, OS, or any other relevant details.

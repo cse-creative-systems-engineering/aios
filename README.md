@@ -1,5 +1,12 @@
 # Aios
 
+<p align="center">
+  <img src="assets/logo.svg" alt="Aios logo" width="120"/>
+</p>
+
+[![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue)](LICENSE)
+[![CI](https://github.com/cse-creative-systems-engineering/aios/actions/workflows/ci.yml/badge.svg)](https://github.com/cse-creative-systems-engineering/aios/actions/workflows/ci.yml)
+
 Aios stands for **Artificially Intelligent Operating System**.
 
 Aios is an AI-native operating environment that presents a single
@@ -15,18 +22,49 @@ hardware safely.
 Agents propose. The broker decides. The Guardian vetoes. Staged
 execution tests before committing. Everything is reversible.
 
+## System architecture
+
+```mermaid
+flowchart LR
+    U[User] -->|input| F[Conversational Facade]
+    F -->|proposes plan| P[Planner Agent]
+    F -->|verifies plan| V[Verification Agent]
+
+    P --> B[Policy Broker]
+    V --> B
+
+    B -->|validates capability + clearance| G[Infrastructure Guardian]
+    G -->|veto| B
+
+    B -->|approved plan| E[Staged Executor]
+    G -->|safety verdict| E
+
+    E -->|stage → health check → commit| T[Specialists / Tools]
+    T -->|provenance| SG[System Graph]
+    SG -->|advisory, fail-closed| B
+```
+
+Components are separated by design: agents **propose**, the broker
+**decides**, the Guardian **vetoes**, and the executor **acts** — no
+single component both decides and executes.
+
 ## Current state
 
-**Design phase — frozen for M1 implementation.**
+**Design phase — frozen for M1 implementation.** See the
+[implementation roadmap](docs/implementation-roadmap.md) for milestone
+details.
 
-The design doc set is complete and frozen. 18 documents + 5 ADRs covering
-security model, capability-based authorization, typed message protocol,
-action state machine with crash recovery, system graph, agent packages,
-model routing, and human interaction.
+- **M0 — Foundation (design docs):** complete. 18 documents + 5 ADRs
+  covering security model, capability-based authorization, typed message
+  protocol, action state machine with crash recovery, system graph,
+  agent packages, model routing, and human interaction.
+- **M1 — In-process simulation:** in progress. Broker, Guardian,
+  executor, graph, and mock agents in a single process.
+- **M2+:** TBD.
 
-The codebase is a minimal Rust 2024 binary scaffold. Implementation
-starts with Milestone 1: an in-process simulation of the broker,
-Guardian, executor, graph, and mock agents.
+The codebase is a minimal Rust 2024 binary scaffold. The doc set is
+frozen: contract changes only happen when M1 surfaces a blocker, and
+are recorded as ADRs.
 
 ## Key architectural decisions
 
@@ -61,7 +99,13 @@ See [doc-progress.md](docs/doc-progress.md) for the full status tracker.
 ```bash
 cargo check    # verify the scaffold compiles
 cargo run      # run the minimal binary
+cargo test     # run tests
 ```
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Security vulnerabilities: see
+[SECURITY.md](SECURITY.md).
 
 ## License
 

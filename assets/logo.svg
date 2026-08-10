@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="Aios logo — the AIOS wordmark with its red decision gate">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1a1a2e"/>
+      <stop offset="1" stop-color="#0f3460"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.42" r="0.55">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.07"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="1024" height="1024" fill="url(#bg)"/>
+  <rect width="1024" height="1024" fill="url(#glow)"/>
+
+  <!-- AIOS wordmark, Montserrat ExtraBold -->
+  <text x="512" y="619.5"
+        font-family="Montserrat, 'Helvetica Neue', Arial, sans-serif"
+        font-size="300" font-weight="800"
+        fill="#ffffff" text-anchor="middle">AIOS</text>
+
+  <!-- The decision gate: red bar spanning the A's crossbar -->
+  <rect x="165.2" y="530.3" width="186" height="38.1" rx="19.05" fill="#e94560"/>
+</svg>
