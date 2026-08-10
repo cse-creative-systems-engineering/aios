@@ -1,7 +1,7 @@
 # Aios
 
 <p align="center">
-  <img src="assets/logo.svg" alt="Aios logo" width="120"/>
+  <img src="assets/logo.png" alt="Aios logo" width="160"/>
 </p>
 
 [![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue)](LICENSE)
