@@ -10,6 +10,10 @@ The Wi-Fi specialist owns one discovered wireless device at a time. It reports
 device, driver, firmware, link, and network-service state through bounded
 tools. It does not expose shell execution or unrestricted file access.
 
+It is a child of the Network specialist (architecture §6 hierarchy). The
+wired/LAN and Bluetooth transports are sibling specialists under the same
+Network parent.
+
 ## Matching
 
 The package matches a discovered `Device` whose attributes identify a wireless

@@ -503,14 +503,57 @@ specialist pattern.
 | Order | Specialist | Why this order |
 |---|---|---|
 | 1 | Wi-Fi (M6) | First vertical slice — validates architecture |
-| 2 | Storage (NVMe) | Critical for data safety, tests checkpoint/rollback on real hardware |
-| 3 | Network (wired) | Pairs with Wi-Fi, tests cross-domain dependencies |
-| 4 | Power and thermal | Safety-critical, tests sensor integration |
-| 5 | Security and identity | Tests capability model with sensitive resources |
-| 6 | Processes and resources | Tests system-level monitoring |
-| 7 | Packages and updates | Tests package lifecycle on real packages |
-| 8 | Boot and recovery | Tests trust plane integration (v0.2+) |
-| 9 | Graphics and user sessions | Lower priority for headless/CLI use case |
+| 2 | Storage (umbrella) | Critical for data safety, tests checkpoint/rollback on real hardware; Block/Disk, Filesystem, and Files/Data are stacked children (architecture §6) |
+| 3 | Network (umbrella) | Owns the network domain; Wi-Fi, wired/LAN, and Bluetooth are transport children (architecture §6 hierarchy) |
+| 4 | Drivers and hardware | Peer domain that owns generic PCI/USB inventory, firmware, and module state; domain specialists own their devices (architecture §5) |
+| 5 | Graphics (umbrella) | GPU is second only to CPU in hardware importance; GPU, Display, and Session are stacked children (architecture §6) |
+| 6 | Memory | Architecture §5 lists it but the earlier order omitted it; ECC errors, pressure, swap, OOM are a real domain with real invariants |
+| 7 | Power and thermal | Safety-critical, tests sensor integration |
+| 8 | Security and identity | Tests capability model with sensitive resources |
+| 9 | Processes and resources | Tests system-level monitoring |
+| 10 | Packages and updates | Tests package lifecycle on real packages |
+| 11 | Boot and recovery | Tests trust plane integration (v0.2+) |
+
+Graphics is ranked with the core hardware specialists: the GPU is second only
+to the CPU in hardware importance, and Aios is not headless — it has a
+first-class UI (see `docs/ui.md`). The Graphics umbrella (with GPU, Display,
+and Session children) is a hardware specialist; it is separate from the Aios
+UI itself (docs/ui.md), which is an interface-layer concern.
+
+The Network umbrella owns the network domain. Its transport children each own
+their resource class: Wi-Fi owns wireless interfaces, Wired/LAN owns ethernet
+interfaces, Bluetooth owns bluetooth controllers. Ownership is still
+per-resource (each interface has exactly one owner); the hierarchy is for
+organization and delegation (architecture §6).
+
+The Storage umbrella owns the storage domain. Its children are a stack, not
+parallel transports: Block/Disk owns block devices, Filesystem owns mounted
+filesystems, Files/Data owns file-level operations. A file lives on a
+filesystem, which lives on a block device; the dependency graph captures the
+stack (architecture §6).
+
+The Graphics umbrella owns the graphics and session domain. Its children are
+a stack: Session owns user/desktop sessions, Display owns monitors and the
+display service, GPU owns the graphics processing unit. A session runs on a
+display, which renders on a GPU; the dependency graph captures the stack
+(architecture §6). The Graphics hardware specialists are separate from the
+Aios UI (docs/ui.md), which is an interface-layer concern.
+
+Drivers and hardware is a peer of the domain specialists, not their parent. It
+owns the generic PCI/USB inventory, firmware, and module state that no domain
+specialist owns. It may implement driver staging, but bound to the devices it
+owns; it does not stage drivers for devices owned by another specialist
+(architecture §5 one-owner-per-resource).
+
+### Ownership map
+
+Before adding specialists, define the ownership map: which resource classes map
+to which specialist, with no overlaps and no orphans. Every resource has exactly
+one owning specialist (architecture §5); two agents must not independently
+control the same resource. The map is what "full coverage" actually means — it
+catches boundary problems like a Bluetooth controller being miscounted as a
+second Wi-Fi device. The map lives in `docs/system-graph.md` and is refined as
+each specialist is built.
 
 ### Per-specialist deliverables
 
@@ -531,21 +574,26 @@ specialist pattern.
 
 ---
 
-## Milestone 8: System State Panel
+## Milestone 8: System State Panel and Aios UI
 
 **Status:** Not started  
-**Estimated effort:** 2–3 weeks  
+**Estimated effort:** 2–3 weeks (panel); the full UI (presence, screen space,
+screen vision) is a larger workstream tracked in `docs/ui.md`  
 **Dependencies:** M2 (can run in parallel with M3–M6)
 
 ### Goal
 
-Build a dashboard showing overall health, subsystem status, active operations,
-model connectivity, and recovery state.
+Build the System State panel showing overall health, subsystem status, active
+operations, model connectivity, and recovery state, as one part of the Aios
+UI. The full UI is larger than the panel: Aios is always present on the
+screen, occupies a sidebar with other windows reflowing around it, and has
+tools to see the screen. The full UI design is scoped in `docs/ui.md` and is
+its own workstream; the panel is the first concrete piece.
 
 ### Deliverables
 
 - [ ] Health and state aggregator
-- [ ] System State panel UI (terminal/TUI for v0.1, GUI for v0.2+)
+- [ ] System State panel UI (part of the Aios UI, see `docs/ui.md`)
 - [ ] Overview view (overall status, subsystem health, connectivity, model route)
 - [ ] Subsystem view (detailed metrics, recent events, dependencies, responsible specialist)
 - [ ] System Graph view (affected nodes and edges for warnings or proposed changes)

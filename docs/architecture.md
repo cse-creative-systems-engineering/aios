@@ -286,7 +286,9 @@ Aios
 ├── Security Specialist
 ├── Storage Specialist
 ├── Network Specialist
-│   └── Wi-Fi Specialist
+│   ├── Wi-Fi Specialist
+│   ├── Wired/LAN Specialist
+│   └── Bluetooth Specialist
 ├── Driver and Hardware Specialist
 ├── Process and Resource Specialist
 └── Boot and Recovery Specialist
