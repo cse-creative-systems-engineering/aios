@@ -9,6 +9,7 @@ pub mod executor;
 pub mod facade;
 pub mod graph;
 pub mod guardian;
+pub mod harness;
 pub mod http;
 pub mod hub;
 pub mod local;
@@ -18,6 +19,7 @@ pub mod planner;
 pub mod protocol;
 pub mod tools;
 pub mod verifier;
+pub mod wifi;
 
 #[cfg(test)]
 pub mod testutil;

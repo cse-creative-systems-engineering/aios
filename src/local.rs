@@ -1,7 +1,8 @@
 use crate::model::{
-    FinishReason, GenerationError, GenerationRequest, GenerationResponse, ModelBackend,
-    ModelId, ModelMessage, ModelRole, ProviderId,
+    FinishReason, GenerationError, GenerationRequest, GenerationResponse, ModelBackend, ModelId,
+    ModelMessage, ModelRole, ProviderId,
 };
+use llama_cpp_2::TokenToStringError;
 use llama_cpp_2::context::params::LlamaContextParams;
 use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::llama_batch::LlamaBatch;
@@ -9,7 +10,6 @@ use llama_cpp_2::model::params::LlamaModelParams;
 use llama_cpp_2::model::{AddBos, LlamaChatMessage, LlamaModel};
 use llama_cpp_2::sampling::LlamaSampler;
 use llama_cpp_2::token::LlamaToken;
-use llama_cpp_2::TokenToStringError;
 use std::num::NonZeroU32;
 use std::path::Path;
 
@@ -77,15 +77,16 @@ impl LocalLlama {
         n_ctx: u32,
         n_threads: i32,
     ) -> Result<Self, LocalModelError> {
-        let backend = LlamaBackend::init()
-            .map_err(|e| LocalModelError::Backend(e.to_string()))?;
+        let mut backend =
+            LlamaBackend::init().map_err(|e| LocalModelError::Backend(e.to_string()))?;
+        backend.void_logs();
         let params = LlamaModelParams::default();
-        let model = LlamaModel::load_from_file(&backend, path.as_ref(), &params).map_err(
-            |e| LocalModelError::Load {
+        let model = LlamaModel::load_from_file(&backend, path.as_ref(), &params).map_err(|e| {
+            LocalModelError::Load {
                 path: path.as_ref().display().to_string(),
                 reason: e.to_string(),
-            },
-        )?;
+            }
+        })?;
         Ok(Self {
             provider,
             model_id,
@@ -152,14 +153,20 @@ impl LocalLlama {
             )));
         }
         let max_new = request.max_tokens.min(budget as u32) as usize;
-        let mut batch = LlamaBatch::new(prompt_len as usize + max_new, 1);
-        for (i, token) in tokens.iter().enumerate() {
-            batch
-                .add(*token, i as i32, &[0], i == tokens.len() - 1)
-                .map_err(|e| LocalModelError::Context(e.to_string()))?;
+        let batch_size = 512usize;
+        let mut batch = LlamaBatch::new(batch_size, 1);
+        for (chunk_index, chunk) in tokens.chunks(batch_size).enumerate() {
+            batch.clear();
+            let offset = chunk_index * batch_size;
+            for (index, token) in chunk.iter().enumerate() {
+                let is_last = offset + index == tokens.len() - 1;
+                batch
+                    .add(*token, (offset + index) as i32, &[0], is_last)
+                    .map_err(|e| LocalModelError::Context(e.to_string()))?;
+            }
+            ctx.decode(&mut batch)
+                .map_err(|e| LocalModelError::Decode(e.to_string()))?;
         }
-        ctx.decode(&mut batch)
-            .map_err(|e| LocalModelError::Decode(e.to_string()))?;
 
         let mut samplers = vec![LlamaSampler::top_k(40)];
         if request.temperature > 0.0 {
@@ -173,8 +180,8 @@ impl LocalLlama {
         let mut out = String::new();
         let mut tokens_used = tokens.len() as u32;
         let mut finish_reason = FinishReason::Length;
-        let mut pos = batch.n_tokens();
-        let mut idx = pos - 1;
+        let mut pos = tokens.len();
+        let mut idx = batch.n_tokens() - 1;
         for _ in 0..max_new {
             let token = sampler.sample(&mut ctx, idx);
             tokens_used += 1;
@@ -189,7 +196,7 @@ impl LocalLlama {
             sampler.accept(token);
             batch.clear();
             batch
-                .add(token, pos, &[0], true)
+                .add(token, pos as i32, &[0], true)
                 .map_err(|e| LocalModelError::Context(e.to_string()))?;
             ctx.decode(&mut batch)
                 .map_err(|e| LocalModelError::Decode(e.to_string()))?;

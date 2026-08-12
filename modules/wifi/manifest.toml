@@ -1,0 +1,48 @@
+package = "wifi.specialist"
+package_type = "specialist"
+version = 1
+clearance = 4
+
+[[matches]]
+node_type = "Device"
+attributes = ["wireless", "pci", "usb"]
+
+[[tools]]
+id = "observe_device"
+risk_level = 0
+operation = "Observe"
+description = "Read device, driver, firmware, and link state"
+
+[[tools]]
+id = "diagnose_fault"
+risk_level = 0
+operation = "Diagnose"
+description = "Analyze a Wi-Fi fault from current observations"
+
+[[tools]]
+id = "stage_driver"
+risk_level = 2
+operation = "Stage"
+description = "Checkpoint and stage a candidate driver"
+
+[[tools]]
+id = "request_reset"
+risk_level = 4
+operation = "Reset"
+description = "Request an approved reset to known-good state"
+
+capabilities = ["${device}:Observe", "${device}:Diagnose", "${device}:Stage", "${device}:Reset"]
+events = ["DeviceAdded", "LinkStateChanged", "FirmwareError"]
+invariants = ["DRIVER-001", "NETWORK-002"]
+recovery = ["restore_previous_driver"]
+model_policy = "local_or_approved_gateway"
+data_policy = "system_hardware_local_or_trusted_gateway"
+
+[resource_budgets]
+cpu_cores = 1
+memory_mb = 256
+storage_mb = 50
+latency_ms = 100
+power_watts = 5
+
+tests = ["wifi.discovery", "wifi.diagnosis", "wifi.driver_staging", "wifi.rollback"]

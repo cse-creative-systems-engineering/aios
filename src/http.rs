@@ -2,7 +2,7 @@ use crate::model::{
     FinishReason, GenerationError, GenerationRequest, GenerationResponse, ModelBackend, ModelId,
     ModelRole, ProviderId, ProviderTier,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub struct HttpBackend {
     provider: ProviderId,
@@ -67,6 +67,22 @@ impl HttpBackend {
             "max_tokens": request.max_tokens,
             "temperature": request.temperature,
         });
+        if request.messages.iter().any(|message| {
+            message.role == ModelRole::System
+                && message
+                    .content
+                    .contains("Read-only machine tools are available")
+        }) {
+            body["tools"] = json!([
+                function_tool("observe", "Observe one discovered node", "target"),
+                function_tool("diagnose", "Diagnose one discovered node", "target"),
+                function_tool("query", "Query discovered nodes", "query"),
+                function_tool("deps", "Query node dependencies", "target"),
+                function_tool("impact", "Query node impact relationships", "target"),
+                function_tool("health", "Summarize graph health", "query"),
+            ]);
+            body["tool_choice"] = json!("auto");
+        }
         if let Some(seed) = request.seed {
             body["seed"] = json!(seed);
         }
@@ -83,11 +99,18 @@ impl HttpBackend {
         let choice = choices
             .first()
             .ok_or_else(|| GenerationError::new("response has zero choices", false))?;
-        let text = choice
-            .pointer("/message/content")
-            .and_then(Value::as_str)
-            .ok_or_else(|| GenerationError::new("choice has no message content", false))?
-            .to_string();
+        let message = choice
+            .get("message")
+            .ok_or_else(|| GenerationError::new("choice has no message", false))?;
+        let text = match message.get("content").and_then(Value::as_str) {
+            Some(content) => content.to_string(),
+            None => message
+                .get("tool_calls")
+                .map(|calls| json!({ "tool_calls": calls }).to_string())
+                .ok_or_else(|| {
+                    GenerationError::new("message has no content or tool calls", false)
+                })?,
+        };
         let finish_reason = match choice
             .get("finish_reason")
             .and_then(Value::as_str)
@@ -134,6 +157,24 @@ impl HttpBackend {
         }
         Ok(request)
     }
+}
+
+fn function_tool(name: &str, description: &str, argument: &str) -> Value {
+    json!({
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": description,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    argument: { "type": "string" }
+                },
+                "required": [argument],
+                "additionalProperties": false
+            }
+        }
+    })
 }
 
 impl ModelBackend for HttpBackend {
@@ -185,7 +226,7 @@ impl ModelBackend for HttpBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ModelMessage, ModelTask, AgentRole};
+    use crate::model::{AgentRole, ModelMessage, ModelTask};
     use crate::protocol::DataClassification;
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::TcpListener;
@@ -235,7 +276,9 @@ mod tests {
                         let _ = reader.read_exact(&mut buf);
                     }
                 }
-                let response = format!("{status_line}\r\nContent-Type: application/json\r\n\r\n{response_body}");
+                let response = format!(
+                    "{status_line}\r\nContent-Type: application/json\r\n\r\n{response_body}"
+                );
                 let _ = stream.write_all(response.as_bytes());
                 let _ = stream.flush();
             }
@@ -270,6 +313,12 @@ mod tests {
         assert_eq!(body["messages"].as_array().expect("array").len(), 2);
         assert_eq!(body["messages"][0]["role"], "system");
         assert!(body.get("seed").is_none());
+
+        let mut with_tools = request();
+        with_tools.messages[0].content = "Read-only machine tools are available".into();
+        let body = backend.request_body(&with_tools);
+        assert_eq!(body["tools"][0]["function"]["name"], "observe");
+        assert_eq!(body["tool_choice"], "auto");
 
         let mut with_seed = request();
         with_seed.seed = Some(7);
@@ -316,6 +365,22 @@ mod tests {
     }
 
     #[test]
+    fn parses_native_tool_calls_without_message_content() {
+        let backend = HttpBackend::new(
+            ProviderId::new("p"),
+            "m".into(),
+            "https://x.example/v1".into(),
+            None,
+            ProviderTier::Internet,
+            5000,
+        );
+        let body = r#"{"choices":[{"message":{"tool_calls":[{"function":{"name":"query","arguments":"{\"query\":\"memory\"}"}}]},"finish_reason":"tool_calls"}]}"#;
+        let response = backend.parse_response(body).expect("tool call parses");
+        assert!(response.text.contains("tool_calls"));
+        assert!(response.text.contains("memory"));
+    }
+
+    #[test]
     fn empty_choices_is_error() {
         let backend = HttpBackend::new(
             ProviderId::new("p"),
@@ -325,7 +390,9 @@ mod tests {
             ProviderTier::Internet,
             5000,
         );
-        let err = backend.parse_response(r#"{"choices": []}"#).expect_err("error");
+        let err = backend
+            .parse_response(r#"{"choices": []}"#)
+            .expect_err("error");
         assert!(!err.recoverable);
     }
 
@@ -338,7 +405,6 @@ mod tests {
         let backend = backend(&server);
         let response = backend.generate(&request()).expect("generate");
         assert_eq!(response.text, "hello from provider");
-
     }
 
     #[test]
@@ -395,7 +461,6 @@ mod tests {
         let server = spawn_server("{}", "HTTP/1.1 200 OK");
         let backend = backend(&server);
         assert!(backend.is_healthy());
-
     }
 
     #[test]

@@ -92,7 +92,10 @@ pub struct Planner {
 
 impl Planner {
     pub fn new(gateway: Arc<ModelGateway>, max_tokens: u32) -> Self {
-        Self { gateway, max_tokens }
+        Self {
+            gateway,
+            max_tokens,
+        }
     }
 
     pub fn explain(
@@ -131,12 +134,7 @@ impl Planner {
                 }
             }
         }
-        submit(
-            &self.gateway,
-            AgentRole::Planner,
-            messages,
-            self.max_tokens,
-        )
+        submit(&self.gateway, AgentRole::Planner, messages, self.max_tokens)
     }
 
     pub fn plan(&self, intent: &str) -> Result<GeneratedPlan, AgentError> {
@@ -226,13 +224,138 @@ pub fn parse_plan(text: &str, fallback_intent: &str) -> Result<GeneratedPlan, Ag
     }
 }
 
-fn extract_json(text: &str) -> Option<String> {
-    let start = text.find('{')?;
-    let end = text.rfind('}')?;
-    if end <= start {
-        return None;
+pub(crate) fn extract_json(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    for start in 0..bytes.len() {
+        if bytes[start] != b'{' {
+            continue;
+        }
+        let mut depth = 0usize;
+        let mut in_string = false;
+        let mut escaped = false;
+        for end in start..bytes.len() {
+            let byte = bytes[end];
+            if in_string {
+                if escaped {
+                    escaped = false;
+                } else if byte == b'\\' {
+                    escaped = true;
+                } else if byte == b'"' {
+                    in_string = false;
+                }
+                continue;
+            }
+            match byte {
+                b'"' => in_string = true,
+                b'{' => depth += 1,
+                b'}' => {
+                    depth = depth.checked_sub(1)?;
+                    if depth == 0 {
+                        let candidate = &text[start..=end];
+                        if serde_json::from_str::<serde_json::Value>(candidate).is_ok() {
+                            return Some(candidate.to_string());
+                        }
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
     }
-    Some(text[start..=end].to_string())
+    None
+}
+
+#[derive(Clone, Debug)]
+pub struct ToolCallRequest {
+    pub name: String,
+    pub arguments: String,
+}
+
+/// Parse an OpenAI-style `tool_calls` request out of a model reply.
+///
+/// Accepts either the native shape
+/// `{"tool_calls":[{"function":{"name":"...","arguments":"..."}}]}`
+/// or a simpler `{"tool_calls":[{"tool":"...","args":"..."}]}`. If the
+/// model wraps arguments as a JSON object such as `{"target":"wifi0"}`
+/// the single target value is unwrapped into a plain argument string.
+pub fn parse_tool_calls(text: &str) -> Vec<ToolCallRequest> {
+    let json = match extract_json(text) {
+        Some(json) => json,
+        None => return Vec::new(),
+    };
+    let value: serde_json::Value = match serde_json::from_str(&json) {
+        Ok(value) => value,
+        Err(_) => return Vec::new(),
+    };
+    let calls = match value
+        .get("tool_calls")
+        .and_then(serde_json::Value::as_array)
+    {
+        Some(calls) => calls,
+        None => return Vec::new(),
+    };
+    calls
+        .iter()
+        .filter_map(|call| {
+            if let Some(function) = call.get("function") {
+                let name = function.get("name")?.as_str()?.to_string();
+                let raw = function
+                    .get("arguments")
+                    .and_then(|a| a.as_str())
+                    .unwrap_or("");
+                return Some(ToolCallRequest {
+                    name,
+                    arguments: normalize_arguments(raw),
+                });
+            }
+            let name = call.get("tool")?.as_str()?;
+            let raw = call.get("args").and_then(|a| a.as_str()).unwrap_or("");
+            Some(ToolCallRequest {
+                name: name.to_string(),
+                arguments: normalize_arguments(raw),
+            })
+        })
+        .collect()
+}
+
+fn normalize_arguments(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if !trimmed.starts_with('{') {
+        return trimmed.to_string();
+    }
+    let value: serde_json::Value = match serde_json::from_str(trimmed) {
+        Ok(value) => value,
+        Err(_) => return trimmed.to_string(),
+    };
+    let Some(object) = value.as_object() else {
+        return trimmed.to_string();
+    };
+    for key in ["target", "args", "arg", "value", "resource"] {
+        if let Some(v) = object.get(key).and_then(serde_json::Value::as_str) {
+            return v.to_string();
+        }
+    }
+    if object.len() == 1 {
+        if let Some((_, v)) = object.iter().next() {
+            if let Some(s) = v.as_str() {
+                return s.to_string();
+            }
+        }
+    }
+    trimmed.to_string()
+}
+
+/// Drop the trailing tool-calls JSON object from a reply.
+pub fn strip_tool_calls_json(text: &str) -> String {
+    match (text.find('{'), text.rfind('}')) {
+        (Some(start), Some(end)) if end >= start => {
+            let mut out = String::with_capacity(text.len());
+            out.push_str(&text[..start]);
+            out.push_str(&text[end + 1..]);
+            out
+        }
+        _ => text.to_string(),
+    }
 }
 
 pub fn format_plan(plan: &GeneratedPlan) -> String {
@@ -330,6 +453,82 @@ mod strip_think_tests {
 
     #[test]
     fn strips_leading_think_only() {
-        assert_eq!(strip_think("<think>x</think>first<think>y</think>second"), "firstsecond");
+        assert_eq!(
+            strip_think("<think>x</think>first<think>y</think>second"),
+            "firstsecond"
+        );
+    }
+}
+
+#[cfg(test)]
+mod tool_calls_tests {
+    use super::*;
+
+    #[test]
+    fn parses_openai_function_shape() {
+        let text = r#"Let me check. {"tool_calls":[{"id":"call_1","type":"function","function":{"name":"observe","arguments":"wifi0"}}]}"#;
+        let calls = parse_tool_calls(text);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "observe");
+        assert_eq!(calls[0].arguments, "wifi0");
+    }
+
+    #[test]
+    fn parses_simple_tool_shape() {
+        let calls = parse_tool_calls(r#"{"tool_calls":[{"tool":"health","args":""}]}"#);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "health");
+        assert_eq!(calls[0].arguments, "");
+    }
+
+    #[test]
+    fn unwraps_json_argument_object() {
+        let text = r#"{"tool_calls":[{"function":{"name":"query","arguments":"{\"target\":\"device\"}"}}]}"#;
+        let calls = parse_tool_calls(text);
+        assert_eq!(calls[0].name, "query");
+        assert_eq!(calls[0].arguments, "device");
+    }
+
+    #[test]
+    fn no_tool_calls_means_empty() {
+        assert!(parse_tool_calls("hello from stub").is_empty());
+        assert!(parse_tool_calls("no json").is_empty());
+        assert!(parse_tool_calls(r#"{"answer":"42"}"#).is_empty());
+    }
+
+    #[test]
+    fn multiple_calls_parsed_in_order() {
+        let text = r#"{"tool_calls":[
+            {"function":{"name":"observe","arguments":"wifi0"}},
+            {"function":{"name":"health","arguments":""}}
+        ]}"#;
+        let calls = parse_tool_calls(text);
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].name, "observe");
+        assert_eq!(calls[1].name, "health");
+    }
+
+    #[test]
+    fn strips_trailing_json_object() {
+        assert_eq!(
+            strip_tool_calls_json("scanning... {\"tool_calls\":[]}"),
+            "scanning... "
+        );
+        assert_eq!(
+            strip_tool_calls_json("{\"tool_calls\":[{\"tool\":\"health\"}]}"),
+            ""
+        );
+        assert_eq!(strip_tool_calls_json("plain answer"), "plain answer");
+    }
+
+    #[test]
+    fn extracts_balanced_json_from_noisy_output() {
+        let text = r#"<think>ignore {not json}</think>
+            Here is the plan: {"intent":"check","steps":[]}
+            trailing note with {unrelated}"#;
+        assert_eq!(
+            extract_json(text).as_deref(),
+            Some(r#"{"intent":"check","steps":[]}"#)
+        );
     }
 }

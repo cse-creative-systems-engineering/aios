@@ -1,5 +1,5 @@
 use crate::coordinator::{
-    Coordinator, BootError, classification_help, providers_text, send_direct, status_text,
+    BootError, Coordinator, classification_help, providers_text, send_direct, status_text,
 };
 use crate::planner::{AgentError, format_plan};
 use crate::protocol::DataClassification;
@@ -55,6 +55,7 @@ impl Facade {
             "providers" => providers_text(&self.coordinator),
             "scan" => self.coordinator.scan(),
             "graph" => self.coordinator.graph_summary(),
+            "panel" | "state" => self.coordinator.state_panel(),
             "consent" => self.consent(rest),
             "plan" => {
                 if rest.is_empty() {
@@ -78,6 +79,7 @@ impl Facade {
                 Err(e) => format!("no route: {e}"),
             },
             "tools" => self.coordinator.tools_help(),
+            "harness" => harness_command(rest),
             "audit" => {
                 if rest.is_empty() {
                     self.audit()
@@ -122,9 +124,7 @@ impl Facade {
             .into_iter()
             .rev()
             .filter(|e| {
-                e.actor.contains(filter)
-                    || e.action.contains(filter)
-                    || e.target.contains(filter)
+                e.actor.contains(filter) || e.action.contains(filter) || e.target.contains(filter)
             })
             .take(20)
             .collect::<Vec<_>>();
@@ -133,7 +133,12 @@ impl Facade {
         }
         entries
             .iter()
-            .map(|e| format!("{} {} {} {} {}", e.timestamp, e.actor, e.action, e.target, e.outcome))
+            .map(|e| {
+                format!(
+                    "{} {} {} {} {}",
+                    e.timestamp, e.actor, e.action, e.target, e.outcome
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -154,11 +159,8 @@ impl Facade {
                     let provider = entry.provider.to_string();
                     match self.coordinator.consent_for(&provider) {
                         Some(record) => {
-                            let scope: Vec<String> = record
-                                .data_scope
-                                .iter()
-                                .map(|c| format!("{c:?}"))
-                                .collect();
+                            let scope: Vec<String> =
+                                record.data_scope.iter().map(|c| format!("{c:?}")).collect();
                             let state = if record.revoked_at.is_some() {
                                 "revoked"
                             } else {
@@ -175,15 +177,13 @@ impl Facade {
                     lines.join("\n")
                 }
             }
-            (Some(provider), Some(class), Some("on")) => {
-                match parse_class(class) {
-                    Some(class) => match self.coordinator.grant_consent(provider, class) {
-                        Ok(()) => format!("consent granted: {provider} ({class:?})"),
-                        Err(e) => format!("grant failed: {e}"),
-                    },
-                    None => format!("unknown class: {class}"),
-                }
-            }
+            (Some(provider), Some(class), Some("on")) => match parse_class(class) {
+                Some(class) => match self.coordinator.grant_consent(provider, class) {
+                    Ok(()) => format!("consent granted: {provider} ({class:?})"),
+                    Err(e) => format!("grant failed: {e}"),
+                },
+                None => format!("unknown class: {class}"),
+            },
             (Some(provider), Some(_class), Some("off")) => {
                 self.coordinator.revoke_consent(provider);
                 format!("consent revoked: {provider}")
@@ -205,9 +205,7 @@ impl Facade {
     fn direct(&self, text: &str) -> String {
         match send_direct(&self.coordinator, text) {
             Ok(answer) => {
-                self.coordinator
-                    .audit
-                    .record("user", "model", text, "ok");
+                self.coordinator.audit.record("user", "model", text, "ok");
                 answer
             }
             Err(e) => {
@@ -238,15 +236,10 @@ impl Facade {
             messages.push(crate::model::ModelMessage::new(role, content));
         }
 
-        let result = self
-            .coordinator
-            .planner
-            .chat_with(messages, self.coordinator.local_context());
+        let result = self.coordinator.chat_with_tools(messages);
         match result {
             Ok(answer) => {
-                self.coordinator
-                    .audit
-                    .record("user", "chat", text, "ok");
+                self.coordinator.audit.record("user", "chat", text, "ok");
                 self.history.push_back(format!("assistant: {answer}"));
                 while self.history.len() > self.max_history {
                     self.history.pop_front();
@@ -261,6 +254,65 @@ impl Facade {
             }
         }
     }
+}
+
+fn harness_command(rest: &str) -> String {
+    let mut tokens = rest.split_whitespace();
+    match tokens.next() {
+        None | Some("run") => harness_run(tokens),
+        Some("list-tools") | Some("tools") => {
+            let tools = crate::harness::harness_tool_ids();
+            if tools.is_empty() {
+                "no harness tools".to_string()
+            } else {
+                tools.join("\n")
+            }
+        }
+        _ => harness_usage().to_string(),
+    }
+}
+
+fn harness_run(tokens: std::str::SplitWhitespace<'_>) -> String {
+    let mut seed = 1u64;
+    let mut enforce = false;
+    let mut json = false;
+    let mut quarantine: Vec<String> = Vec::new();
+    let mut tool_filter: Option<String> = None;
+    let mut iter = tokens;
+    while let Some(flag) = iter.next() {
+        match flag {
+            "--seed" => match iter.next().and_then(|value| value.parse::<u64>().ok()) {
+                Some(n) => seed = n,
+                None => return "usage: harness run --seed <u64>".to_string(),
+            },
+            "--enforce" => enforce = true,
+            "--json" => json = true,
+            "--quarantine" => match iter.next() {
+                Some(list) => {
+                    quarantine = list.split(',').map(|s| s.to_string()).collect();
+                }
+                None => {
+                    return "usage: harness run --quarantine <resource,...>".to_string();
+                }
+            },
+            "--tool" => match iter.next() {
+                Some(prefix) => tool_filter = Some(prefix.to_string()),
+                None => return "usage: harness run --tool <prefix>".to_string(),
+            },
+            _ => return harness_usage().to_string(),
+        }
+    }
+    let report = crate::harness::run_campaign(seed, enforce, &quarantine, tool_filter.as_deref());
+    if json {
+        report.as_json()
+    } else {
+        report.render()
+    }
+}
+
+fn harness_usage() -> &'static str {
+    "usage: harness run [--seed N] [--enforce] [--quarantine a,b] [--tool PREFIX] [--json]\n\
+     \x20      harness list-tools"
 }
 
 fn parse_class(class: &str) -> Option<DataClassification> {
@@ -279,12 +331,15 @@ pub fn help_text() -> &'static str {
      \x20 providers        provider details and consent\n\
      \x20 scan             run discovery and refresh the system graph\n\
      \x20 graph            show the current graph summary\n\
+     \x20 panel            show system health, route, graph, and audit state\n\
      \x20 consent          list consent\n\
      \x20 consent <p> <class> on|off   grant or revoke consent for a provider\n\
      \x20 plan <intent>    plan steps then verify them\n\
      \x20 model <text>     ask the model directly, no agent framing\n\
      \x20 route            show the current model route\n\
      \x20 tools            list read-only specialist tools\n\
+     \x20 harness run [--seed N] [--enforce] [--quarantine a,b] [--tool PREFIX] [--json]\n\
+     \x20 harness list-tools   deterministic read-only observation campaign\n\
      \x20 observe <t>      node details (id, label, or attribute value)\n\
      \x20 diagnose <t>     health and dependency summary for a node\n\
      \x20 query <type>     list nodes of a type (device, service, driver, ...)\n\
@@ -332,7 +387,7 @@ mod tests {
     use super::*;
     use crate::config::{AiosConfig, ProviderConfig};
     use crate::coordinator::Coordinator;
-    use crate::model::{ConnectivityState, ConnectivityProbe};
+    use crate::model::{ConnectivityProbe, ConnectivityState};
     use crate::testutil;
 
     struct FakeProbe(ConnectivityState);
@@ -345,9 +400,7 @@ mod tests {
 
     fn handler(body: &str) -> String {
         if body.contains("steps: ") {
-            testutil::openai_response(
-                r#"{"verdict":"approve","concerns":[],"tests":["ping"]}"#,
-            )
+            testutil::openai_response(r#"{"verdict":"approve","concerns":[],"tests":["ping"]}"#)
         } else if body.contains("fix my wifi") {
             testutil::openai_response(
                 r#"{"intent":"fix my wifi","steps":[{"description":"check link","tool":"iw dev","resource":"wifi0","risk":"read-only"}]}"#,
@@ -373,11 +426,9 @@ mod tests {
                 http_timeout_ms: 5000,
             }],
         };
-        let coordinator = Coordinator::boot_with_probe(
-            config,
-            Box::new(FakeProbe(ConnectivityState::Internet)),
-        )
-        .expect("boot");
+        let coordinator =
+            Coordinator::boot_with_probe(config, Box::new(FakeProbe(ConnectivityState::Internet)))
+                .expect("boot");
         Facade::new(coordinator)
     }
 
@@ -440,7 +491,33 @@ mod tests {
         let port = testutil::spawn_json_server(handler);
         let mut f = facade(port);
         let out = f.run_line("hello there");
-        assert_eq!(out, "hello from stub");
+        assert!(out.contains("no executable tool call"), "{out}");
+    }
+
+    #[test]
+    fn shell_chat_sends_machine_state_after_consent() {
+        let port = testutil::spawn_json_server(|body| {
+            if body.contains("tool health result") && body.contains("Current local system state:") {
+                testutil::openai_response("machine state arrived")
+            } else if body.contains("tool health result") {
+                testutil::openai_response("machine state missing")
+            } else {
+                testutil::openai_response(r#"{"tool_calls":[{"tool":"health","args":""}]}"#)
+            }
+        });
+        let mut f = facade(port);
+        assert!(f.coordinator.local_context().is_some());
+        assert_eq!(f.run_line("hello"), "machine state arrived");
+    }
+
+    #[test]
+    fn shell_rejects_fabricated_live_system_answer() {
+        let port = testutil::spawn_json_server(|_| {
+            testutil::openai_response("I ran sensors and the GPU is at 42C")
+        });
+        let mut f = facade(port);
+        let out = f.run_line("what is the gpu temperature?");
+        assert!(out.contains("no executable tool call"), "{out}");
     }
 
     #[test]
@@ -468,23 +545,70 @@ mod tests {
     }
 
     #[test]
-    fn tool_commands_against_empty_graph() {
+    fn harness_list_tools_lists_registry() {
+        let port = testutil::spawn_json_server(handler);
+        let mut f = facade(port);
+        let out = f.run_line("harness list-tools");
+        assert!(out.contains("nvme0:observe"), "{out}");
+        assert!(out.contains("eth0:query"), "{out}");
+        assert!(out.contains("hpet:diagnose"), "{out}");
+    }
+
+    #[test]
+    fn harness_run_reports_seed_and_tallies() {
+        let port = testutil::spawn_json_server(handler);
+        let mut f = facade(port);
+        let out = f.run_line("harness run --seed 7");
+        assert!(out.contains("seed=7"), "{out}");
+        assert!(out.contains("denied=0"), "{out}");
+        assert!(out.contains("allowed="), "{out}");
+    }
+
+    #[test]
+    fn harness_run_enforce_stops_on_quarantine() {
+        let port = testutil::spawn_json_server(handler);
+        let mut f = facade(port);
+        let out = f.run_line(
+            "harness run --seed 7 --enforce --quarantine nvme0,nvme1,eth0,eth1,usb-1-1,hpet",
+        );
+        assert!(out.contains("deny: resource quarantined"), "{out}");
+        assert!(out.contains("stopped early"), "{out}");
+    }
+
+    #[test]
+    fn harness_run_json_is_parseable() {
+        let port = testutil::spawn_json_server(handler);
+        let mut f = facade(port);
+        let out = f.run_line("harness run --seed 3 --json");
+        let parsed: serde_json::Value = serde_json::from_str(&out).expect("valid json");
+        assert_eq!(parsed["seed"], 3);
+        assert!(parsed["steps"].is_array());
+    }
+
+    #[test]
+    fn tool_commands_use_boot_graph() {
         let port = testutil::spawn_json_server(handler);
         let mut f = facade(port);
         let out = f.run_line("observe wifi0");
-        assert!(out.contains("tool failed: nothing matches"), "{out}");
+        assert!(
+            out.contains("tool failed: nothing matches") || out.contains("node:"),
+            "{out}"
+        );
         let out = f.run_line("query device");
-        assert!(out.contains("no device nodes found"), "{out}");
+        assert!(
+            out.contains("no device nodes found") || out.contains("Device"),
+            "{out}"
+        );
         let out = f.run_line("diagnose");
         assert!(out.contains("usage"), "{out}");
     }
 
     #[test]
-    fn health_command_without_scan() {
+    fn health_command_uses_boot_scan() {
         let port = testutil::spawn_json_server(handler);
         let mut f = facade(port);
         let out = f.run_line("health");
-        assert!(out.contains("0 nodes total"), "{out}");
+        assert!(!out.contains("0 nodes total"), "{out}");
     }
 
     #[test]

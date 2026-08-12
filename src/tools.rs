@@ -505,9 +505,11 @@ impl SpecialistTool for GraphHealth {
 
 pub fn tools_context(graph: &SystemGraph) -> String {
     let mut lines = Vec::new();
+    let sensors: Vec<crate::graph::NodeMetadata> = graph.get_nodes_by_type(NodeType::Sensor);
+    let memory: Vec<crate::graph::NodeMetadata> = graph.get_nodes_by_type(NodeType::Memory);
     let devices: Vec<crate::graph::NodeMetadata> = graph.get_nodes_by_type(NodeType::Device);
     let services: Vec<crate::graph::NodeMetadata> = graph.get_nodes_by_type(NodeType::Service);
-    if devices.is_empty() && services.is_empty() {
+    if devices.is_empty() && services.is_empty() && sensors.is_empty() && memory.is_empty() {
         return String::new();
     }
     if !devices.is_empty() {
@@ -531,7 +533,19 @@ pub fn tools_context(graph: &SystemGraph) -> String {
             lines.push(format!("  ... and {} more", services.len() - 24));
         }
     }
+    for (label, nodes) in [("sensors", sensors), ("memory", memory)] {
+        if !nodes.is_empty() {
+            lines.push(format!("{label}:"));
+            for node in nodes {
+                lines.push(format!("  {} {} {:?}", node.node_id, node.label, node.attributes));
+            }
+        }
+    }
     lines.join("\n")
+}
+
+pub fn model_tool_instructions() -> &'static str {
+    "Read-only machine tools are available. Never invent command output and never claim to run shell commands. Before answering any user message, emit ONLY this JSON shape: {\"tool_calls\":[{\"tool\":\"observe|diagnose|query|deps|impact|health\",\"args\":\"...\"}]}. Use query sensor for sensor readings, query memory for memory data, and query device for hardware. After receiving tool results, answer only from those results. If a tool cannot establish a fact, say so."
 }
 
 #[cfg(test)]

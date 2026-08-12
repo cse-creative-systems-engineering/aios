@@ -1,5 +1,5 @@
 use crate::model::{AgentRole, ModelGateway, ModelMessage, ModelRole};
-use crate::planner::{AgentError, GeneratedPlan, submit};
+use crate::planner::{AgentError, GeneratedPlan, extract_json, submit};
 use crate::protocol::VerificationVerdict;
 use serde::Deserialize;
 use std::sync::Arc;
@@ -11,7 +11,10 @@ pub struct Verifier {
 
 impl Verifier {
     pub fn new(gateway: Arc<ModelGateway>, max_tokens: u32) -> Self {
-        Self { gateway, max_tokens }
+        Self {
+            gateway,
+            max_tokens,
+        }
     }
 
     pub fn review(&self, plan: &GeneratedPlan) -> Result<ReviewResult, AgentError> {
@@ -83,7 +86,10 @@ pub fn parse_review(text: &str) -> Result<ReviewResult, AgentError> {
                     VerificationVerdict::ApproveWithConditions(json.concerns.clone())
                 }
                 Some("reject") => VerificationVerdict::Reject(
-                    json.concerns.first().cloned().unwrap_or_else(|| "rejected".into()),
+                    json.concerns
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| "rejected".into()),
                 ),
                 _ => VerificationVerdict::InsufficientInformation,
             };
@@ -107,15 +113,6 @@ fn loose_review(text: &str) -> ReviewResult {
     }
 }
 
-fn extract_json(text: &str) -> Option<String> {
-    let start = text.find('{')?;
-    let end = text.rfind('}')?;
-    if end <= start {
-        return None;
-    }
-    Some(text[start..=end].to_string())
-}
-
 pub fn format_review(review: &ReviewResult) -> String {
     if let Some(freeform) = &review.freeform {
         return format!("verdict: unstructured response\n{freeform}");
@@ -133,7 +130,10 @@ pub fn format_review(review: &ReviewResult) -> String {
         lines.push(format!("concerns: {}", review.concerns.join("; ")));
     }
     if !review.recommended_tests.is_empty() {
-        lines.push(format!("recommended tests: {}", review.recommended_tests.join("; ")));
+        lines.push(format!(
+            "recommended tests: {}",
+            review.recommended_tests.join("; ")
+        ));
     }
     lines.join("\n")
 }
@@ -144,7 +144,8 @@ mod tests {
 
     #[test]
     fn parses_approve() {
-        let review = parse_review(r#"{"verdict":"approve","concerns":[],"tests":["ping"]}"#).expect("parse");
+        let review =
+            parse_review(r#"{"verdict":"approve","concerns":[],"tests":["ping"]}"#).expect("parse");
         assert_eq!(review.verdict, VerificationVerdict::Approve);
         assert_eq!(review.recommended_tests, vec!["ping".to_string()]);
     }
@@ -164,7 +165,8 @@ mod tests {
 
     #[test]
     fn parses_reject() {
-        let review = parse_review(r#"{"verdict":"reject","concerns":["too risky"]}"#).expect("parse");
+        let review =
+            parse_review(r#"{"verdict":"reject","concerns":["too risky"]}"#).expect("parse");
         assert!(matches!(
             review.verdict,
             VerificationVerdict::Reject(reason) if reason == "too risky"

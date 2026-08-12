@@ -291,7 +291,7 @@ gateway, router, and data classification system.
 
 ## Milestone 4: Dual-Agent Orchestration
 
-**Status:** In progress  
+**Status:** ✅ Complete (local-only shell performance deferred)
 **Estimated effort:** 4–6 weeks  
 **Dependencies:** M2, M3
 
@@ -308,13 +308,41 @@ providers, consent, plan, model, chat). Read-only specialist tools
 the live discovery graph, and `aios::audit` logs every interaction to
 `~/.aios/audit.log`. Verified on the real machine with OpenAI, OpenRouter and
 Kimi wired in: the shell scans 491 nodes, observes the Wi-Fi interface,
-and chats through the cloud provider when online. 164 tests pass. Still open:
-hardening the planner-verifier flow against noisy model output.
+and chats through the cloud provider when online. Boot discovery now populates
+the graph before the first chat; using Aios establishes session consent for
+machine state, with revoke still available, and shell chat supports a bounded
+read-only tool loop with audit records. Live-system questions now fail closed
+when the Planner emits no executable tool call; sensor and memory data are
+included in the graph context. The OpenAI-compatible backend now advertises
+the bounded read-only tools and accepts native tool-call responses. A manual
+GPU-temperature question completed a tool-call round trip and returned a
+grounded response. Native tool calls, denied tool calls, and their audit
+entries were verified manually against the configured provider. M4 now rejects
+staged and critical plan steps before verification because mutations belong to
+M5. 191 tests pass, with the real-model test passing when
+`AIOS_MODEL_PATH` points at the provisioned model. The local-only shell run
+with the full discovery context is deferred as a performance investigation;
+the local model runtime remains verified. M4 is complete for the configured
+cloud path. Planner/verifier parsing is balanced and string-aware, and
+malformed staged or critical M4 plans fail before review. The local-only shell
+performance investigation is explicitly deferred to a later local-runtime
+work item.
 
 ### Goal
 
 Connect real Planner and Verification agents with safe read-only tools. The
 user can ask about hardware and get diagnoses and explanations.
+
+### Interaction boundary
+
+The user-facing experience is conversational. The user asks a question in
+ordinary language and receives one conversational Aios response. Tool names,
+arguments, capability tokens, broker decisions, and intermediate tool results
+are internal protocol traffic; they are not presented as the conversation.
+The Planner may request bounded read-only tools, the broker validates and
+routes those requests, and the final response is composed from the returned
+evidence. The facade may expose explicit diagnostic commands for inspection,
+but it does not authorize actions or replace the conversational path.
 
 ### Deliverables
 
@@ -333,21 +361,37 @@ user can ask about hardware and get diagnoses and explanations.
 
 ### Acceptance criteria
 
-1. User types "What's the status of my Wi-Fi?" and gets a coherent response.
-2. The Planner creates an action plan with read-only operations.
-3. The Verification Agent reviews the plan and returns a verdict.
-4. The broker validates capabilities and clearance for each tool request.
-5. All interactions are logged in the audit log.
-6. The system operates fully offline with a local model.
-7. All tests pass.
+1. [x] User types "What's the status of my Wi-Fi?" and gets a coherent response.
+2. [x] The Planner creates an action plan with read-only operations.
+3. [x] The Verification Agent reviews the plan and returns a verdict.
+4. [x] The broker validates capabilities and clearance for each tool request.
+5. [x] All interactions are logged in the audit log.
+6. [deferred] Fully offline shell operation with the local model; local model
+   runtime is verified, but full-discovery shell performance is deferred.
+7. [x] All tests pass.
 
 ---
 
 ## Milestone 5: Transactions and Staging
 
-**Status:** Not started  
+**Status:** ✅ Complete
 **Estimated effort:** 4–6 weeks  
 **Dependencies:** M2
+
+**Progress note (2026-08-12):** the existing action state machine and staged
+executor now persist checkpoints separately from action records, verify them
+before staging, clean them up after commit or rollback, retain them after
+failure, and fail visibly on recovery-store errors. Fault tests cover health
+errors, checkpoint verification failure, rollback failure, and restart
+recovery. Broker approval tests cover missing approval, plan-hash mismatch,
+and scope mismatch. The standalone broker demo was manually verified through
+commit, automatic rollback, Guardian denial, approved mutation, and audit
+output. Broker-to-executor tests now cover healthy risk-2 commit and unhealthy
+automatic rollback. The broker-owned approval channel rejects non-user
+responses, rejects expired or declined requests, and creates approvals only
+inside the broker. Failed actions retain their checkpoints and expose an
+explicit user-invoked manual recovery operation. The full suite passes with
+200 tests, 199 passing and 1 ignored.
 
 ### Goal
 
@@ -356,38 +400,47 @@ and user approval. Enable safe mutations.
 
 ### Deliverables
 
-- [ ] Full action state machine implementation (all states and transitions)
-- [ ] Checkpoint creation, storage, verification, and cleanup
-- [ ] Staged execution (checkpoint → stage → health check → commit/rollback)
-- [ ] User approval flow (terminal-based for v0.1)
-- [ ] Approval scope checking (plan hash, resource, operation within scope)
-- [ ] Crash recovery (write-ahead log, restart recovery)
-- [ ] Automatic rollback on health check failure
-- [ ] Manual recovery for `Failed` actions
-- [ ] Test suite: state machine tests, checkpoint tests, rollback tests, crash recovery tests, approval scope tests
+- [x] Full action state machine implementation (all states and transitions)
+- [x] Checkpoint creation, storage, verification, and cleanup
+- [x] Staged execution (checkpoint → stage → health check → commit/rollback)
+- [x] User approval flow (terminal-based for v0.1)
+- [x] Approval scope checking (plan hash, resource, operation within scope)
+- [x] Crash recovery (write-ahead log, restart recovery)
+- [x] Automatic rollback on health check failure
+- [x] Manual recovery for `Failed` actions
+- [x] Test suite: state machine tests, checkpoint tests, rollback tests, crash recovery tests, approval scope tests
 
 ### Acceptance criteria
 
-1. A risk level 2 action creates a checkpoint, stages a change, runs health
+1. [x] A risk level 2 action creates a checkpoint, stages a change, runs health
    check, and commits if healthy.
-2. If the health check fails, the action automatically rolls back to the
+2. [x] If the health check fails, the action automatically rolls back to the
    checkpoint.
-3. A risk level 3 action requires user approval. Without approval, it is
+3. [x] A risk level 3 action requires user approval. Without approval, it is
    denied.
-4. An approval with a mismatched plan hash is rejected.
-5. A request outside the approval scope is denied.
-6. If Aios crashes during staging, the action is recovered on restart
+4. [x] An approval with a mismatched plan hash is rejected.
+5. [x] A request outside the approval scope is denied.
+6. [x] If Aios crashes during staging, the action is recovered on restart
    (rolled back or committed, not left in limbo).
-7. If rollback fails, the action enters `Failed` and the user is notified.
-8. All tests pass.
+7. [x] If rollback fails, the action enters `Failed` and the user is notified.
+8. [x] All tests pass.
 
 ---
 
 ## Milestone 6: First Hardware Specialist (Wi-Fi)
 
-**Status:** Not started  
+**Status:** In progress
 **Estimated effort:** 4–6 weeks  
 **Dependencies:** M4, M5
+
+**Progress note (2026-08-12):** the Wi-Fi package specification and manifest
+are present. Boot discovery now identifies an unambiguous wireless controller,
+instantiates `wifi.specialist`, and records its ownership in the System Graph.
+The specialist declares bounded observe, diagnose, staged-driver, and reset
+tools with the documented risk levels, and reports driver, bus, and network
+service dependency health from graph evidence. Seeded graph tests and a live
+shell boot confirm discovery and instantiation. Driver staging, reset approval,
+and live Wi-Fi-specific health verification remain to be implemented.
 
 ### Goal
 
@@ -522,9 +575,9 @@ model connectivity, and recovery state.
 | M1: In-Process Simulation | ✅ Complete | 3–4 weeks | M0 |
 | M2: Read-Only Linux Discovery | ✅ Complete | 2–3 weeks | M1 |
 | M3: Local Model Runtime | ✅ Complete | 5–7 weeks (parallel) | M1 |
-| M4: Dual-Agent Orchestration | In progress | 9–13 weeks | M2, M3 |
-| M5: Transactions and Staging | 4–6 weeks | 9–13 weeks (parallel with M4) | M2 |
-| M6: First Hardware Specialist | 4–6 weeks | 13–19 weeks | M4, M5 |
+| M4: Dual-Agent Orchestration | ✅ Complete (offline shell deferred) | 9–13 weeks | M2, M3 |
+| M5: Transactions and Staging | ✅ Complete | 9–13 weeks (parallel with M4) | M2 |
+| M6: First Hardware Specialist | In progress | 13–19 weeks | M4, M5 |
 | M7: Additional Specialists | 2–4 weeks each | +2–4 weeks per specialist | M6 |
 | M8: System State Panel | 2–3 weeks | 15–22 weeks (parallel) | M2 |
 

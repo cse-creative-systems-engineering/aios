@@ -186,10 +186,7 @@ pub enum ActionError {
 
 #[derive(Debug)]
 pub enum TransitionError {
-    InvalidTransition {
-        from: ActionState,
-        to: ActionState,
-    },
+    InvalidTransition { from: ActionState, to: ActionState },
     ActionNotFound(ActionId),
     PersistenceFailed(String),
 }
@@ -241,6 +238,10 @@ pub trait ActionStore {
     fn save(&self, record: &ActionRecord) -> Result<(), PersistenceError>;
     fn load(&self, action_id: &ActionId) -> Result<ActionRecord, PersistenceError>;
     fn load_all(&self) -> Result<Vec<ActionRecord>, PersistenceError>;
+    fn save_checkpoint(&self, checkpoint: &Checkpoint) -> Result<(), PersistenceError>;
+    fn load_checkpoint(&self, checkpoint_id: &CheckpointId)
+    -> Result<Checkpoint, PersistenceError>;
+    fn delete_checkpoint(&self, checkpoint_id: &CheckpointId) -> Result<(), PersistenceError>;
 }
 
 pub struct FileActionStore {
@@ -250,7 +251,8 @@ pub struct FileActionStore {
 impl FileActionStore {
     pub fn new(dir: impl AsRef<Path>) -> Result<Self, PersistenceError> {
         let dir = dir.as_ref().to_path_buf();
-        std::fs::create_dir_all(&dir).map_err(|e| PersistenceError::StorageFailed(e.to_string()))?;
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| PersistenceError::StorageFailed(e.to_string()))?;
         Ok(Self { dir })
     }
 
@@ -265,10 +267,8 @@ impl ActionStore for FileActionStore {
         let json = serde_json::to_vec_pretty(record)
             .map_err(|e| PersistenceError::StorageFailed(e.to_string()))?;
         let tmp = self.dir.join(format!("{}.tmp", record.action_id));
-        std::fs::write(&tmp, &json)
-            .map_err(|e| PersistenceError::StorageFailed(e.to_string()))?;
-        std::fs::rename(&tmp, &path)
-            .map_err(|e| PersistenceError::StorageFailed(e.to_string()))?;
+        std::fs::write(&tmp, &json).map_err(|e| PersistenceError::StorageFailed(e.to_string()))?;
+        std::fs::rename(&tmp, &path).map_err(|e| PersistenceError::StorageFailed(e.to_string()))?;
         Ok(())
     }
 
@@ -277,31 +277,73 @@ impl ActionStore for FileActionStore {
         if !path.exists() {
             return Err(PersistenceError::RecordNotFound);
         }
-        let bytes = std::fs::read(&path)
-            .map_err(|e| PersistenceError::StorageFailed(e.to_string()))?;
-        serde_json::from_slice(&bytes)
-            .map_err(|e| PersistenceError::RecordCorrupted(e.to_string()))
+        let bytes =
+            std::fs::read(&path).map_err(|e| PersistenceError::StorageFailed(e.to_string()))?;
+        serde_json::from_slice(&bytes).map_err(|e| PersistenceError::RecordCorrupted(e.to_string()))
     }
 
     fn load_all(&self) -> Result<Vec<ActionRecord>, PersistenceError> {
         let mut records = Vec::new();
         let entries = std::fs::read_dir(&self.dir)
             .map_err(|e| PersistenceError::StorageFailed(e.to_string()))?;
-        for entry in entries.flatten() {
-            let path = entry.path();
+        for entry in entries {
+            let path = entry
+                .map_err(|e| PersistenceError::StorageFailed(e.to_string()))?
+                .path();
             if path.extension().and_then(|e| e.to_str()) != Some("json") {
                 continue;
             }
-            if path.to_string_lossy().ends_with(".tmp") {
+            let file_name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("");
+            if file_name.ends_with(".tmp") || file_name.starts_with("checkpoint-") {
                 continue;
             }
-            let bytes = std::fs::read(&path)
-                .map_err(|e| PersistenceError::StorageFailed(e.to_string()))?;
+            let bytes =
+                std::fs::read(&path).map_err(|e| PersistenceError::StorageFailed(e.to_string()))?;
             let record = serde_json::from_slice(&bytes)
                 .map_err(|e| PersistenceError::RecordCorrupted(e.to_string()))?;
             records.push(record);
         }
         Ok(records)
+    }
+
+    fn save_checkpoint(&self, checkpoint: &Checkpoint) -> Result<(), PersistenceError> {
+        let path = self
+            .dir
+            .join(format!("checkpoint-{}.json", checkpoint.checkpoint_id));
+        let tmp = self
+            .dir
+            .join(format!("checkpoint-{}.tmp", checkpoint.checkpoint_id));
+        let bytes = serde_json::to_vec_pretty(checkpoint)
+            .map_err(|e| PersistenceError::StorageFailed(e.to_string()))?;
+        std::fs::write(&tmp, bytes).map_err(|e| PersistenceError::StorageFailed(e.to_string()))?;
+        std::fs::rename(tmp, path).map_err(|e| PersistenceError::StorageFailed(e.to_string()))
+    }
+
+    fn load_checkpoint(
+        &self,
+        checkpoint_id: &CheckpointId,
+    ) -> Result<Checkpoint, PersistenceError> {
+        let path = self.dir.join(format!("checkpoint-{}.json", checkpoint_id));
+        let bytes = std::fs::read(path).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                PersistenceError::RecordNotFound
+            } else {
+                PersistenceError::StorageFailed(e.to_string())
+            }
+        })?;
+        serde_json::from_slice(&bytes).map_err(|e| PersistenceError::RecordCorrupted(e.to_string()))
+    }
+
+    fn delete_checkpoint(&self, checkpoint_id: &CheckpointId) -> Result<(), PersistenceError> {
+        let path = self.dir.join(format!("checkpoint-{}.json", checkpoint_id));
+        match std::fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(PersistenceError::StorageFailed(e.to_string())),
+        }
     }
 }
 
@@ -377,7 +419,10 @@ mod tests {
             ActionState::Reviewed,
             ActionState::Approved
         ));
-        assert!(!can_transition(ActionState::RollingBack, ActionState::Committed));
+        assert!(!can_transition(
+            ActionState::RollingBack,
+            ActionState::Committed
+        ));
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use crate::action::{
-    ActionError, ActionRecord, ActionState, ActionStore, Checkpoint, CheckpointError,
-    CheckpointState, CommitError, HealthError, PersistenceError, RecoveryOutcome, RollbackError,
-    StageError, TransitionError, can_transition,
+    ActionError, ActionRecord, ActionState, ActionStore, Checkpoint, CheckpointError, CommitError,
+    HealthError, PersistenceError, RecoveryOutcome, RollbackError, StageError, TransitionError,
+    can_transition,
 };
 use crate::capability::{Operation, PrincipalId, ResourceId, RiskLevel};
 use crate::protocol::{ActionId, CorrelationId, HealthState};
@@ -101,7 +101,10 @@ impl StagedExecutor {
         Ok(())
     }
 
-    pub fn create_checkpoint(&mut self, action_id: &ActionId) -> Result<Checkpoint, CheckpointError> {
+    pub fn create_checkpoint(
+        &mut self,
+        action_id: &ActionId,
+    ) -> Result<Checkpoint, CheckpointError> {
         let record = self
             .store
             .load(action_id)
@@ -115,6 +118,9 @@ impl StagedExecutor {
         updated.checkpoint_id = Some(checkpoint.checkpoint_id);
         self.store
             .save(&updated)
+            .map_err(|e| CheckpointError::StorageFailed(format!("{e:?}")))?;
+        self.store
+            .save_checkpoint(&checkpoint)
             .map_err(|e| CheckpointError::StorageFailed(format!("{e:?}")))?;
         Ok(checkpoint)
     }
@@ -184,8 +190,15 @@ impl StagedExecutor {
                 return Err(StagingError::CheckpointFailed);
             }
         };
-        self.verify_checkpoint(&checkpoint)
+        if self.verify_checkpoint(&checkpoint).is_err() {
+            self.transition(
+                action_id,
+                ActionState::Failed,
+                "checkpoint verification failed",
+            )
             .map_err(|_| StagingError::CheckpointFailed)?;
+            return Err(StagingError::CheckpointFailed);
+        }
 
         if self.stage(&checkpoint).is_err() {
             self.transition(action_id, ActionState::Failed, "stage failed")
@@ -193,21 +206,27 @@ impl StagedExecutor {
             return Err(StagingError::StageFailed);
         }
 
-        let healthy = self
-            .health_check(&record.resource)
-            .map(|h| matches!(h, HealthState::Healthy | HealthState::Degraded))
-            .unwrap_or(false);
+        let healthy = match self.health_check(&record.resource) {
+            Ok(state) => matches!(state, HealthState::Healthy | HealthState::Degraded),
+            Err(_) => false,
+        };
 
         if !healthy {
             return self.do_rollback(action_id, &checkpoint);
         }
 
-        self.transition(action_id, ActionState::HealthVerified, "health check passed")
-            .map_err(|_| StagingError::HealthCheckFailed)?;
+        self.transition(
+            action_id,
+            ActionState::HealthVerified,
+            "health check passed",
+        )
+        .map_err(|_| StagingError::HealthCheckFailed)?;
 
         match self.commit(&checkpoint) {
             Ok(()) => {
                 self.transition(action_id, ActionState::Committed, "commit succeeded")
+                    .map_err(|_| StagingError::CommitFailed)?;
+                self.delete_checkpoint(action_id)
                     .map_err(|_| StagingError::CommitFailed)?;
                 Ok(StagingResult::Committed)
             }
@@ -226,6 +245,8 @@ impl StagedExecutor {
             Ok(()) => {
                 self.transition(action_id, ActionState::RolledBack, "rollback verified")
                     .map_err(|_| StagingError::RollbackFailed)?;
+                self.delete_checkpoint(action_id)
+                    .map_err(|_| StagingError::RollbackFailed)?;
                 Ok(StagingResult::RolledBack)
             }
             Err(_) => {
@@ -236,11 +257,16 @@ impl StagedExecutor {
         }
     }
 
-    pub fn recover(&mut self) -> Vec<RecoveryOutcome> {
-        let records = match self.store.load_all() {
-            Ok(r) => r,
-            Err(_) => return Vec::new(),
-        };
+    fn delete_checkpoint(&self, action_id: &ActionId) -> Result<(), PersistenceError> {
+        let record = self.store.load(action_id)?;
+        if let Some(id) = record.checkpoint_id {
+            self.store.delete_checkpoint(&id)?;
+        }
+        Ok(())
+    }
+
+    pub fn recover(&mut self) -> Result<Vec<RecoveryOutcome>, PersistenceError> {
+        let records = self.store.load_all()?;
         let mut outcomes = Vec::new();
         for record in records {
             if record.state.is_terminal() {
@@ -253,12 +279,14 @@ impl StagedExecutor {
                 | ActionState::ImpactAnalyzed
                 | ActionState::Reviewed
                 | ActionState::PolicyValidated
-                | ActionState::GuardianChecked => {
-                    (ActionState::Rejected, "interrupted before staging".to_string())
-                }
-                ActionState::Approved => {
-                    (ActionState::Rejected, "interrupted before staging".to_string())
-                }
+                | ActionState::GuardianChecked => (
+                    ActionState::Rejected,
+                    "interrupted before staging".to_string(),
+                ),
+                ActionState::Approved => (
+                    ActionState::Rejected,
+                    "interrupted before staging".to_string(),
+                ),
                 ActionState::Staged => self.recover_staged(&action_id),
                 ActionState::RollingBack => self.recover_rolling_back(&action_id),
                 ActionState::HealthVerified => self.recover_health_verified(&action_id),
@@ -274,7 +302,39 @@ impl StagedExecutor {
                 reason,
             });
         }
-        outcomes
+        Ok(outcomes)
+    }
+
+    /// Restore a failed action's retained checkpoint at the user's direction.
+    /// The failed action record remains failed as an immutable incident record;
+    /// the returned result describes the separately requested restoration.
+    pub fn manual_recover(&mut self, action_id: &ActionId) -> Result<StagingResult, StagingError> {
+        let record = self
+            .store
+            .load(action_id)
+            .map_err(|_| StagingError::CheckpointFailed)?;
+        if record.state != ActionState::Failed {
+            return Err(StagingError::CheckpointFailed);
+        }
+        let checkpoint_id = record.checkpoint_id.ok_or(StagingError::CheckpointFailed)?;
+        let checkpoint = self
+            .store
+            .load_checkpoint(&checkpoint_id)
+            .map_err(|_| StagingError::CheckpointFailed)?;
+        self.verify_checkpoint(&checkpoint)
+            .map_err(|_| StagingError::CheckpointFailed)?;
+        self.rollback(&checkpoint)
+            .map_err(|_| StagingError::RollbackFailed)?;
+        let health = self
+            .health_check(&record.resource)
+            .map_err(|_| StagingError::HealthCheckFailed)?;
+        if !matches!(health, HealthState::Healthy | HealthState::Degraded) {
+            return Err(StagingError::HealthCheckFailed);
+        }
+        self.store
+            .delete_checkpoint(&checkpoint_id)
+            .map_err(|_| StagingError::RollbackFailed)?;
+        Ok(StagingResult::RolledBack)
     }
 
     fn recover_staged(&mut self, action_id: &ActionId) -> (ActionState, String) {
@@ -286,12 +346,14 @@ impl StagedExecutor {
             Some(id) => id,
             None => return (ActionState::Failed, "checkpoint missing".into()),
         };
-        let checkpoint = Checkpoint {
-            checkpoint_id,
-            action_id: *action_id,
-            resource: record.resource.clone(),
-            created_at: record.created_at,
-            state: CheckpointState::Empty,
+        let checkpoint = match self.store.load_checkpoint(&checkpoint_id) {
+            Ok(checkpoint) => checkpoint,
+            Err(_) => {
+                return (
+                    ActionState::Failed,
+                    "checkpoint missing or corrupted".into(),
+                );
+            }
         };
         let healthy = self
             .health_check(&record.resource)
@@ -300,8 +362,19 @@ impl StagedExecutor {
         if healthy {
             match self.commit(&checkpoint) {
                 Ok(()) => {
-                    let _ = self.transition(action_id, ActionState::Committed, "recovered commit");
-                    (ActionState::Committed, "health passed on recovery, committed".into())
+                    if self
+                        .transition(action_id, ActionState::Committed, "recovered commit")
+                        .is_err()
+                    {
+                        return (
+                            ActionState::Failed,
+                            "could not persist recovered commit".into(),
+                        );
+                    }
+                    (
+                        ActionState::Committed,
+                        "health passed on recovery, committed".into(),
+                    )
                 }
                 Err(_) => self.recover_rolling_back(action_id),
             }
@@ -315,24 +388,34 @@ impl StagedExecutor {
             Ok(r) => r,
             Err(_) => return (ActionState::Failed, "record unreadable".into()),
         };
-        let checkpoint = record
-            .checkpoint_id
-            .map(|checkpoint_id| Checkpoint {
-                checkpoint_id,
-                action_id: *action_id,
-                resource: record.resource.clone(),
-                created_at: record.created_at,
-                state: CheckpointState::Empty,
-            })
-            .ok_or_else(|| (ActionState::Failed, "checkpoint missing".to_string()));
-        let checkpoint = match checkpoint {
+        let checkpoint_id = match record.checkpoint_id {
+            Some(id) => id,
+            None => return (ActionState::Failed, "checkpoint missing".into()),
+        };
+        let checkpoint = match self.store.load_checkpoint(&checkpoint_id) {
             Ok(cp) => cp,
-            Err(e) => return e,
+            Err(_) => {
+                return (
+                    ActionState::Failed,
+                    "checkpoint missing or corrupted".into(),
+                );
+            }
         };
         match self.commit(&checkpoint) {
             Ok(()) => {
-                let _ = self.transition(action_id, ActionState::Committed, "recovered commit");
-                (ActionState::Committed, "commit retried and succeeded".into())
+                if self
+                    .transition(action_id, ActionState::Committed, "recovered commit")
+                    .is_err()
+                {
+                    return (
+                        ActionState::Failed,
+                        "could not persist recovered commit".into(),
+                    );
+                }
+                (
+                    ActionState::Committed,
+                    "commit retried and succeeded".into(),
+                )
             }
             Err(_) => self.recover_rolling_back(action_id),
         }
@@ -343,25 +426,58 @@ impl StagedExecutor {
             Ok(r) => r,
             Err(_) => return (ActionState::Failed, "record unreadable".into()),
         };
-        let checkpoint = match record.checkpoint_id.map(|checkpoint_id| Checkpoint {
-            checkpoint_id,
-            action_id: *action_id,
-            resource: record.resource.clone(),
-            created_at: record.created_at,
-            state: CheckpointState::Empty,
-        }) {
-            Some(cp) => cp,
+        let checkpoint_id = match record.checkpoint_id {
+            Some(id) => id,
             None => return (ActionState::Failed, "checkpoint missing".into()),
+        };
+        let checkpoint = match self.store.load_checkpoint(&checkpoint_id) {
+            Ok(cp) => cp,
+            Err(_) => {
+                return (
+                    ActionState::Failed,
+                    "checkpoint missing or corrupted".into(),
+                );
+            }
         };
         match self.rollback(&checkpoint) {
             Ok(()) => {
-                let _ = self.transition(action_id, ActionState::RollingBack, "recovered rollback");
-                let _ = self.transition(action_id, ActionState::RolledBack, "recovered rollback");
-                (ActionState::RolledBack, "rollback retried and succeeded".into())
+                if self
+                    .transition(action_id, ActionState::RollingBack, "recovered rollback")
+                    .is_err()
+                {
+                    return (
+                        ActionState::Failed,
+                        "could not persist rollback state".into(),
+                    );
+                }
+                if self
+                    .transition(action_id, ActionState::RolledBack, "recovered rollback")
+                    .is_err()
+                {
+                    return (
+                        ActionState::Failed,
+                        "could not persist rolled-back state".into(),
+                    );
+                }
+                (
+                    ActionState::RolledBack,
+                    "rollback retried and succeeded".into(),
+                )
             }
             Err(_) => {
-                let _ = self.transition(action_id, ActionState::Failed, "rollback failed");
-                (ActionState::Failed, "rollback failed during recovery".into())
+                if self
+                    .transition(action_id, ActionState::Failed, "rollback failed")
+                    .is_err()
+                {
+                    return (
+                        ActionState::Failed,
+                        "could not persist rollback failure".into(),
+                    );
+                }
+                (
+                    ActionState::Failed,
+                    "rollback failed during recovery".into(),
+                )
             }
         }
     }
@@ -370,10 +486,14 @@ impl StagedExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::action::CheckpointState;
 
     struct MockDriver {
         state: u64,
         health_ok: bool,
+        health_error: bool,
+        verify_ok: bool,
+        rollback_ok: bool,
     }
 
     impl MockDriver {
@@ -401,7 +521,13 @@ mod tests {
         }
 
         fn verify_checkpoint(&self, _cp: &Checkpoint) -> Result<(), CheckpointError> {
-            Ok(())
+            if self.verify_ok {
+                Ok(())
+            } else {
+                Err(CheckpointError::VerificationFailed(
+                    "test corruption".into(),
+                ))
+            }
         }
 
         fn stage(&mut self, _cp: &Checkpoint) -> Result<(), StageError> {
@@ -410,6 +536,9 @@ mod tests {
         }
 
         fn health_check(&self, _r: &ResourceId) -> Result<HealthState, HealthError> {
+            if self.health_error {
+                return Err(HealthError::SubsystemUnavailable);
+            }
             Ok(if self.health_ok {
                 HealthState::Healthy
             } else {
@@ -422,29 +551,62 @@ mod tests {
         }
 
         fn rollback(&mut self, _cp: &Checkpoint) -> Result<(), RollbackError> {
+            if !self.rollback_ok {
+                return Err(RollbackError::RestorationFailed(
+                    "test rollback failure".into(),
+                ));
+            }
             self.state = self.snapshot().saturating_sub(1);
             Ok(())
         }
     }
 
     fn fresh(dir: &tempfile::TempDir, health_ok: bool) -> (StagedExecutor, u64) {
-        let store = Box::new(
-            crate::action::FileActionStore::new(dir.path()).expect("store init"),
-        );
+        let store = Box::new(crate::action::FileActionStore::new(dir.path()).expect("store init"));
         let driver = MockDriver {
             state: 10,
             health_ok,
+            health_error: false,
+            verify_ok: true,
+            rollback_ok: true,
         };
         let current = driver.state;
         let executor = StagedExecutor::new(store, Box::new(driver));
         (executor, current)
     }
 
-    fn advance_to(
-        executor: &mut StagedExecutor,
-        action_id: &ActionId,
-        target: ActionState,
-    ) {
+    fn fresh_fault(
+        dir: &tempfile::TempDir,
+        health_ok: bool,
+        health_error: bool,
+        verify_ok: bool,
+        rollback_ok: bool,
+    ) -> StagedExecutor {
+        let store = Box::new(crate::action::FileActionStore::new(dir.path()).expect("store init"));
+        let driver = MockDriver {
+            state: 10,
+            health_ok,
+            health_error,
+            verify_ok,
+            rollback_ok,
+        };
+        StagedExecutor::new(store, Box::new(driver))
+    }
+
+    fn checkpoint_count(dir: &tempfile::TempDir) -> usize {
+        std::fs::read_dir(dir.path())
+            .expect("checkpoint directory")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("checkpoint-")
+            })
+            .count()
+    }
+
+    fn advance_to(executor: &mut StagedExecutor, action_id: &ActionId, target: ActionState) {
         let chain = [
             ActionState::ImpactAnalyzed,
             ActionState::Reviewed,
@@ -489,6 +651,7 @@ mod tests {
         let record = executor.load_record(&action_id).unwrap();
         assert_eq!(record.state, ActionState::Committed);
         assert!(record.state_history.len() >= 3);
+        assert_eq!(checkpoint_count(&dir), 0);
     }
 
     #[test]
@@ -511,6 +674,126 @@ mod tests {
         );
         let record = executor.load_record(&action_id).unwrap();
         assert_eq!(record.state, ActionState::RolledBack);
+        assert_eq!(checkpoint_count(&dir), 0);
+    }
+
+    #[test]
+    fn checkpoint_verification_failure_enters_failed_and_retains_checkpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut executor = fresh_fault(&dir, true, false, true, true);
+        let action_id = executor
+            .create_action(
+                uuid::Uuid::new_v4(),
+                RiskLevel::Staged,
+                ResourceId("device:wifi0".into()),
+                Operation::Stage,
+                PrincipalId::agent("wifi.specialist", "wifi0"),
+            )
+            .unwrap();
+        prestage(&mut executor, &action_id);
+        executor
+            .create_checkpoint(&action_id)
+            .expect("checkpoint retained for failed action");
+        executor
+            .transition(&action_id, ActionState::Staged, "test interrupted staging")
+            .unwrap();
+        executor
+            .transition(
+                &action_id,
+                ActionState::Failed,
+                "test unrecoverable failure",
+            )
+            .unwrap();
+        assert_eq!(
+            executor.load_record(&action_id).unwrap().state,
+            ActionState::Failed
+        );
+        assert_eq!(checkpoint_count(&dir), 1);
+    }
+
+    #[test]
+    fn failed_action_can_be_manually_recovered_from_retained_checkpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut executor = fresh_fault(&dir, true, false, true, true);
+        let action_id = executor
+            .create_action(
+                uuid::Uuid::new_v4(),
+                RiskLevel::Staged,
+                ResourceId("device:wifi0".into()),
+                Operation::Stage,
+                PrincipalId::agent("wifi.specialist", "wifi0"),
+            )
+            .unwrap();
+        prestage(&mut executor, &action_id);
+        executor.create_checkpoint(&action_id).unwrap();
+        executor
+            .transition(&action_id, ActionState::Staged, "test interrupted staging")
+            .unwrap();
+        executor
+            .transition(
+                &action_id,
+                ActionState::Failed,
+                "test unrecoverable failure",
+            )
+            .unwrap();
+        assert_eq!(
+            executor.manual_recover(&action_id),
+            Ok(StagingResult::RolledBack)
+        );
+        assert_eq!(checkpoint_count(&dir), 0);
+        assert_eq!(
+            executor.load_record(&action_id).unwrap().state,
+            ActionState::Failed
+        );
+    }
+
+    #[test]
+    fn health_check_error_rolls_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut executor = fresh_fault(&dir, true, true, true, true);
+        let action_id = executor
+            .create_action(
+                uuid::Uuid::new_v4(),
+                RiskLevel::Staged,
+                ResourceId("device:wifi0".into()),
+                Operation::Stage,
+                PrincipalId::agent("wifi.specialist", "wifi0"),
+            )
+            .unwrap();
+        prestage(&mut executor, &action_id);
+        assert_eq!(
+            executor.stage_and_commit(&action_id).unwrap(),
+            StagingResult::RolledBack
+        );
+        assert_eq!(
+            executor.load_record(&action_id).unwrap().state,
+            ActionState::RolledBack
+        );
+    }
+
+    #[test]
+    fn rollback_failure_enters_failed_and_retains_checkpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut executor = fresh_fault(&dir, false, false, true, false);
+        let action_id = executor
+            .create_action(
+                uuid::Uuid::new_v4(),
+                RiskLevel::Staged,
+                ResourceId("device:wifi0".into()),
+                Operation::Stage,
+                PrincipalId::agent("wifi.specialist", "wifi0"),
+            )
+            .unwrap();
+        prestage(&mut executor, &action_id);
+        assert_eq!(
+            executor.stage_and_commit(&action_id),
+            Err(StagingError::RollbackFailed)
+        );
+        assert_eq!(
+            executor.load_record(&action_id).unwrap().state,
+            ActionState::Failed
+        );
+        assert_eq!(checkpoint_count(&dir), 1);
     }
 
     #[test]
@@ -537,9 +820,12 @@ mod tests {
             Box::new(MockDriver {
                 state: 10,
                 health_ok: false,
+                health_error: false,
+                verify_ok: true,
+                rollback_ok: true,
             }),
         );
-        let outcomes = recovered.recover();
+        let outcomes = recovered.recover().expect("recovery store readable");
         assert_eq!(outcomes.len(), 1);
         assert_eq!(outcomes[0].to_state, ActionState::RolledBack);
         let record = recovered.load_record(&action_id).unwrap();
@@ -567,9 +853,12 @@ mod tests {
             Box::new(MockDriver {
                 state: 10,
                 health_ok: true,
+                health_error: false,
+                verify_ok: true,
+                rollback_ok: true,
             }),
         );
-        let outcomes = recovered.recover();
+        let outcomes = recovered.recover().expect("recovery store readable");
         assert_eq!(outcomes[0].to_state, ActionState::Rejected);
     }
 }

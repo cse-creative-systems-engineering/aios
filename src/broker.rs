@@ -6,8 +6,9 @@ use crate::capability::{
 use crate::executor::{StagedExecutor, StagingError, StagingResult};
 use crate::guardian::Guardian;
 use crate::protocol::{
-    Approval, DataClassification, MessageEnvelope, MessageType, PolicyDecision, PolicyVerdict,
-    Timestamp, ToolError, ToolErrorCode, ToolRequest, ToolResult, ToolStatus, now,
+    Approval, ApprovalRequest, ApprovalScope, DataClassification, MessageEnvelope, MessageType,
+    PolicyDecision, PolicyVerdict, Timestamp, ToolError, ToolErrorCode, ToolRequest, ToolResult,
+    ToolStatus, UserDecision, UserResponse, now,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -35,6 +36,7 @@ pub struct PolicyBroker {
     tool_registry: ToolRegistry,
     revoked: HashSet<CapabilityToken>,
     approvals: HashMap<[u8; 32], Approval>,
+    pending_approvals: HashMap<uuid::Uuid, (ApprovalRequest, ApprovalScope)>,
     resource_states: HashMap<ResourceId, ResourceState>,
     resource_owners: HashMap<ResourceId, PrincipalId>,
     replay_log: HashSet<(PrincipalId, u64)>,
@@ -52,6 +54,7 @@ impl PolicyBroker {
             tool_registry: ToolRegistry::new(),
             revoked: HashSet::new(),
             approvals: HashMap::new(),
+            pending_approvals: HashMap::new(),
             resource_states: HashMap::new(),
             resource_owners: HashMap::new(),
             replay_log: HashSet::new(),
@@ -153,6 +156,56 @@ impl PolicyBroker {
         self.approvals.insert(approval.plan_hash, approval);
     }
 
+    pub fn issue_approval_request(
+        &mut self,
+        request: ApprovalRequest,
+        scope: ApprovalScope,
+    ) -> Result<uuid::Uuid, DenyReason> {
+        if request.expires_at <= (self.clock)() {
+            return Err(DenyReason::NoUserApproval);
+        }
+        let request_id = request.envelope.message_id;
+        self.pending_approvals.insert(request_id, (request, scope));
+        Ok(request_id)
+    }
+
+    pub fn submit_user_response(&mut self, response: UserResponse) -> Result<(), DenyReason> {
+        if response.envelope.origin.r#type != crate::capability::PrincipalType::User {
+            return Err(DenyReason::UnknownPrincipal);
+        }
+        let (request, scope) = self
+            .pending_approvals
+            .remove(&response.approval_request_id)
+            .ok_or(DenyReason::NoUserApproval)?;
+        if request.expires_at <= (self.clock)() {
+            return Err(DenyReason::NoUserApproval);
+        }
+        match response.decision {
+            UserDecision::Rejected(_) => Err(DenyReason::NoUserApproval),
+            UserDecision::Approved => {
+                self.approvals.insert(
+                    request.plan_hash,
+                    Approval {
+                        envelope: MessageEnvelope::new(
+                            MessageType::Approval,
+                            PrincipalId::system("policy-broker"),
+                            request.envelope.correlation_id,
+                            DataClassification::Protected,
+                        ),
+                        approval_id: uuid::Uuid::new_v4(),
+                        plan_id: request.plan_id,
+                        plan_hash: request.plan_hash,
+                        approved_by: response.envelope.origin,
+                        granted_at: (self.clock)(),
+                        expires_at: request.expires_at,
+                        scope,
+                    },
+                );
+                Ok(())
+            }
+        }
+    }
+
     pub fn set_guardian(&mut self, guardian: Guardian) {
         self.guardian = Some(Box::new(guardian));
     }
@@ -199,6 +252,25 @@ impl PolicyBroker {
     }
 
     pub fn evaluate(&mut self, request: &ToolRequest) -> PolicyVerdict {
+        if self.audit_broken {
+            return PolicyVerdict::Deny(DenyReason::AuditLogFailure);
+        }
+        let verdict = self.evaluate_inner(request);
+        self.audit_entries.push(PolicyDecision {
+            envelope: MessageEnvelope::new(
+                MessageType::PolicyDecision,
+                PrincipalId::system("policy-broker"),
+                request.envelope.correlation_id,
+                DataClassification::Protected,
+            ),
+            request_id: request.request_id,
+            decision: verdict.clone(),
+            audit_entry_id: uuid::Uuid::new_v4(),
+        });
+        verdict
+    }
+
+    fn evaluate_inner(&mut self, request: &ToolRequest) -> PolicyVerdict {
         let now = (self.clock)();
 
         let tool = match self.tool_registry.get(&request.tool_id) {
@@ -235,7 +307,9 @@ impl PolicyBroker {
         match self.resource_states.get(&request.resource) {
             None => return PolicyVerdict::Deny(DenyReason::AmbiguousCapability),
             Some(ResourceState::Removed) => {
-                return PolicyVerdict::Deny(DenyReason::ResourceUnavailable(ResourceState::Removed));
+                return PolicyVerdict::Deny(DenyReason::ResourceUnavailable(
+                    ResourceState::Removed,
+                ));
             }
             Some(ResourceState::Quarantined) => {
                 if risk != RiskLevel::Recovery {
@@ -303,7 +377,13 @@ impl PolicyBroker {
             };
             let approval = match self.approvals.get(&hash) {
                 Some(a) => a,
-                None => return PolicyVerdict::Deny(DenyReason::NoUserApproval),
+                None => {
+                    return PolicyVerdict::Deny(if self.approvals.is_empty() {
+                        DenyReason::NoUserApproval
+                    } else {
+                        DenyReason::PlanHashMismatch
+                    });
+                }
             };
             if !approval.is_valid_at(now) {
                 return PolicyVerdict::Deny(DenyReason::NoUserApproval);
@@ -318,24 +398,7 @@ impl PolicyBroker {
             }
         }
 
-        let verdict = PolicyVerdict::Allow;
-
-        if self.audit_broken {
-            return PolicyVerdict::Deny(DenyReason::AuditLogFailure);
-        }
-        self.audit_entries.push(PolicyDecision {
-            envelope: MessageEnvelope::new(
-                MessageType::PolicyDecision,
-                PrincipalId::system("policy-broker"),
-                request.envelope.correlation_id,
-                DataClassification::Protected,
-            ),
-            request_id: request.request_id,
-            decision: verdict.clone(),
-            audit_entry_id: uuid::Uuid::new_v4(),
-        });
-
-        verdict
+        PolicyVerdict::Allow
     }
 }
 
@@ -381,7 +444,10 @@ impl Broker {
     }
 
     pub fn register_tool(&self, definition: crate::capability::ToolDefinition) {
-        self.core.lock().expect("broker lock").register_tool(definition);
+        self.core
+            .lock()
+            .expect("broker lock")
+            .register_tool(definition);
     }
 
     pub fn register_principal(
@@ -390,10 +456,11 @@ impl Broker {
         capabilities: Vec<Capability>,
         clearance: Clearance,
     ) {
-        self.core
-            .lock()
-            .expect("broker lock")
-            .register_principal(principal, capabilities, clearance);
+        self.core.lock().expect("broker lock").register_principal(
+            principal,
+            capabilities,
+            clearance,
+        );
     }
 
     pub fn set_resource_state(&self, resource: ResourceId, state: ResourceState) {
@@ -418,7 +485,10 @@ impl Broker {
     }
 
     pub fn set_guardian(&self, guardian: Guardian) {
-        self.core.lock().expect("broker lock").set_guardian(guardian);
+        self.core
+            .lock()
+            .expect("broker lock")
+            .set_guardian(guardian);
     }
 
     pub fn set_executor(&self, executor: StagedExecutor) {
@@ -472,7 +542,9 @@ impl LocalBroker {
             .map_err(|_| BrokerError::Internal("specialists lock poisoned".into()))?
             .get(&request.tool_id)
             .cloned()
-            .ok_or_else(|| BrokerError::Internal(format!("no specialist for {}", request.tool_id)))?;
+            .ok_or_else(|| {
+                BrokerError::Internal(format!("no specialist for {}", request.tool_id))
+            })?;
         let (reply_tx, reply_rx) = oneshot::channel();
         tx.blocking_send((request, reply_tx))
             .map_err(|_| BrokerError::ChannelClosed("specialist channel".into()))?;
@@ -694,7 +766,10 @@ impl BrokerClient for LocalBroker {
     }
 
     fn get_clearance(&self, principal: &PrincipalId) -> Option<Clearance> {
-        self.core.lock().ok().and_then(|core| core.get_clearance(principal))
+        self.core
+            .lock()
+            .ok()
+            .and_then(|core| core.get_clearance(principal))
     }
 
     fn capability_tokens(&self, principal: &PrincipalId) -> Vec<CapabilityToken> {
@@ -769,7 +844,7 @@ pub fn build_request(
 mod tests {
     use super::*;
     use crate::capability::ToolDefinition;
-    use crate::protocol::{ToolParameters};
+    use crate::protocol::{ApprovalScope, ToolParameters};
 
     fn wifi_token(principal: &PrincipalId) -> CapabilityToken {
         CapabilityToken {
@@ -875,6 +950,11 @@ mod tests {
             broker.evaluate(&req),
             PolicyVerdict::Deny(DenyReason::MissingCapability)
         ));
+        assert_eq!(broker.audit_entries().len(), 1);
+        assert!(matches!(
+            broker.audit_entries()[0].decision,
+            PolicyVerdict::Deny(DenyReason::MissingCapability)
+        ));
     }
 
     #[test]
@@ -959,6 +1039,226 @@ mod tests {
             broker.evaluate(&req),
             PolicyVerdict::Deny(DenyReason::GuardianBlocked(_))
         ));
+    }
+
+    #[test]
+    fn approval_is_required_and_plan_hash_is_bound() {
+        let (mut broker, principal, token) = basic_broker();
+        let resource = ResourceId("device:wifi0".into());
+        let capability = Capability {
+            resource: resource.clone(),
+            operation: Operation::KernelModule,
+        };
+        broker.register_tool(ToolDefinition {
+            tool_id: "wifi.load_module".into(),
+            specialist_package: "wifi.specialist".into(),
+            risk_level: RiskLevel::Critical,
+            required_capabilities: vec![capability.clone()],
+            description: "load a tested kernel module".into(),
+        });
+        let mut guardian = Guardian::new();
+        guardian.mark_driver_tested("iwlwifi-next");
+        broker.set_guardian(guardian);
+        let critical_token = CapabilityToken {
+            capability,
+            clearance: Clearance(RiskLevel::Critical),
+            ..token
+        };
+        broker.register_principal(
+            principal.clone(),
+            vec![critical_token.capability.clone()],
+            Clearance(RiskLevel::Critical),
+        );
+        let mut guardian = Guardian::new();
+        guardian.mark_driver_tested("iwlwifi-next");
+        broker.set_guardian(guardian);
+        let action_id = uuid::Uuid::new_v4();
+        let mut request = request_for(
+            &principal,
+            &critical_token,
+            Operation::KernelModule,
+            "wifi.load_module",
+            ToolParameters::KernelModule {
+                action: "load".into(),
+                module: "iwlwifi-next".into(),
+            },
+            41,
+        );
+        request.action_id = Some(action_id);
+        request.plan_hash = Some([2; 32]);
+        assert_eq!(
+            broker.evaluate(&request),
+            PolicyVerdict::Deny(DenyReason::NoUserApproval)
+        );
+
+        broker.add_approval(Approval {
+            envelope: MessageEnvelope::new(
+                MessageType::Approval,
+                PrincipalId::user(),
+                request.envelope.correlation_id,
+                DataClassification::Protected,
+            ),
+            approval_id: uuid::Uuid::new_v4(),
+            plan_id: uuid::Uuid::new_v4(),
+            plan_hash: [1; 32],
+            approved_by: PrincipalId::user(),
+            granted_at: 1000,
+            expires_at: 5000,
+            scope: ApprovalScope {
+                actions: vec![],
+                resources: vec![],
+                operations: vec![],
+            },
+        });
+        request.nonce = 42;
+        assert_eq!(
+            broker.evaluate(&request),
+            PolicyVerdict::Deny(DenyReason::PlanHashMismatch)
+        );
+        request.plan_hash = Some([1; 32]);
+        request.nonce = 43;
+        assert_eq!(
+            broker.evaluate(&request),
+            PolicyVerdict::Deny(DenyReason::ApprovalScopeExceeded)
+        );
+    }
+
+    fn approval_request_for(request: &ToolRequest) -> ApprovalRequest {
+        ApprovalRequest {
+            envelope: MessageEnvelope::new(
+                MessageType::ApprovalRequest,
+                PrincipalId::system("policy-broker"),
+                request.envelope.correlation_id,
+                DataClassification::Protected,
+            ),
+            plan_id: uuid::Uuid::new_v4(),
+            plan_hash: request.plan_hash.expect("test request has plan hash"),
+            plan_summary: "load tested Wi-Fi driver".into(),
+            affected_systems: vec![request.resource.clone()],
+            expected_risks: vec!["critical".into()],
+            rollback_state: None,
+            expires_at: 4000,
+        }
+    }
+
+    fn approval_scope_for(request: &ToolRequest) -> ApprovalScope {
+        ApprovalScope {
+            actions: vec![crate::protocol::ApprovedAction {
+                action_id: request.action_id.expect("test request has action id"),
+                resource: request.resource.clone(),
+                operation: request.operation,
+                tool_id: request.tool_id.clone(),
+            }],
+            resources: vec![request.resource.clone()],
+            operations: vec![request.operation],
+        }
+    }
+
+    #[test]
+    fn approval_channel_accepts_only_user_approval() {
+        let (mut broker, principal, token) = basic_broker();
+        let capability = Capability {
+            resource: ResourceId("device:wifi0".into()),
+            operation: Operation::KernelModule,
+        };
+        broker.register_tool(ToolDefinition {
+            tool_id: "wifi.load_module".into(),
+            specialist_package: "wifi.specialist".into(),
+            risk_level: RiskLevel::Critical,
+            required_capabilities: vec![capability.clone()],
+            description: "load a tested kernel module".into(),
+        });
+        let critical_token = CapabilityToken {
+            capability,
+            clearance: Clearance(RiskLevel::Critical),
+            ..token
+        };
+        broker.register_principal(
+            principal.clone(),
+            vec![critical_token.capability.clone()],
+            Clearance(RiskLevel::Critical),
+        );
+        let mut request = request_for(
+            &principal,
+            &critical_token,
+            Operation::KernelModule,
+            "wifi.load_module",
+            ToolParameters::KernelModule {
+                action: "load".into(),
+                module: "iwlwifi-next".into(),
+            },
+            100,
+        );
+        request.action_id = Some(uuid::Uuid::new_v4());
+        request.plan_hash = Some([9; 32]);
+        let approval_request = approval_request_for(&request);
+        let request_id = approval_request.envelope.message_id;
+        let scope = approval_scope_for(&request);
+        broker
+            .issue_approval_request(approval_request.clone(), scope.clone())
+            .expect("future approval request is accepted");
+
+        let mut specialist_response = UserResponse {
+            envelope: MessageEnvelope::new(
+                MessageType::UserResponse,
+                PrincipalId::agent("planner", "p1"),
+                request.envelope.correlation_id,
+                DataClassification::Protected,
+            ),
+            approval_request_id: request_id,
+            decision: UserDecision::Approved,
+        };
+        assert_eq!(
+            broker.submit_user_response(specialist_response.clone()),
+            Err(DenyReason::UnknownPrincipal)
+        );
+        specialist_response.envelope.origin = PrincipalId::user();
+        assert_eq!(broker.submit_user_response(specialist_response), Ok(()));
+        let mut guardian = Guardian::new();
+        guardian.mark_driver_tested("iwlwifi-next");
+        broker.set_guardian(guardian);
+        assert_eq!(broker.evaluate(&request), PolicyVerdict::Allow);
+    }
+
+    #[test]
+    fn approval_channel_rejection_and_expiry_are_fail_closed() {
+        let (mut broker, principal, token) = basic_broker();
+        let mut request = request_for(
+            &principal,
+            &token,
+            Operation::Observe,
+            "wifi.observe_device",
+            ToolParameters::Observe { fields: vec![] },
+            101,
+        );
+        request.action_id = Some(uuid::Uuid::new_v4());
+        request.plan_hash = Some([8; 32]);
+        let mut approval_request = approval_request_for(&request);
+        approval_request.expires_at = 3000;
+        let request_id = broker
+            .issue_approval_request(approval_request, approval_scope_for(&request))
+            .expect("request is valid at the broker clock");
+        let response = UserResponse {
+            envelope: MessageEnvelope::new(
+                MessageType::UserResponse,
+                PrincipalId::user(),
+                request.envelope.correlation_id,
+                DataClassification::Protected,
+            ),
+            approval_request_id: request_id,
+            decision: UserDecision::Rejected("not now".into()),
+        };
+        assert_eq!(
+            broker.submit_user_response(response),
+            Err(DenyReason::NoUserApproval)
+        );
+
+        let mut expired = approval_request_for(&request);
+        expired.expires_at = 1999;
+        assert_eq!(
+            broker.issue_approval_request(expired, approval_scope_for(&request)),
+            Err(DenyReason::NoUserApproval)
+        );
     }
 
     #[test]
@@ -1099,7 +1399,9 @@ mod tests {
         );
         assert!(result.is_err());
         assert!(matches!(
-            broker.resource_states.get(&ResourceId("device:wifi0".into())),
+            broker
+                .resource_states
+                .get(&ResourceId("device:wifi0".into())),
             Some(ResourceState::Available)
         ));
     }
@@ -1141,6 +1443,111 @@ mod tests {
             broker.evaluate(&req),
             PolicyVerdict::Deny(DenyReason::AuditLogFailure)
         ));
+    }
+
+    fn staged_broker() -> (Broker, PrincipalId, CapabilityToken, tempfile::TempDir) {
+        staged_broker_with_health(true)
+    }
+
+    fn staged_broker_with_health(
+        health_ok: bool,
+    ) -> (Broker, PrincipalId, CapabilityToken, tempfile::TempDir) {
+        let broker = Broker::new();
+        let principal = PrincipalId::agent("wifi.specialist", "wifi0-instance-001");
+        let capability = Capability {
+            resource: ResourceId("device:wifi0".into()),
+            operation: Operation::Stage,
+        };
+        let token = CapabilityToken {
+            principal: principal.clone(),
+            capability: capability.clone(),
+            clearance: Clearance(RiskLevel::Staged),
+            granted_at: crate::protocol::now(),
+            expires_at: crate::protocol::now() + 10_000,
+            provenance: Provenance {
+                granted_by: PrincipalId::system("policy-broker"),
+                package_id: "wifi.specialist".into(),
+                package_version: 1,
+                signature_verified: true,
+            },
+        };
+        broker.register_tool(ToolDefinition {
+            tool_id: "wifi.stage_driver".into(),
+            specialist_package: "wifi.specialist".into(),
+            risk_level: RiskLevel::Staged,
+            required_capabilities: vec![capability],
+            description: "stage a Wi-Fi driver".into(),
+        });
+        broker.register_principal(
+            principal.clone(),
+            vec![token.capability.clone()],
+            Clearance(RiskLevel::Staged),
+        );
+        broker.set_resource_state(ResourceId("device:wifi0".into()), ResourceState::Available);
+        broker.set_resource_owner(ResourceId("device:wifi0".into()), principal.clone());
+        broker.set_guardian(Guardian::new());
+        let dir = tempfile::tempdir().expect("action store directory");
+        let store = crate::action::FileActionStore::new(dir.path()).expect("action store");
+        let driver = crate::mocks::MockWifiDriver::new();
+        driver
+            .health_ok
+            .store(health_ok, std::sync::atomic::Ordering::Relaxed);
+        broker.set_executor(crate::executor::StagedExecutor::new(
+            Box::new(store),
+            Box::new(driver),
+        ));
+        (broker, principal, token, dir)
+    }
+
+    #[test]
+    fn broker_executes_staged_request_and_commits() {
+        let (broker, principal, token, _dir) = staged_broker();
+        let request = request_for(
+            &principal,
+            &token,
+            Operation::Stage,
+            "wifi.stage_driver",
+            ToolParameters::Stage {
+                change: serde_json::json!({"module": "iwlwifi-next"}),
+            },
+            500,
+        );
+        let result = broker
+            .client(principal)
+            .request_tool(request)
+            .expect("broker response");
+        assert_eq!(result.status, ToolStatus::Success);
+        assert!(matches!(
+            result.data,
+            Some(crate::protocol::ToolData::CommitResult {
+                committed: true,
+                health_verified: true
+            })
+        ));
+    }
+
+    #[test]
+    fn broker_rolls_back_staged_request_when_health_fails() {
+        let (broker, principal, token, _dir) = staged_broker_with_health(false);
+        let request = request_for(
+            &principal,
+            &token,
+            Operation::Stage,
+            "wifi.stage_driver",
+            ToolParameters::Stage {
+                change: serde_json::json!({"module": "iwlwifi-next"}),
+            },
+            501,
+        );
+        let result = broker
+            .client(principal)
+            .request_tool(request)
+            .expect("broker response");
+        assert_eq!(result.status, ToolStatus::RolledBack);
+        assert_eq!(
+            result.error.expect("rollback explains health failure").code,
+            ToolErrorCode::HealthCheckFailed
+        );
     }
 
     #[test]

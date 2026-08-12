@@ -1,18 +1,30 @@
 use crate::audit::{AuditLog, audit_log_path};
+use crate::broker::{Broker, BrokerClient};
+use crate::capability::{
+    Capability, Clearance, Operation, PrincipalId, ResourceId, ResourceState, ToolDefinition,
+};
 use crate::config::{AiosConfig, ConfigError, ModelConfig, ProviderConfig};
 use crate::graph::{NodeType, SystemGraph};
 use crate::http::HttpBackend;
 use crate::local::LocalLlama;
 use crate::model::{
-    AgentRole, ConnectivityState, ConnectivityProbe, ModelEntry, ModelGateway, ModelId,
+    AgentRole, ConnectivityProbe, ConnectivityState, ModelEntry, ModelGateway, ModelId,
     ModelMessage, ModelRegistry, ModelRole, ModelTask, ProviderId, RoutingDecision, RoutingError,
 };
-use crate::planner::{AgentError, Planner};
+use crate::planner::{
+    AgentError, Planner, ToolCallRequest, parse_tool_calls, strip_tool_calls_json,
+};
 use crate::protocol::{DataClassification, HealthState, now};
-use crate::tools::{ToolError, ToolRegistry, tools_context};
+use crate::tools::{ToolError, ToolRegistry, model_tool_instructions, tools_context};
 use crate::verifier::Verifier;
+use crate::wifi::WifiSpecialist;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::{
+    Arc, RwLock,
+    atomic::{AtomicU64, Ordering},
+};
+
+static NEXT_TOOL_NONCE: AtomicU64 = AtomicU64::new(1);
 
 pub struct Coordinator {
     pub config: AiosConfig,
@@ -25,9 +37,11 @@ pub struct Coordinator {
     pub verifier: Verifier,
     pub audit: Arc<AuditLog>,
     pub tools: ToolRegistry,
+    pub broker: Broker,
     pub shell_max_tokens: u32,
     last_scan_summary: RwLock<Option<String>>,
     local_model_path: Option<PathBuf>,
+    wifi_specialist: Option<WifiSpecialist>,
 }
 
 impl Coordinator {
@@ -37,7 +51,10 @@ impl Coordinator {
     }
 
     pub fn boot_with(config: AiosConfig) -> Result<Self, BootError> {
-        Self::boot_with_probe(config, Box::new(crate::model::LinuxConnectivityProbe::default()))
+        Self::boot_with_probe(
+            config,
+            Box::new(crate::model::LinuxConnectivityProbe::default()),
+        )
     }
 
     pub fn boot_with_probe(
@@ -54,7 +71,10 @@ impl Coordinator {
             let tier = provider.tier().map_err(BootError::Config)?;
             let capabilities = provider.capabilities().map_err(BootError::Config)?;
             let provider_id = ProviderId::new(&provider.id);
-            let model_name = provider.model.clone().unwrap_or_else(|| provider.id.clone());
+            let model_name = provider
+                .model
+                .clone()
+                .unwrap_or_else(|| provider.id.clone());
             let model_id = ModelId::new(&model_name);
 
             match provider.kind.as_str() {
@@ -62,8 +82,7 @@ impl Coordinator {
                     let path = resolve_local_model_path(provider, &config, &config_dir);
                     match path {
                         Some(path) => {
-                            let (n_ctx, n_threads) =
-                                model_params(config.model.as_ref());
+                            let (n_ctx, n_threads) = model_params(config.model.as_ref());
                             let llama = LocalLlama::load(
                                 provider_id.clone(),
                                 model_id.clone(),
@@ -106,10 +125,9 @@ impl Coordinator {
                     }
                 }
                 "openai-compatible" => {
-                    let endpoint = provider
-                        .endpoint
-                        .clone()
-                        .ok_or_else(|| BootError::MissingField("endpoint".into(), provider.id.clone()))?;
+                    let endpoint = provider.endpoint.clone().ok_or_else(|| {
+                        BootError::MissingField("endpoint".into(), provider.id.clone())
+                    })?;
                     let api_key = provider.effective_api_key().map_err(BootError::Config)?;
                     let backend = HttpBackend::new(
                         provider_id.clone(),
@@ -133,11 +151,7 @@ impl Coordinator {
             }
         }
 
-        let max_tokens = config
-            .model
-            .as_ref()
-            .map(|m| m.max_tokens)
-            .unwrap_or(1024);
+        let max_tokens = config.model.as_ref().map(|m| m.max_tokens).unwrap_or(1024);
         let shell_max_tokens = config
             .shell
             .as_ref()
@@ -146,7 +160,7 @@ impl Coordinator {
 
         let audit_path = audit_log_path(&config_dir);
 
-        let coordinator = Self {
+        let mut coordinator = Self {
             config_dir,
             registry,
             gateway: gateway.clone(),
@@ -156,13 +170,60 @@ impl Coordinator {
             verifier: Verifier::new(gateway.clone(), shell_max_tokens),
             audit: Arc::new(AuditLog::new(Some(audit_path))),
             tools: ToolRegistry::new(),
+            broker: Broker::new(),
             config,
             shell_max_tokens,
             last_scan_summary: RwLock::new(None),
             local_model_path,
+            wifi_specialist: None,
         };
+        coordinator.configure_read_only_broker();
         coordinator.refresh_connectivity();
-        coordinator.audit.record("coordinator", "boot", "system", "ok");
+        // Running Aios is consent to inspect this machine for the session.
+        // Provider-level consent still remains explicit for other data classes,
+        // and the user can revoke this session's machine-state sharing.
+        for provider in &coordinator.config.provider {
+            let _ = coordinator
+                .gateway
+                .router()
+                .grant_consent(crate::model::ConsentRecord::new(
+                    ProviderId::new(&provider.id),
+                    vec![DataClassification::SystemConfig],
+                ));
+        }
+        // Discovery is part of boot so the first model request has machine
+        // state available. A discovery failure is retained as context below.
+        let scan_result = coordinator.scan();
+        if scan_result.starts_with("scan failed:") {
+            return Err(BootError::Discovery(scan_result));
+        }
+        let wifi_specialist = {
+            let mut graph = coordinator.graph.write().expect("graph lock");
+            match WifiSpecialist::instantiate(&mut graph) {
+                Ok(specialist) => Some(specialist),
+                Err(crate::wifi::WifiError::NoWirelessDevice) => None,
+                Err(error) => return Err(BootError::Discovery(error.to_string())),
+            }
+        };
+        coordinator.wifi_specialist = wifi_specialist;
+        if let Some(specialist) = coordinator.wifi_specialist.as_ref() {
+            let definitions = specialist.tool_definitions();
+            let principal =
+                PrincipalId::agent(crate::wifi::PACKAGE_ID, specialist.specialist.0.clone());
+            let capabilities = definitions
+                .iter()
+                .flat_map(|definition| definition.required_capabilities.clone())
+                .collect();
+            for definition in definitions {
+                coordinator.broker.register_tool(definition);
+            }
+            coordinator
+                .broker
+                .register_principal(principal, capabilities, Clearance::max());
+        }
+        coordinator
+            .audit
+            .record("coordinator", "boot", "system", "ok");
         Ok(coordinator)
     }
 
@@ -177,7 +238,16 @@ impl Coordinator {
     }
 
     pub fn provider_entries(&self) -> Vec<crate::model::ModelEntry> {
-        self.registry.read().expect("registry lock").iter().cloned().collect()
+        self.registry
+            .read()
+            .expect("registry lock")
+            .iter()
+            .cloned()
+            .collect()
+    }
+
+    pub fn wifi_specialist(&self) -> Option<&WifiSpecialist> {
+        self.wifi_specialist.as_ref()
     }
 
     pub fn current_route(&self) -> Result<RoutingDecision, RoutingError> {
@@ -189,44 +259,237 @@ impl Coordinator {
         let result = self.planner.explain(text, self.local_context());
         match &result {
             Ok(_) => self.audit.record("user", "chat", text, "ok"),
-            Err(e) => self.audit.record("user", "chat", text, &format!("error: {e}")),
+            Err(e) => self
+                .audit
+                .record("user", "chat", text, &format!("error: {e}")),
         }
         result
+    }
+
+    pub fn chat_with_tools(&self, messages: Vec<ModelMessage>) -> Result<String, AgentError> {
+        const MAX_TOOL_TURNS: usize = 4;
+        let mut messages = messages;
+        if let Some(system) = messages
+            .first_mut()
+            .filter(|message| message.role == ModelRole::System)
+        {
+            system.content.push('\n');
+            system.content.push_str(model_tool_instructions());
+        }
+        if let Some(context) = self.local_context() {
+            let system = messages
+                .first_mut()
+                .ok_or_else(|| AgentError::Format("tool chat requires a system message".into()))?;
+            if system.role != ModelRole::System {
+                return Err(AgentError::Format(
+                    "tool chat requires the first message to be system role".into(),
+                ));
+            }
+            system.content.push_str("\n\nCurrent local system state:\n");
+            system.content.push_str(&context);
+        }
+        let mut answer = self.planner.chat_with(messages.clone(), None)?;
+        let mut used_tool = false;
+
+        for turn in 0..MAX_TOOL_TURNS {
+            let calls = parse_tool_calls(&answer);
+            if calls.is_empty() {
+                if !used_tool {
+                    return Err(AgentError::Format(
+                        "planner produced no executable tool call; refusing ungrounded answer"
+                            .into(),
+                    ));
+                }
+                return Ok(strip_tool_calls_json(&answer).trim().to_string());
+            }
+
+            used_tool = true;
+            messages.push(ModelMessage::new(ModelRole::Assistant, &answer));
+            for call in calls {
+                let result = self.run_tool_as("planner", &call);
+                let content = match result {
+                    Ok(result) => format!("tool {} result:\n{}", result.tool, result.text),
+                    Err(error) => format!("tool {} error: {}", call.name, error),
+                };
+                messages.push(ModelMessage::new(ModelRole::User, content));
+            }
+            if turn + 1 == MAX_TOOL_TURNS {
+                self.audit
+                    .record("planner", "tool_loop", "chat", "turn cap reached");
+                return Err(AgentError::Format(
+                    "tool-call turn cap reached before a grounded answer".into(),
+                ));
+            }
+            answer = self.planner.chat_with(messages.clone(), None)?;
+        }
+
+        Ok(strip_tool_calls_json(&answer).trim().to_string())
     }
 
     pub fn local_context(&self) -> Option<String> {
         let summary = self.last_scan_summary.read().expect("scan lock").clone();
-        if summary.is_none() {
+        let summary = summary?;
+        let task = ModelTask::new(
+            AgentRole::SpecialistReadOnly,
+            DataClassification::SystemConfig,
+        );
+        if self.gateway.router().route(&task, &[]).is_err() {
             return None;
         }
-        match self.current_route() {
-            Ok(route) if route.provider == ProviderId::local() => {
-                let mut context = summary.unwrap_or_default();
-                let graph = self.graph.read().expect("graph lock");
-                let tools = tools_context(&graph);
-                if !tools.is_empty() {
-                    context.push('\n');
-                    context.push_str(&tools);
-                }
-                Some(context)
-            }
-            _ => None,
+        let mut context = summary;
+        let graph = self.graph.read().expect("graph lock");
+        let tools = tools_context(&graph);
+        if !tools.is_empty() {
+            context.push('\n');
+            context.push_str(&tools);
         }
+        Some(context)
     }
 
     pub fn run_tool(&self, name: &str, args: &str) -> Result<crate::tools::ToolResult, ToolError> {
-        let graph = self.graph.read().expect("graph lock");
-        let result = self.tools.run(&graph, name, args);
+        let call = ToolCallRequest {
+            name: name.to_string(),
+            arguments: args.to_string(),
+        };
+        self.run_tool_as("user", &call)
+    }
+
+    fn run_tool_as(
+        &self,
+        actor: &str,
+        call: &ToolCallRequest,
+    ) -> Result<crate::tools::ToolResult, ToolError> {
+        let operation =
+            operation_for_tool(&call.name).ok_or_else(|| ToolError::Unknown(call.name.clone()))?;
+        let principal = PrincipalId::agent("aios.planner", "session");
+        let client = self.broker.client(principal.clone());
+        let token = client
+            .capability_tokens(&principal)
+            .into_iter()
+            .find(|token| token.capability.operation == operation)
+            .ok_or_else(|| ToolError::Permission(format!("no token for {operation:?}")))?;
+        let parameters = tool_parameters(operation, &call.arguments);
+        let mut request = crate::protocol::ToolRequest::new(
+            principal,
+            ResourceId("system:graph".into()),
+            operation,
+            call.name.clone(),
+            token,
+            parameters,
+            uuid::Uuid::new_v4(),
+            DataClassification::SystemConfig,
+            30,
+        );
+        request.nonce = NEXT_TOOL_NONCE.fetch_add(1, Ordering::Relaxed);
+        let protocol_result = client
+            .request_tool(request)
+            .map_err(|e| ToolError::Permission(e.to_string()))?;
+        let result = protocol_tool_result(&call.name, protocol_result);
         match &result {
             Ok(tool_result) => self.audit.record(
-                "user",
+                actor,
                 "tool",
-                &format!("{name} {args}"),
+                &format!("{} {}", call.name, call.arguments),
                 &format!("ok ({} chars)", tool_result.text.len()),
             ),
-            Err(e) => self.audit.record("user", "tool", &format!("{name} {args}"), &format!("error: {e}")),
+            Err(e) => self.audit.record(
+                actor,
+                "tool",
+                &format!("{} {}", call.name, call.arguments),
+                &format!("error: {e}"),
+            ),
         }
         result
+    }
+
+    fn configure_read_only_broker(&mut self) {
+        let principal = PrincipalId::agent("aios.planner", "session");
+        let resource = ResourceId("system:graph".into());
+        self.broker
+            .set_resource_state(resource.clone(), ResourceState::Available);
+        self.broker
+            .set_resource_owner(resource.clone(), PrincipalId::system("discovery"));
+        let operations = [
+            (
+                "observe",
+                Operation::Observe,
+                "observe discovered system state",
+            ),
+            (
+                "diagnose",
+                Operation::Diagnose,
+                "diagnose discovered system state",
+            ),
+            ("query", Operation::Query, "query discovered system state"),
+            ("deps", Operation::Query, "query dependencies"),
+            ("impact", Operation::Query, "query impact relationships"),
+            ("health", Operation::Query, "query graph health"),
+        ];
+        for (tool, operation, description) in operations {
+            self.broker.register_tool(ToolDefinition {
+                tool_id: tool.to_string(),
+                specialist_package: "aios.discovery.read-only".into(),
+                risk_level: operation.default_risk_level(),
+                required_capabilities: vec![Capability {
+                    resource: resource.clone(),
+                    operation,
+                }],
+                description: description.into(),
+            });
+            self.broker.spawn_specialist(tool, {
+                let graph = self.graph.clone();
+                let tool = tool.to_string();
+                std::sync::Arc::new(move |request| {
+                    let args = tool_arguments(&request.parameters);
+                    let graph = graph.read().expect("graph lock");
+                    match ToolRegistry::new().run(&graph, &tool, &args) {
+                        Ok(value) => crate::protocol::ToolResult {
+                            envelope: crate::protocol::MessageEnvelope::new(
+                                crate::protocol::MessageType::ToolResult,
+                                PrincipalId::system("discovery"),
+                                request.envelope.correlation_id,
+                                request.envelope.data_classification,
+                            ),
+                            request_id: request.request_id,
+                            status: crate::protocol::ToolStatus::Success,
+                            data: Some(crate::protocol::ToolData::QueryResult {
+                                data: serde_json::json!({"text": value.text}),
+                            }),
+                            error: None,
+                            health_impact: None,
+                        },
+                        Err(error) => crate::protocol::ToolResult {
+                            envelope: crate::protocol::MessageEnvelope::new(
+                                crate::protocol::MessageType::ToolResult,
+                                PrincipalId::system("discovery"),
+                                request.envelope.correlation_id,
+                                request.envelope.data_classification,
+                            ),
+                            request_id: request.request_id,
+                            status: crate::protocol::ToolStatus::Failed,
+                            data: None,
+                            error: Some(crate::protocol::ToolError {
+                                code: crate::protocol::ToolErrorCode::Internal,
+                                message: error.to_string(),
+                                recoverable: false,
+                            }),
+                            health_impact: None,
+                        },
+                    }
+                })
+            });
+        }
+        self.broker.register_principal(
+            principal,
+            operations
+                .into_iter()
+                .map(|(_, operation, _)| Capability {
+                    resource: resource.clone(),
+                    operation,
+                })
+                .collect(),
+            Clearance::max(),
+        );
     }
 
     pub fn tools_help(&self) -> String {
@@ -239,6 +502,15 @@ impl Coordinator {
     ) -> Result<(crate::planner::GeneratedPlan, crate::verifier::ReviewResult), AgentError> {
         let result = (|| {
             let plan = self.planner.plan(intent)?;
+            for (index, step) in plan.steps.iter().enumerate() {
+                if step.risk != "read-only" {
+                    return Err(AgentError::Format(format!(
+                        "M4 only permits read-only plan steps; step {} has risk {}",
+                        index + 1,
+                        step.risk
+                    )));
+                }
+            }
             let review = self.verifier.review(&plan)?;
             Ok((plan, review))
         })();
@@ -249,7 +521,9 @@ impl Coordinator {
                 intent,
                 &format!("ok ({} steps, {:?})", plan.steps.len(), review.verdict),
             ),
-            Err(e) => self.audit.record("user", "plan", intent, &format!("error: {e}")),
+            Err(e) => self
+                .audit
+                .record("user", "plan", intent, &format!("error: {e}")),
         }
         result
     }
@@ -263,37 +537,63 @@ impl Coordinator {
             .grant_consent(record)
             .map_err(|e| e.to_string());
         match &result {
-            Ok(()) => self.audit.record("user", "consent", &format!("{provider} {class:?}"), "granted"),
-            Err(e) => self.audit.record("user", "consent", &format!("{provider} {class:?}"), &format!("error: {e}")),
+            Ok(()) => self.audit.record(
+                "user",
+                "consent",
+                &format!("{provider} {class:?}"),
+                "granted",
+            ),
+            Err(e) => self.audit.record(
+                "user",
+                "consent",
+                &format!("{provider} {class:?}"),
+                &format!("error: {e}"),
+            ),
         }
         result
     }
 
     pub fn revoke_consent(&self, provider: &str) {
-        self.gateway.router().revoke_consent(&ProviderId::new(provider));
+        self.gateway
+            .router()
+            .revoke_consent(&ProviderId::new(provider));
         self.audit.record("user", "consent", provider, "revoked");
     }
 
     pub fn consent_for(&self, provider: &str) -> Option<crate::model::ConsentRecord> {
-        self.gateway.router().consent_for(&ProviderId::new(provider))
+        self.gateway
+            .router()
+            .consent_for(&ProviderId::new(provider))
     }
 
     pub fn scan(&self) -> String {
-        let mut graph = crate::discovery::SysfsDiscovery::new().scan().map_err(|e| e.to_string());
+        let mut graph = crate::discovery::SysfsDiscovery::new()
+            .scan()
+            .map_err(|e| e.to_string());
         let summary = match graph {
             Ok(ref mut graph) => {
-                let _ = crate::discovery::ServiceDiscovery::new()
-                    .populate(graph, now())
-                    .map_err(|e| e.to_string());
+                if let Err(error) = crate::discovery::ServiceDiscovery::new().populate(graph, now())
+                {
+                    return format!("scan failed: {error}");
+                }
                 *self.graph.write().expect("graph lock") = graph.clone();
                 let text = scan_summary(graph);
-                self.last_scan_summary.write().expect("scan lock").replace(text.clone());
+                self.last_scan_summary
+                    .write()
+                    .expect("scan lock")
+                    .replace(text.clone());
                 self.audit.record("facade", "scan", "system", "ok");
                 text
             }
             Err(e) => {
-                self.audit.record("facade", "scan", "system", &format!("error: {e}"));
-                format!("scan failed: {e}")
+                self.audit
+                    .record("facade", "scan", "system", &format!("error: {e}"));
+                let text = format!("scan failed: {e}");
+                self.last_scan_summary
+                    .write()
+                    .expect("scan lock")
+                    .replace(text.clone());
+                text
             }
         };
         summary
@@ -302,6 +602,30 @@ impl Coordinator {
     pub fn graph_summary(&self) -> String {
         let graph = self.graph.read().expect("graph lock");
         scan_summary(&graph)
+    }
+
+    pub fn state_panel(&self) -> String {
+        let graph = self.graph.read().expect("graph lock");
+        let mut counts = std::collections::BTreeMap::new();
+        for node in graph.nodes().values() {
+            *counts.entry(format!("{:?}", node.health)).or_insert(0usize) += 1;
+        }
+        let route = self
+            .current_route()
+            .map(|route| format!("{} / {:?}", route.provider, route.model))
+            .unwrap_or_else(|error| format!("UNAVAILABLE ({error})"));
+        let mut lines = vec![
+            "system state".to_string(),
+            format!("connectivity: {:?}", self.connectivity()),
+            format!("route: {route}"),
+            format!("graph: {} nodes", graph.nodes().len()),
+            "health:".to_string(),
+        ];
+        for (state, count) in counts {
+            lines.push(format!("  {state}: {count}"));
+        }
+        lines.push(format!("audit entries: {}", self.audit.entries().len()));
+        lines.join("\n")
     }
 
     pub fn local_model_path(&self) -> Option<&PathBuf> {
@@ -318,6 +642,70 @@ fn scan_summary(graph: &SystemGraph) -> String {
     format!(
         "scanned: {total} nodes ({devices} devices, {services} services, {sensors} sensors, {cpus} cpus)"
     )
+}
+
+fn operation_for_tool(name: &str) -> Option<Operation> {
+    match name {
+        "observe" => Some(Operation::Observe),
+        "diagnose" => Some(Operation::Diagnose),
+        "query" | "deps" | "impact" | "health" => Some(Operation::Query),
+        _ => None,
+    }
+}
+
+fn tool_parameters(operation: Operation, args: &str) -> crate::protocol::ToolParameters {
+    match operation {
+        Operation::Observe => crate::protocol::ToolParameters::Observe {
+            fields: vec![args.into()],
+        },
+        Operation::Diagnose => crate::protocol::ToolParameters::Diagnose {
+            symptom: args.into(),
+        },
+        Operation::Query => crate::protocol::ToolParameters::Query { query: args.into() },
+        _ => unreachable!("read-only operation mapping is exhaustive"),
+    }
+}
+
+fn tool_arguments(parameters: &crate::protocol::ToolParameters) -> String {
+    match parameters {
+        crate::protocol::ToolParameters::Observe { fields } => fields.join(" "),
+        crate::protocol::ToolParameters::Diagnose { symptom } => symptom.clone(),
+        crate::protocol::ToolParameters::Query { query } => query.clone(),
+        _ => panic!("read-only specialist received a mutating parameter"),
+    }
+}
+
+fn protocol_tool_result(
+    name: &str,
+    result: crate::protocol::ToolResult,
+) -> Result<crate::tools::ToolResult, ToolError> {
+    if result.status != crate::protocol::ToolStatus::Success {
+        let message = result
+            .error
+            .map(|e| e.message)
+            .unwrap_or_else(|| "broker denied tool".into());
+        let message = message.strip_prefix("denied: ").unwrap_or(&message);
+        if let Some(target) = message.strip_prefix("nothing matches: ") {
+            return Err(ToolError::NotFound(target.into()));
+        }
+        return Err(ToolError::Permission(message.into()));
+    }
+    let text = match result.data {
+        Some(crate::protocol::ToolData::QueryResult { data }) => data
+            .get("text")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| ToolError::Usage(format!("tool {name} returned malformed data")))?
+            .to_string(),
+        _ => {
+            return Err(ToolError::Usage(format!(
+                "tool {name} returned no result data"
+            )));
+        }
+    };
+    Ok(crate::tools::ToolResult {
+        tool: Box::leak(name.to_string().into_boxed_str()),
+        text,
+    })
 }
 
 fn model_params(config: Option<&ModelConfig>) -> (u32, i32) {
@@ -387,6 +775,7 @@ pub enum BootError {
     Local { path: String, reason: String },
     UnknownKind(String),
     MissingField(String, String),
+    Discovery(String),
 }
 
 impl std::fmt::Display for BootError {
@@ -399,8 +788,12 @@ impl std::fmt::Display for BootError {
             }
             BootError::UnknownKind(kind) => write!(f, "unknown provider kind: {kind}"),
             BootError::MissingField(field, provider) => {
-                write!(f, "provider '{provider}' is missing required field '{field}'")
+                write!(
+                    f,
+                    "provider '{provider}' is missing required field '{field}'"
+                )
             }
+            BootError::Discovery(reason) => write!(f, "discovery: {reason}"),
         }
     }
 }
@@ -416,7 +809,11 @@ pub fn status_text(coordinator: &Coordinator) -> String {
             "route (public): {} ({:?}){}",
             route.provider,
             route.model,
-            if route.reduced_confidence { " reduced-confidence" } else { "" }
+            if route.reduced_confidence {
+                " reduced-confidence"
+            } else {
+                ""
+            }
         )),
         Err(RoutingError::NoEligibleProvider) => {
             lines.push("route (public): no eligible provider".into())
@@ -488,10 +885,7 @@ pub fn classification_help() -> String {
         .into()
 }
 
-pub fn send_direct(
-    coordinator: &Coordinator,
-    text: &str,
-) -> Result<String, AgentError> {
+pub fn send_direct(coordinator: &Coordinator, text: &str) -> Result<String, AgentError> {
     let task = ModelTask::new(AgentRole::SpecialistReadOnly, DataClassification::Public);
     let request = crate::model::GenerationRequest {
         task_id: task.task_id,
@@ -544,15 +938,16 @@ mod tests {
     }
 
     fn stub_coordinator(port: u16) -> Coordinator {
-        Coordinator::boot_with_probe(stub_config(port), Box::new(FakeProbe(ConnectivityState::Internet)))
-            .expect("boot")
+        Coordinator::boot_with_probe(
+            stub_config(port),
+            Box::new(FakeProbe(ConnectivityState::Internet)),
+        )
+        .expect("boot")
     }
 
     fn handler(body: &str) -> String {
         if body.contains("steps: ") {
-            testutil::openai_response(
-                r#"{"verdict":"approve","concerns":[],"tests":["ping"]}"#,
-            )
+            testutil::openai_response(r#"{"verdict":"approve","concerns":[],"tests":["ping"]}"#)
         } else if body.contains("fix my wifi") {
             testutil::openai_response(
                 r#"{"intent":"fix my wifi","steps":[{"description":"check link","tool":"iw dev","resource":"wifi0","risk":"read-only"}]}"#,
@@ -583,6 +978,43 @@ mod tests {
     }
 
     #[test]
+    fn system_context_is_consent_gated() {
+        let port = testutil::spawn_json_server(handler);
+        let coordinator = stub_coordinator(port);
+        let context = coordinator.local_context().expect("implicit consent");
+        assert!(context.contains("scanned:"), "{context}");
+        assert!(context.contains("devices:"), "{context}");
+        coordinator.revoke_consent("stub");
+        assert!(coordinator.local_context().is_none());
+    }
+
+    #[test]
+    fn chat_tool_loop_executes_and_returns_final_answer() {
+        let port = testutil::spawn_json_server(|body| {
+            if body.contains("tool health result") {
+                testutil::openai_response("machine looks healthy")
+            } else {
+                testutil::openai_response(r#"{"tool_calls":[{"tool":"health","args":""}]}"#)
+            }
+        });
+        let coordinator = stub_coordinator(port);
+        let answer = coordinator
+            .chat_with_tools(vec![
+                ModelMessage::new(ModelRole::System, "You are Aios."),
+                ModelMessage::new(ModelRole::User, "check machine"),
+            ])
+            .expect("chat");
+        assert_eq!(answer, "machine looks healthy");
+        assert!(
+            coordinator
+                .audit
+                .filter("planner")
+                .iter()
+                .any(|entry| entry.action == "tool")
+        );
+    }
+
+    #[test]
     fn plan_and_review_roundtrip() {
         let port = testutil::spawn_json_server(handler);
         let coordinator = stub_coordinator(port);
@@ -590,6 +1022,24 @@ mod tests {
         assert_eq!(plan.steps.len(), 1);
         assert_eq!(plan.steps[0].risk, "read-only");
         assert_eq!(review.verdict, VerificationVerdict::Approve);
+    }
+
+    #[test]
+    fn mutating_plan_is_rejected_before_verifier_in_m4() {
+        let port = testutil::spawn_json_server(|body| {
+            if body.contains("mutate the wifi") {
+                testutil::openai_response(
+                    r#"{"intent":"mutate the wifi","steps":[{"description":"stage driver","tool":"stage_driver","resource":"wifi0","risk":"staged"}]}"#,
+                )
+            } else {
+                testutil::openai_response("unexpected")
+            }
+        });
+        let coordinator = stub_coordinator(port);
+        let error = coordinator
+            .plan_and_review("mutate the wifi")
+            .expect_err("M4 must reject mutating plans");
+        assert!(error.to_string().contains("only permits read-only"));
     }
 
     #[test]
@@ -676,10 +1126,9 @@ mod tests {
                 http_timeout_ms: 5000,
             }],
         };
-        assert!(Coordinator::boot_with_probe(
-            config,
-            Box::new(FakeProbe(ConnectivityState::Offline))
-        )
-        .is_err());
+        assert!(
+            Coordinator::boot_with_probe(config, Box::new(FakeProbe(ConnectivityState::Offline)))
+                .is_err()
+        );
     }
 }
