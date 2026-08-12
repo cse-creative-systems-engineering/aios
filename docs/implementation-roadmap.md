@@ -45,8 +45,8 @@ graph TD
     classDef current fill:#d4a017,color:#fff,stroke:#a07c10,stroke-width:2px
     classDef planned fill:#4a90d9,color:#fff,stroke:#2a6db0,stroke-width:2px
 
-    class M0 done
-    class M1,M2,M3,M4,M5,M6,M7,M8 planned
+    class M0,M1 done
+    class M2,M3,M4,M5,M6,M7,M8 planned
 ```
 
 ---
@@ -84,9 +84,18 @@ graph TD
 
 ## Milestone 1: In-Process Simulation
 
-**Status:** Not started  
+**Status:** ✅ Complete  
 **Estimated effort:** 3–4 weeks  
 **Dependencies:** M0 (complete)
+
+**Completion note (2026-08-11):** all deliverables are done. The mock
+Planner, mock Verification agent, and two mock specialists (Wi-Fi, storage)
+live in `aios::mocks`; the demo binary `src/main.rs` drives the full flow:
+observe → diagnose → query → verifier review → staged driver commit →
+rollback on failed health check → guardian block → approval-gated module
+load. 46 tests pass (broker 13, guardian 6, executor 4, action 5, protocol 5,
+capability 5, graph 8). Broker runtime methods use `expect()` on mutex locks —
+intentional fail-fast under ADR-0003, no silent fallbacks.
 
 ### Goal
 
@@ -96,32 +105,35 @@ other.
 
 ### Deliverables
 
-- [ ] `aios::protocol` — message types, envelope, serialization
-- [ ] `aios::capability` — principals, capabilities, clearance, tokens
-- [ ] `aios::broker` — Policy Broker with decision algorithm
-- [ ] `aios::guardian` — Infrastructure Guardian with invariant checks
-- [ ] `aios::executor` — Staged Transaction Executor with checkpoints and rollback
-- [ ] `aios::graph` — System Graph with node/edge types, query API
-- [ ] `aios::action` — Action state machine with persistence
-- [ ] Mock Planner agent (sends hardcoded action plans)
-- [ ] Mock Verification agent (approves or rejects plans)
-- [ ] 2 mock specialists (e.g., mock Wi-Fi, mock storage)
-- [ ] Test suite: protocol tests, capability tests, broker tests, Guardian tests, state machine tests, rollback tests
+- [x] `aios::protocol` — message types, envelope, serialization
+- [x] `aios::capability` — principals, capabilities, clearance, tokens
+- [x] `aios::broker` — Policy Broker with decision algorithm
+- [x] `aios::guardian` — Infrastructure Guardian with invariant checks
+- [x] `aios::executor` — Staged Transaction Executor with checkpoints and rollback
+- [x] `aios::graph` — System Graph with node/edge types, query API
+- [x] `aios::action` — Action state machine with persistence
+- [x] Mock Planner agent (sends hardcoded action plans)
+- [x] Mock Verification agent (approves or rejects plans)
+- [x] 2 mock specialists (e.g., mock Wi-Fi, mock storage)
+- [x] Test suite: protocol, capability, broker, Guardian, state machine,
+      rollback, and graph tests written and passing
+- [x] Executable entry point (`src/main.rs`) tying the agents to the broker
 
 ### Acceptance criteria
 
-1. A `ToolRequest` flows from mock Planner → broker → mock specialist →
+1. [x] A `ToolRequest` flows from mock Planner → broker → mock specialist →
    `ToolResult` returns to Planner.
-2. A request without a valid capability is denied by the broker.
-3. A request with insufficient clearance is denied by the broker.
-4. The Guardian blocks a critical action (risk level 3) without user approval.
-5. A staged action creates a checkpoint, stages a change, and rolls back when
+2. [x] A request without a valid capability is denied by the broker.
+3. [x] A request with insufficient clearance is denied by the broker.
+4. [x] The Guardian blocks a critical action (risk level 3) without user approval.
+5. [x] A staged action creates a checkpoint, stages a change, and rolls back when
    health check fails.
-6. The action state machine persists state and recovers after a simulated
+6. [x] The action state machine persists state and recovers after a simulated
    crash (process restart).
-7. The System Graph correctly represents mock devices, agents, and edges.
-8. All tests pass. No `unwrap()` in production code paths — errors are
-   handled explicitly.
+7. [x] The System Graph correctly represents mock devices, agents, and edges.
+8. [x] All tests pass. No `unwrap()` in production code paths — errors are
+   handled explicitly. *(lock `expect()`s remain as intentional fail-fast per
+   ADR-0003)*
 
 ### What this milestone does NOT include
 
@@ -130,6 +142,32 @@ other.
 - Real Linux API calls
 - User interface
 - Network communication
+
+### Carried forward from M1
+
+These items were deliberately left loose in the simulation and need a decision
+before they become real:
+
+- **Graph single-owner rule is not enforced.** `system-graph.md` 2.3 says a
+  resource has exactly one `owns` edge, but the API only rejects duplicate
+  `edge_id`s. `get_owner` returns the first match. Decide: enforce at insert,
+  or last-writer-wins during reconciliation (M2).
+- **Duplicate logical edges are allowed.** Same source/target/type can be added
+  twice with different edge ids. Confirm whether that is a wanted model (e.g.,
+  separate Declared vs Observed edges) or a bug to close.
+- **The broker hands out capability tokens on demand.** `capability_tokens()`
+  is a convenience for `MockPlanner`. The real planner should present tokens
+  issued at session start, not pull them from the broker. Settle the handshake
+  when real planner-broker messaging lands.
+- **Action store and audit log are in-memory.** Fine for a simulation; needs a
+  durable store before anything runs long-lived. Revisit with the executor
+  persistence work.
+- **Post-change health check is a driver flag.** The executor trusts whatever
+  the driver reports. Define the health-check contract (what is measured, who
+  reports, timeouts) with the specialists.
+- **Guardian driver verification is seeded by hand.** The demo just tells the
+  guardian "iwlwifi-next is tested". Real verification needs a source of truth
+  (package metadata, test logs).
 
 ---
 
@@ -413,7 +451,7 @@ model connectivity, and recovery state.
 | Milestone | Estimated effort | Cumulative | Dependencies |
 |---|---|---|---|
 | M0: Design Foundation | ✅ Complete | — | — |
-| M1: In-Process Simulation | 3–4 weeks | 3–4 weeks | M0 |
+| M1: In-Process Simulation | ✅ Complete | 3–4 weeks | M0 |
 | M2: Read-Only Linux Discovery | 2–3 weeks | 5–7 weeks | M1 |
 | M3: Local Model Runtime | 2–3 weeks | 5–7 weeks (parallel) | M1 |
 | M4: Dual-Agent Orchestration | 4–6 weeks | 9–13 weeks | M2, M3 |

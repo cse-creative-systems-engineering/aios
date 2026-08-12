@@ -1,7 +1,7 @@
 # Aios Documentation Progress
 
 **Status:** Living document  
-**Last updated:** 2026-08-09
+**Last updated:** 2026-08-11
 
 This document tracks the completion status of the Aios design doc set.
 Updated whenever a document's status changes.
@@ -55,6 +55,10 @@ Human interaction: 1 of 1 drafted           (100%)
 ADRs: 5 accepted                             (5 of expected ~15-20)
 Module specs: 0 of ~10 planned              (0%)
 ```
+
+Implementation status is tracked in `implementation-roadmap.md`. Current:
+M1 (In-Process Simulation) is **complete** — 46 tests passing, mock agents and
+demo binary built (`src/main.rs`). Next up: M2 (Read-Only Linux Discovery).
 
 ## Dependency Graph
 
