@@ -1,7 +1,7 @@
 # Aios Model Routing
 
-**Status:** Draft — frozen for M1  
-**Depends on:** architecture.md, glossary.md, requirements.md, security-model.md, capability-model.md, message-protocol.md, system-graph.md, decisions/0001-v01-runs-above-linux.md, decisions/0003-fail-fast-no-silent-fallbacks.md
+**Status:** Draft — updated for M3 (gateway architecture, ADR-0006)  
+**Depends on:** architecture.md, glossary.md, requirements.md, security-model.md, capability-model.md, message-protocol.md, system-graph.md, decisions/0001-v01-runs-above-linux.md, decisions/0003-fail-fast-no-silent-fallbacks.md, decisions/0006-model-gateway.md
 
 ## Purpose
 
@@ -348,9 +348,101 @@ Local model selection considers the machine's available resources:
 
 ---
 
-## 6. Gateway Trust
+## 6. Model Gateway Architecture
 
-### 6.1 LAN gateway pairing
+The gateway is the single entry point for model access. Agents never talk to
+providers directly — they submit generation tasks to the gateway, and the
+gateway owns routing, consent, health, pinning, and backend selection.
+
+```text
+Agent / Planner
+     |
+     |  submit(ModelTask, GenerationRequest)
+     v
+ModelGateway
+     |  registry, router, pinner, backends
+     |  route() -> RoutingDecision { provider, model, ... }
+     v
+ModelRouter
+     |  connectivity state, consent records, health
+     v
+ModelBackend (one per provider)
+     |-- LocalLlama   -- llama.cpp (local GGUF)
+     |-- HttpBackend  -- OpenAI-compatible /chat/completions  (ADR-0006)
+```
+
+### 6.1 Gateway responsibilities
+
+- **Provider selection.** `submit()` asks the router for a decision, pins the
+  task to the chosen provider/model, and dispatches to the backend.
+- **Pinning.** The task stays on its provider/model while active. The pin is
+  cleared on completion or failure (§2.4).
+- **Health recording.** Successful generations update the provider's latency
+  and health; recoverable failures mark the provider unhealthy (§3.5).
+- **Fallback.** `submit_with_fallback()` is the fail-fast path: on failure the
+  provider is marked unhealthy, a new task ID is issued, and the next eligible
+  provider is tried (ADR-0003).
+
+### 6.2 Backend interface
+
+```rust
+pub trait ModelBackend: Send + Sync {
+    fn provider_id(&self) -> &ProviderId;
+    fn is_healthy(&self) -> bool;
+    fn generate(&self, request: &GenerationRequest)
+        -> Result<GenerationResponse, GenerationError>;
+}
+```
+
+Backends are registered against a `ProviderId` and are interchangeable: the
+gateway holds a map from provider to backend and never branches on provider
+kind. `LocalLlama` runs a GGUF through `llama.cpp`; `HttpBackend` (ADR-0006)
+speaks the OpenAI-compatible chat API to any LAN or internet provider.
+
+### 6.3 Config-driven providers
+
+Providers are declared in configuration, not hardcoded. Each provider entry
+names a backend kind, tier, and where the endpoint or model file lives:
+
+```text
+provider:
+  id: local-qwen
+  kind: local          # LocalLlama backend
+  model: models/qwen-2.5-4b-instruct-q4_k_m.gguf
+  tier: local
+
+provider:
+  id: lan-ollama
+  kind: openai-compatible   # HttpBackend (ADR-0006)
+  endpoint: http://gpu01:11434/v1
+  tier: lan
+
+provider:
+  id: openrouter
+  kind: openai-compatible   # HttpBackend (ADR-0006)
+  endpoint: https://openrouter.ai/api/v1
+  tier: internet
+```
+
+At startup the gateway loads providers from config, constructs the matching
+backend, and registers it with the registry. Routing rules (§3), consent
+(§4), and health (§3.5) then apply uniformly — a provider's transport never
+changes how it is routed to.
+
+### 6.4 What is implemented
+
+`aios::model` (registry, router, gateway, pinner, backend trait), `aios::hub`
+(model metadata, SHA-256 verification of the on-disk model), and `aios::local`
+(Llama llama.cpp backend) are implemented and tested. The baseline Qwen model
+ships with Aios and is verified on disk — never downloaded at runtime, since
+offline mode has no network. The config loader and the OpenAI-compatible
+`HttpBackend` are specified here and in ADR-0006 but not yet implemented.
+
+---
+
+## 7. Gateway Trust
+
+### 7.1 LAN gateway pairing
 
 ```text
 Pairing process (v0.2+):
@@ -365,7 +457,7 @@ Pairing process (v0.2+):
 v0.1: LAN gateways are manually configured. No mDNS discovery. Trust is
 assumed on the local network (acceptable for prototype, hardened in v0.2).
 
-### 6.2 Certificate rotation
+### 7.2 Certificate rotation
 
 - Gateway certificates have an expiration date.
 - Before expiration, Aios requests a new certificate from the gateway.
@@ -373,7 +465,7 @@ assumed on the local network (acceptable for prototype, hardened in v0.2).
   and removed from the routing pool.
 - Expired certificates cause fail-fast rejection.
 
-### 6.3 Downstream provider disclosure
+### 7.3 Downstream provider disclosure
 
 For aggregators:
 - The aggregator must expose which downstream provider handled each request.
@@ -381,7 +473,7 @@ For aggregators:
 - If the aggregator cannot disclose downstream providers, it can only be used
   for `Public` data.
 
-### 6.4 Replay protection
+### 7.4 Replay protection
 
 - Each model request includes a nonce and timestamp.
 - The provider must not replay previous responses.
@@ -389,9 +481,9 @@ For aggregators:
 
 ---
 
-## 7. Offline Operation
+## 8. Offline Operation
 
-### 7.1 Local model as baseline
+### 8.1 Local model as baseline
 
 The local Qwen model is the offline baseline. It ensures Aios can operate
 without any network connectivity:
@@ -401,7 +493,7 @@ without any network connectivity:
 - Staged execution, rollback, and recovery work offline (they are
   deterministic and do not require models).
 
-### 7.2 No model available
+### 8.2 No model available
 
 If no model can run (hardware too constrained, model weights missing):
 
@@ -411,7 +503,7 @@ If no model can run (hardware too constrained, model weights missing):
 - The System State panel shows `Model: UNAVAILABLE`.
 - The user is notified that Aios is in recovery-only mode.
 
-### 7.3 Reduced confidence offline
+### 8.3 Reduced confidence offline
 
 When operating offline with a single local model:
 - Planner and Verification use the same model → reduced independence.
@@ -422,7 +514,7 @@ When operating offline with a single local model:
 
 ---
 
-## 8. Rust Types
+## 9. Rust Types
 
 ```rust
 use crate::protocol::{Timestamp, PrincipalId};
@@ -577,7 +669,7 @@ pub enum RoutingError {
 
 ---
 
-## 9. Open questions
+## 10. Open questions
 
 1. **Model warm-up.** Should local models be pre-loaded into memory at
    startup, or loaded on first request? (Recommendation: pre-load the
@@ -608,3 +700,5 @@ pub enum RoutingError {
 - `docs/requirements.md` — REQ-FUNC-007, REQ-SAF-006, REQ-REL-002
 - `docs/decisions/0003-fail-fast-no-silent-fallbacks.md` — provider failure
   causes task failure, not silent degradation
+- `docs/decisions/0006-model-gateway.md` — universal OpenAI-compatible
+  gateway backend over per-provider backends

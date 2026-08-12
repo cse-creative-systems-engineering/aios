@@ -21,7 +21,7 @@ or security boundary.
 | `architecture.md` (this doc) | Vision and principles | Accepted |
 | `glossary.md` | Shared terminology | Draft |
 | `requirements.md` | Functional and non-functional requirements | Draft |
-| `decisions/` | Architecture Decision Records | 0001–0004 accepted |
+| `decisions/` | Architecture Decision Records | 0001–0006 accepted |
 | `doc-progress.md` | Documentation completion tracker | Living document |
 | `security-model.md` | Threat model and trust boundaries | Draft |
 | `capability-model.md` | Authorization system (capability × risk level) | Draft |
@@ -29,7 +29,7 @@ or security boundary.
 | `action-state-machine.md` | Transaction and recovery states | Draft |
 | `system-graph.md` | Graph specification | Draft |
 | `agent-packages.md` | Package manifest and registry | Draft |
-| `model-routing.md` | Model gateway and provider routing | Draft |
+| `model-routing.md` | Model gateway and provider routing | Draft — updated for M3 |
 | `implementation-roadmap.md` | Milestones and dependencies | Draft |
 | `testing-strategy.md` | Verification and evaluation | Draft |
 | `observability.md` | Audit, tracing, and logging | Draft |
@@ -950,7 +950,7 @@ The following potentially conflicting ideas are currently compatible when interp
 | High | Resource management | 🔶 Partial | Resource budgets defined in agent-packages.md; enforcement deferred to v0.2+ (advisory in v0.1) |
 | High | User identity and consent | 🔶 Partial | Single-user for v0.1 (ADR-0001); multi-user deferred to v0.2+ |
 | Medium | Hardware model | ✅ Closed | `system-graph.md` section 2.3 — resource lifecycle (Discovered → Available → Degraded → Quarantined → Removed) |
-| Medium | Gateway trust | ✅ Closed | `model-routing.md` section 6 — pairing, certificate rotation, downstream disclosure, replay protection |
+| Medium | Gateway trust | ✅ Closed | `model-routing.md` section 7 — pairing, certificate rotation, downstream disclosure, replay protection |
 | ~~Medium~~ | ~~System graph integrity~~ | ✅ Closed | `system-graph.md` section 4 — staleness, conflict detection, poisoned data, incomplete graph |
 | ~~Medium~~ | ~~Agent Package integrity~~ | ✅ Closed | `agent-packages.md` — signed manifests, capability requests, no silent expansion, unknown device handling |
 | ~~Medium~~ | ~~Implementation boundary~~ | ✅ Closed | ADR-0001 — v0.1 runs above Linux in user space |

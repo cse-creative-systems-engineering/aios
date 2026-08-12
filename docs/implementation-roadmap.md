@@ -1,6 +1,6 @@
 # Aios Implementation Roadmap
 
-**Status:** Draft — frozen for M1  
+**Status:** Draft — updated for M3 (M0–M3 complete)  
 **Depends on:** architecture.md, requirements.md, security-model.md, capability-model.md, message-protocol.md, action-state-machine.md, system-graph.md, agent-packages.md, model-routing.md, all ADRs
 
 ## Purpose
@@ -45,9 +45,8 @@ graph TD
     classDef current fill:#d4a017,color:#fff,stroke:#a07c10,stroke-width:2px
     classDef planned fill:#4a90d9,color:#fff,stroke:#2a6db0,stroke-width:2px
 
-    class M0,M1 done
-    class M2 current
-    class M3,M4,M5,M6,M7,M8 planned
+    class M0,M1,M2,M3 done
+    class M4,M5,M6,M7,M8 planned
 ```
 
 ---
@@ -70,9 +69,9 @@ graph TD
 - [x] `agent-packages.md` — package manifest and registry
 - [x] `model-routing.md` — provider routing and data consent
 - [x] ADRs 0001–0004 accepted
-- [ ] `testing-strategy.md` — (in progress)
-- [ ] `observability.md` — (in progress)
-- [ ] `implementation-roadmap.md` — (this document, in progress)
+- [x] `testing-strategy.md`
+- [x] `observability.md`
+- [x] `implementation-roadmap.md` — (this document)
 
 ### Acceptance criteria
 
@@ -176,16 +175,19 @@ before they become real:
 
 ## Milestone 2: Read-Only Linux Discovery
 
-**Status:** In progress  
+**Status:** ✅ Complete  
 **Estimated effort:** 2–3 weeks  
 **Dependencies:** M1
 
-**Progress note (2026-08-11):** first slice done — `aios::discovery` scans
-sysfs/procfs (kernel, CPU, memory, network, PCI, USB, block, driver,
-filesystem), populates the System Graph with `depends_on` edges and TTL-based
-staleness, and prints a hardware report; verified against a real machine (390
-nodes, 20 CPUs, 4 buses, 75 devices). Mock-sysfs test suite passes. Still
-ahead: udev events, the reconciliation cycle, service and sensor discovery.
+**Completion note (2026-08-11):** `aios::discovery` reads the real system —
+sysfs/procfs for kernel, CPU, memory, network, PCI, USB, block, driver,
+filesystem, and hwmon sensors; `ServiceDiscovery` parses `systemctl` for live
+service state. The reconciliation cycle re-scans and diffs the graph, emitting
+`DeviceAdded`/`DeviceRemoved` events and cleaning up dangling edges. Verified
+on a real machine: 489 nodes (75 services, 24 sensors, 75 devices, 20 CPUs).
+58 tests pass. Real-time udev push (sub-second, via libudev) is deferred —
+reconciliation polling detects removals at the next cycle; firmware nodes come
+with the Wi-Fi specialist in M6.
 
 ### Goal
 
@@ -195,37 +197,50 @@ Graph from actual udev, sysfs, and procfs data.
 ### Deliverables
 
 - [x] `aios::discovery` — sysfs/procfs scanner, graph population, hardware report
-- [ ] udev event handling (DeviceAdded, DeviceRemoved)
+- [x] Event detection via reconciliation diff (`DeviceAdded`/`DeviceRemoved`)
+      — real-time udev push deferred
 - [x] CPU, memory, bus, device, driver, filesystem, network discovery
-- [ ] Service discovery (systemctl/D-Bus)
-- [ ] Sensor discovery (hwmon)
+- [x] Service discovery (systemctl output parsing)
+- [x] Sensor discovery (sysfs hwmon)
 - [x] Graph population from discovery results
-- [ ] Event-driven graph updates (DeviceAdded, DeviceRemoved, etc.)
-- [ ] Reconciliation cycle (periodic re-discovery)
+- [x] Event-driven graph updates via reconciliation
+- [x] Reconciliation cycle (re-scan, diff, event emission, dangling-edge cleanup)
 - [x] Staleness detection — discovered nodes carry `expires_at` TTL and can be
       marked `STALE` via `SystemGraph::mark_stale`
 - [x] Basic terminal output showing discovered hardware and graph state
-- [x] Test suite: discovery tests (mock sysfs/procfs), graph population tests
-- [ ] Test suite: reconciliation tests
+- [x] Test suite: discovery tests (mock sysfs/procfs), graph population tests,
+      reconciliation tests
 
 ### Acceptance criteria
 
-1. Running Aios on a real Linux machine discovers all PCI and USB devices.
-2. Discovered devices appear in the System Graph with correct node types and
+1. [x] Running Aios on a real Linux machine discovers all PCI and USB devices.
+2. [x] Discovered devices appear in the System Graph with correct node types and
    attributes.
-3. Device dependencies (bus, driver, firmware) are represented as edges.
-4. Removing a USB device triggers a `DeviceRemoved` event and graph update.
-5. Stale nodes are marked `STALE` after their TTL expires.
-6. Reconciliation detects new and removed devices.
-7. All tests pass.
+3. [x] Device dependencies (bus, driver, firmware) are represented as edges.
+   *(bus and driver edges in M2; firmware nodes deferred to M6)*
+4. [x] Removing a USB device triggers a `DeviceRemoved` event and graph update.
+   *(detected at the next reconciliation cycle; real-time push deferred)*
+5. [x] Stale nodes are marked `STALE` after their TTL expires.
+6. [x] Reconciliation detects new and removed devices.
+7. [x] All tests pass.
 
 ---
 
 ## Milestone 3: Local Model Runtime
 
-**Status:** Not started  
+**Status:** ✅ Complete  
 **Estimated effort:** 2–3 weeks  
 **Dependencies:** M1 (can run in parallel with M2)
+
+**Completion note (2026-08-12):** `aios::model` implements the registry,
+router, gateway, pinner, and `ModelBackend` trait; `aios::local` runs a real
+Qwen GGUF through `llama.cpp`; `aios::hub` verifies the model on disk by
+SHA-256. Verified end-to-end on a real model
+(`qwen2.5-4b-instruct-q4_k_m`) with the ignored `loads_and_generates_real_model`
+test — full offline generation through the gateway. 96 tests (95 pass, 1
+ignored requires `AIOS_MODEL_PATH`); model 24, local 3, hub 11 added in M3.
+The config loader and the OpenAI-compatible `HttpBackend` are specified
+(ADR-0006) but deferred to M4.
 
 ### Goal
 
@@ -234,24 +249,42 @@ gateway, router, and data classification system.
 
 ### Deliverables
 
-- [ ] `aios::model` — model registry, provider tiers, routing
-- [ ] Local model integration (Qwen via `llama.cpp` or `mistral.rs` bindings)
-- [ ] Connectivity state detection (Offline, LanOnly, Internet)
-- [ ] Data classification and consent record system
-- [ ] Model health checking
-- [ ] Task pinning
-- [ ] Fallback behavior (provider failure → task failure → retry on fallback)
-- [ ] Test suite: routing tests, consent tests, fallback tests, health tests
+- [x] `aios::model` — model registry, provider tiers, routing, gateway,
+      pinner, backend trait
+- [x] Local model integration (Qwen via `llama.cpp`/`llama-cpp-2` bindings)
+- [x] Connectivity state detection (Offline, LanOnly, Internet)
+- [x] Data classification and consent record system
+- [x] Model health checking
+- [x] Task pinning
+- [x] Fallback behavior (provider failure → task failure → retry on fallback)
+- [x] `aios::hub` — model metadata, SHA-256 verification of the on-disk model
+- [x] Test suite: routing tests, consent tests, fallback tests, health tests
 
 ### Acceptance criteria
 
-1. Aios can load and run a local Qwen model offline.
-2. The model router selects the correct provider based on connectivity state.
-3. Data classified as `Secret` is never sent to any model.
-4. Data classified as `Protected` is never sent to an internet provider.
-5. A provider health failure causes the task to fail (not silently degrade).
-6. An active task remains pinned to its provider when connectivity changes.
-7. All tests pass.
+1. [x] Aios can load and run a local Qwen model offline. *(verified with the
+   real-model integration test)*
+2. [x] The model router selects the correct provider based on connectivity state.
+3. [x] Data classified as `Secret` is never sent to any model.
+4. [x] Data classified as `Protected` is never sent to an internet provider.
+5. [x] A provider health failure causes the task to fail (not silently degrade).
+6. [x] An active task remains pinned to its provider when connectivity changes.
+7. [x] All tests pass.
+
+### Carried forward from M3
+
+- **Config-driven providers.** Providers are currently built in code
+  (`ProviderId::Local`); the `~/.aios/` config that declares providers,
+  tiers, and endpoints is specified in ADR-0006 and lands with the
+  `HttpBackend`.
+- **OpenAI-compatible `HttpBackend`.** The universal remote backend
+  (model-routing.md §6.3, ADR-0006) is deferred to M4.
+- **`aios::hub` install flow.** The baseline Qwen model ships with Aios and
+  is verified on disk by SHA-256 at first use; it is never downloaded at
+  runtime (offline mode has no network). The setup command that provisions
+  the model into `~/.aios/models/` comes with the config work. Model
+  download is only for optional additional models while online, and only
+  with explicit user action.
 
 ---
 
@@ -467,8 +500,8 @@ model connectivity, and recovery state.
 |---|---|---|---|
 | M0: Design Foundation | ✅ Complete | — | — |
 | M1: In-Process Simulation | ✅ Complete | 3–4 weeks | M0 |
-| M2: Read-Only Linux Discovery | 2–3 weeks | 5–7 weeks | M1 |
-| M3: Local Model Runtime | 2–3 weeks | 5–7 weeks (parallel) | M1 |
+| M2: Read-Only Linux Discovery | ✅ Complete | 2–3 weeks | M1 |
+| M3: Local Model Runtime | ✅ Complete | 5–7 weeks (parallel) | M1 |
 | M4: Dual-Agent Orchestration | 4–6 weeks | 9–13 weeks | M2, M3 |
 | M5: Transactions and Staging | 4–6 weeks | 9–13 weeks (parallel with M4) | M2 |
 | M6: First Hardware Specialist | 4–6 weeks | 13–19 weeks | M4, M5 |
