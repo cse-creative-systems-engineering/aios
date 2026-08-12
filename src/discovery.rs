@@ -28,6 +28,17 @@ impl std::fmt::Display for DiscoveryError {
 
 impl std::error::Error for DiscoveryError {}
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiscoveryEvent {
+    pub event_type: EventType,
+    pub node_id: NodeId,
+    pub timestamp: Timestamp,
+}
+
+fn is_dynamic(node_type: &NodeType) -> bool {
+    matches!(node_type, NodeType::Device | NodeType::Bus | NodeType::Sensor)
+}
+
 pub struct DiscoveryOptions {
     pub root: PathBuf,
     pub now: Timestamp,
@@ -83,7 +94,60 @@ impl SysfsDiscovery {
         self.discover_usb(root, &mut graph, t, expires)?;
         self.discover_block(root, &mut graph, t, expires)?;
         self.discover_filesystems(root, &mut graph, t, expires)?;
+        self.discover_sensors(root, &mut graph, t, expires)?;
         Ok(graph)
+    }
+
+    pub fn reconcile(
+        &self,
+        graph: &mut SystemGraph,
+    ) -> Result<Vec<DiscoveryEvent>, DiscoveryError> {
+        let fresh = self.scan()?;
+        let mut events = Vec::new();
+        for node in fresh.nodes().values() {
+            match graph.get_node(&node.node_id) {
+                Some(existing) => {
+                    if existing.last_observed != node.last_observed {
+                        graph.upsert_node(node.clone());
+                    }
+                }
+                None => {
+                    graph.upsert_node(node.clone());
+                    if is_dynamic(&node.node_type) {
+                        events.push(DiscoveryEvent {
+                            event_type: EventType::DeviceAdded,
+                            node_id: node.node_id.clone(),
+                            timestamp: self.options.now,
+                        });
+                    }
+                }
+            }
+        }
+        for edge in fresh.edges() {
+            if !graph.has_edge(&edge.source_node, &edge.target_node, edge.edge_type) {
+                let _ = graph.add_edge(edge);
+            }
+        }
+        let existing_ids: Vec<NodeId> = graph
+            .nodes()
+            .values()
+            .filter(|n| matches!(n.source, ProvenanceSource::Discovered { .. }))
+            .map(|n| n.node_id.clone())
+            .collect();
+        for id in existing_ids {
+            if fresh.get_node(&id).is_none() {
+                let removed = graph.remove_node(&id).expect("node present");
+                if is_dynamic(&removed.node_type) {
+                    events.push(DiscoveryEvent {
+                        event_type: EventType::DeviceRemoved,
+                        node_id: id,
+                        timestamp: self.options.now,
+                    });
+                }
+            }
+        }
+        events.sort_by_key(|e| e.node_id.to_string());
+        Ok(events)
     }
 
     fn read(&self, root: &Path, rel: &str) -> Result<String, DiscoveryError> {
@@ -564,6 +628,170 @@ impl SysfsDiscovery {
         }
         Ok(())
     }
+
+    fn discover_sensors(
+        &self,
+        root: &Path,
+        graph: &mut SystemGraph,
+        t: Timestamp,
+        expires: Option<Timestamp>,
+    ) -> Result<(), DiscoveryError> {
+        for hwmon in self.list_dir(root, "sys/class/hwmon") {
+            let base = format!("sys/class/hwmon/{hwmon}");
+            let name = self
+                .read_optional(root, &format!("{base}/name"))
+                .map(|s| s.trim().to_string())
+                .unwrap_or_else(|| hwmon.clone());
+            let mut inputs: Vec<(String, String, Option<String>)> = Vec::new();
+            for file in self.list_dir(root, &base) {
+                let Some(stripped) = file.strip_suffix("_input") else {
+                    continue;
+                };
+                if let Some(value) = self.read_optional(root, &format!("{base}/{file}")) {
+                    let label = self
+                        .read_optional(root, &format!("{base}/{stripped}_label"))
+                        .map(|s| s.trim().to_string());
+                    inputs.push((stripped.to_string(), value.trim().to_string(), label));
+                }
+            }
+            inputs.sort_by(|a, b| a.0.cmp(&b.0));
+            for (kind, value, label) in inputs {
+                let mut attrs = HashMap::new();
+                attrs.insert("chip".into(), name.clone());
+                let unit = if kind.starts_with("temp") {
+                    "millidegree_c"
+                } else if kind.starts_with("fan") {
+                    "rpm"
+                } else if kind.starts_with("in") {
+                    "millivolt"
+                } else {
+                    "raw"
+                };
+                attrs.insert("unit".into(), unit.into());
+                attrs.insert("value".into(), value.clone());
+                if let Some(label) = label {
+                    attrs.insert("label".into(), label);
+                }
+                let id = NodeId(format!("sensor:{hwmon}-{kind}"));
+                self.add_node(
+                    graph,
+                    id,
+                    NodeType::Sensor,
+                    format!("{name} {kind}"),
+                    None,
+                    t,
+                    expires,
+                    attrs,
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+pub struct ServiceDiscovery {
+    systemctl: Vec<String>,
+}
+
+impl Default for ServiceDiscovery {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ServiceDiscovery {
+    pub fn new() -> Self {
+        Self {
+            systemctl: vec![
+                "systemctl".into(),
+                "--no-legend".into(),
+                "--no-pager".into(),
+                "--plain".into(),
+                "list-units".into(),
+                "--type=service".into(),
+            ],
+        }
+    }
+
+    pub fn with_command(command: Vec<String>) -> Self {
+        Self { systemctl: command }
+    }
+
+    pub fn scan(&self) -> Result<Vec<DiscoveredService>, DiscoveryError> {
+        let output = std::process::Command::new(&self.systemctl[0])
+            .args(&self.systemctl[1..])
+            .output()
+            .map_err(|e| DiscoveryError::ReadFailed {
+                path: self.systemctl[0].clone(),
+                source: e,
+            })?;
+        if !output.status.success() {
+            return Err(DiscoveryError::ReadFailed {
+                path: self.systemctl[0].clone(),
+                source: std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("systemctl exited with {}", output.status),
+                ),
+            });
+        }
+        let text = String::from_utf8_lossy(&output.stdout).into_owned();
+        Ok(parse_systemctl_units(&text))
+    }
+
+    pub fn populate(&self, graph: &mut SystemGraph, t: Timestamp) -> Result<usize, DiscoveryError> {
+        let services = self.scan()?;
+        let count = services.len();
+        for service in services {
+            let mut node = NodeMetadata::new(
+                NodeId(format!("service:{}", service.name)),
+                NodeType::Service,
+                ProvenanceSource::Discovered { via: "systemctl".into() },
+                TrustLevel::Provisional,
+                t,
+            );
+            node.label = format!("{} ({})", service.description, service.state);
+            let mut attrs = HashMap::new();
+            attrs.insert("state".into(), service.state.clone());
+            attrs.insert("description".into(), service.description.clone());
+            node.attributes = attrs;
+            if service.state == "active" {
+                node.health = HealthState::Healthy;
+            } else {
+                node.health = HealthState::Degraded;
+            }
+            graph.upsert_node(node);
+        }
+        Ok(count)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiscoveredService {
+    pub name: String,
+    pub state: String,
+    pub description: String,
+}
+
+pub fn parse_systemctl_units(output: &str) -> Vec<DiscoveredService> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let name = fields.next()?;
+            fields.next()?;
+            let state = fields.next()?.to_string();
+            fields.next()?;
+            if !name.ends_with(".service") {
+                return None;
+            }
+            let description = fields.collect::<Vec<&str>>().join(" ");
+            Some(DiscoveredService {
+                name: name.trim_end_matches(".service").to_string(),
+                state,
+                description,
+            })
+        })
+        .collect()
 }
 
 pub fn print_hardware_report(graph: &SystemGraph) {
@@ -749,5 +977,97 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let graph = discovery(dir.path().to_path_buf()).scan().unwrap();
         assert!(graph.nodes().is_empty());
+    }
+
+    #[test]
+    fn sensors_are_discovered_from_hwmon() {
+        let (_dir, root) = mock_root();
+        write(&root.join("sys/class/hwmon/hwmon0/name"), "coretemp\n");
+        write(&root.join("sys/class/hwmon/hwmon0/temp1_input"), "52000\n");
+        write(&root.join("sys/class/hwmon/hwmon0/temp1_label"), "Package id 0\n");
+        write(&root.join("sys/class/hwmon/hwmon1/name"), "nct6798\n");
+        write(&root.join("sys/class/hwmon/hwmon1/fan1_input"), "1200\n");
+        let graph = discovery(root).scan().unwrap();
+        let temp = graph.get_node(&NodeId("sensor:hwmon0-temp1".into())).unwrap();
+        assert_eq!(temp.node_type, NodeType::Sensor);
+        assert_eq!(temp.attributes.get("value").unwrap(), "52000");
+        assert_eq!(temp.attributes.get("unit").unwrap(), "millidegree_c");
+        assert_eq!(temp.attributes.get("label").unwrap(), "Package id 0");
+        let fan = graph.get_node(&NodeId("sensor:hwmon1-fan1".into())).unwrap();
+        assert_eq!(fan.attributes.get("unit").unwrap(), "rpm");
+    }
+
+    #[test]
+    fn reconcile_emits_add_and_remove_events() {
+        let (_dir, root) = mock_root();
+        let d = discovery(root.clone());
+        let mut graph = d.scan().unwrap();
+        assert!(graph.get_node(&NodeId("device:pci-0000:00:14.3".into())).is_some());
+
+        fs::remove_dir_all(root.join("sys/bus/pci/devices/0000:00:14.3")).unwrap();
+        write(&root.join("sys/class/net/eth1/operstate"), "down\n");
+        write(&root.join("sys/class/net/eth1/address"), "00:11:22:33:44:55\n");
+
+        let events = d.reconcile(&mut graph).unwrap();
+        assert!(
+            events
+                .iter()
+                .any(|e| e.event_type == EventType::DeviceRemoved
+                    && e.node_id == NodeId("device:pci-0000:00:14.3".into()))
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| e.event_type == EventType::DeviceAdded
+                    && e.node_id == NodeId("device:net-eth1".into()))
+        );
+        assert!(graph.get_node(&NodeId("device:pci-0000:00:14.3".into())).is_none());
+        assert!(graph.get_node(&NodeId("device:net-eth1".into())).is_some());
+    }
+
+    #[test]
+    fn reconcile_removes_dangling_edges() {
+        let (_dir, root) = mock_root();
+        let d = discovery(root.clone());
+        let mut graph = d.scan().unwrap();
+        let wifi = NodeId("device:pci-0000:00:14.3".into());
+        assert!(!graph.get_dependencies(&wifi).is_empty());
+
+        fs::remove_dir_all(root.join("sys/bus/pci/devices/0000:00:14.3")).unwrap();
+        d.reconcile(&mut graph).unwrap();
+        assert!(graph.get_dependencies(&wifi).is_empty());
+    }
+
+    #[test]
+    fn systemctl_output_parses_into_services() {
+        let out = "networkd-dispatcher.service loaded active running Dispatches libcups\n\
+                   cups.service loaded active running CUPS Scheduler\n\
+                   ssh.service loaded inactive dead OpenBSD Secure Shell server\n\
+                   snapd.service loaded active running Snap Daemon";
+        let services = parse_systemctl_units(out);
+        assert!(services.iter().any(|s| s.name == "networkd-dispatcher" && s.state == "active"));
+        assert!(services.iter().any(|s| s.name == "cups" && s.description == "CUPS Scheduler"));
+    }
+
+    #[test]
+    fn service_populate_marks_health_by_state() {
+        let (_dir, root) = mock_root();
+        let mut graph = discovery(root).scan().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("fake-systemctl");
+        write(
+            &script,
+            "#!/bin/sh\nprintf 'networkd-dispatcher.service loaded active running Dispatches libcups\\nssh.service loaded inactive dead OpenBSD SSH\\n'",
+        );
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let services = ServiceDiscovery::with_command(vec![script.to_string_lossy().into_owned()]);
+        let count = services.populate(&mut graph, 1_000).unwrap();
+        assert_eq!(count, 2);
+        let netd = graph.get_node(&NodeId("service:networkd-dispatcher".into())).unwrap();
+        assert_eq!(netd.health, HealthState::Healthy);
+        assert_eq!(netd.attributes.get("state").unwrap(), "active");
+        let ssh = graph.get_node(&NodeId("service:ssh".into())).unwrap();
+        assert_eq!(ssh.health, HealthState::Degraded);
     }
 }

@@ -199,6 +199,32 @@ impl SystemGraph {
         Ok(())
     }
 
+    pub fn upsert_node(&mut self, node: NodeMetadata) {
+        self.nodes.insert(node.node_id.clone(), node);
+    }
+
+    pub fn remove_node(&mut self, id: &NodeId) -> Option<NodeMetadata> {
+        let removed = self.nodes.remove(id)?;
+        let mut edges_to_remove = Vec::new();
+        for (edge_id, edge) in &self.edges {
+            if &edge.source_node == id || &edge.target_node == id {
+                edges_to_remove.push(edge_id.clone());
+            }
+        }
+        for edge_id in edges_to_remove {
+            let edge = self.edges.remove(&edge_id).expect("edge present");
+            if let Some(list) = self.adjacency.get_mut(&edge.source_node) {
+                list.retain(|e| e != &edge_id);
+            }
+            if let Some(list) = self.reverse_adjacency.get_mut(&edge.target_node) {
+                list.retain(|e| e != &edge_id);
+            }
+        }
+        self.adjacency.remove(id);
+        self.reverse_adjacency.remove(id);
+        Some(removed)
+    }
+
     pub fn get_node(&self, id: &NodeId) -> Option<NodeMetadata> {
         self.nodes.get(id).cloned()
     }
@@ -245,6 +271,16 @@ impl SystemGraph {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    pub fn has_edge(&self, from: &NodeId, to: &NodeId, edge_type: EdgeType) -> bool {
+        self.edges
+            .values()
+            .any(|e| e.source_node == *from && e.target_node == *to && e.edge_type == edge_type)
+    }
+
+    pub fn edges(&self) -> Vec<EdgeMetadata> {
+        self.edges.values().cloned().collect()
     }
 
     pub fn get_incoming_edges(&self, to: &NodeId, edge_type: EdgeType) -> Vec<EdgeMetadata> {

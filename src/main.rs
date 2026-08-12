@@ -420,10 +420,33 @@ fn main() {
         .len();
     println!("policy decisions logged -> {audit_count}");
 
-    let discovered = aios::discovery::SysfsDiscovery::new()
-        .scan()
-        .expect("discovery scan");
-    aios::discovery::print_hardware_report(&discovered);
+    let discovery = aios::discovery::SysfsDiscovery::new();
+    let mut graph = discovery.scan().expect("discovery scan");
+    aios::discovery::ServiceDiscovery::new()
+        .populate(&mut graph, aios::protocol::now())
+        .expect("service scan");
+    aios::discovery::print_hardware_report(&graph);
+    println!(
+        "services discovered -> {}",
+        graph.get_nodes_by_type(aios::graph::NodeType::Service).len()
+    );
+    println!(
+        "sensors discovered  -> {}",
+        graph.get_nodes_by_type(aios::graph::NodeType::Sensor).len()
+    );
+
+    let events = discovery.reconcile(&mut graph).expect("reconcile");
+    println!(
+        "reconcile cycle     -> {} change(s) since initial scan (graph has {} nodes)",
+        events.len(),
+        graph.nodes().len()
+    );
+    for event in events {
+        println!(
+            "  event {:?} for {}",
+            event.event_type, event.node_id
+        );
+    }
 
     println!("== done ==");
 }
