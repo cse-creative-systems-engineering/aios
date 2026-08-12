@@ -78,7 +78,7 @@ or firmware requires a scoped, expiring approval tied to the exact plan.
 Honest status: there is no runnable Aios yet. There is a complete design for
 one.
 
-That design is 18 documents and five decision records, about 9,000 lines,
+That design is 15 documents and five decision records, about 9,000 lines,
 covering the security model, the capability system, the internal message
 protocol, the action state machine, and a milestone plan with acceptance
 criteria. I did the design first on purpose: the hard problems here are about

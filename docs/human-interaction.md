@@ -83,8 +83,7 @@ path with user authentication.
 //   expected_risks, rollback_state, expires_at
 
 // UserResponse (from message-protocol.md §2.12):
-//   approval_request_id, decision (Approved/Rejected/Modified),
-//   modifications
+//   approval_request_id, decision (Approved/Rejected)
 ```
 
 ### 1.4 v0.1 implementation
@@ -229,13 +228,17 @@ request.plan_hash == approval.plan_hash?
 
 ### 4.4 Modification
 
-If the user responds with `UserResponse { decision: Modified(changes) }`:
+In v0.1 there is no `Modified` decision. If the user wants to change the
+plan, they respond `Rejected` and the Planner creates a new plan:
 
-- The modification is treated as a rejection of the original plan.
+- The user rejects the original plan.
 - The Planner must create a new plan incorporating the changes.
 - The new plan goes through the full lifecycle again (Proposed → ... →
   Approved).
 - The original approval is not carried over.
+
+(Consistent with `message-protocol.md` §2.12 — the `Modified` variant and
+`modifications` field are deliberately absent from v0.1.)
 
 ---
 

@@ -7,8 +7,7 @@
 
 Define concrete milestones, deliverables, acceptance criteria, and dependencies
 for the Aios implementation. Synthesizes the workstream order from architecture
-section 18 into an actionable plan with estimated effort using AI-assisted
-development.
+section 18 into an actionable plan with estimated effort.
 
 ### Planning principles
 
@@ -21,9 +20,8 @@ development.
    foundation.
 4. **Every milestone includes tests.** Tests are written alongside the code,
    not after. Per the testing strategy, no code lands without tests.
-5. **Effort estimates assume heavy AI assistance.** Estimates are for a
-   solo developer using AI for code generation, with human review and
-   verification as the bottleneck.
+5. **Effort estimates are for a solo developer.** Human review and
+   verification are the bottleneck.
 
 ---
 
@@ -57,7 +55,7 @@ graph TD
 
 **Status:** ✅ Complete  
 **Estimated effort:** 2–3 weeks  
-**Actual effort:** ~1 week (AI-assisted)
+**Actual effort:** ~1 week
 
 ### Deliverables
 
@@ -435,7 +433,7 @@ model connectivity, and recovery state.
 |---|---|---|---|
 | M1 contracts don't work together when implemented | Medium | High | M1 is specifically designed to find this — mock simulation before real hardware |
 | Local model too slow for useful interaction | Medium | Medium | M3 tests this early; can use smaller model or quantization |
-| Linux API complexity slows M2 | Low | Medium | AI assists with API research; udev/sysfs are well-documented |
+| Linux API complexity slows M2 | Low | Medium | Start with udev/sysfs — both are well-documented |
 | Wi-Fi hardware edge cases slow M6 | High | Medium | Expected — this is where design meets reality. Budget extra time. |
 | Scope creep in specialist modules | High | High | One specialist at a time. Each has explicit acceptance criteria. |
 | Testing bottleneck | Medium | High | Tests written alongside code. No code without tests. |

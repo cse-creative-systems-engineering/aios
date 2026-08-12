@@ -115,6 +115,11 @@ log — that requires external storage (v0.2+).
 Retention is configurable. Safety-relevant events are never automatically
 deleted.
 
+**v0.1 note:** retention is advisory — the audit log is a single append-only
+file and no pruning or rotation is implemented in v0.1 (see open question 1).
+The per-class retention periods guide what to surface and prioritize; they
+are only enforceable once separate logs or a rotation scheme exist in v0.2+.
+
 ### 1.7 Audit log failure
 
 If the audit log cannot be written (disk full, permission denied, I/O error):
@@ -124,6 +129,12 @@ If the audit log cannot be written (disk full, permission denied, I/O error):
 - The user is notified immediately.
 - The system enters a read-only mode (observations may continue if they
   don't require audit logging, but mutations are blocked).
+
+This is a **fail-stop, not a retry loop**: the broker does not attempt to log
+the failure to write an audit entry — that would recurse forever. Once the
+audit log is unavailable, requests are rejected without attempting a fresh
+write, and the degraded state persists until the log is restored (see
+message-protocol.md §6.1).
 
 ---
 

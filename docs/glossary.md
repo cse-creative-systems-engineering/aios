@@ -108,8 +108,12 @@ permission engine, typed tool interfaces, **Staged Transaction Executor**,
 health checks, and **Audit Log**. Must remain deterministic.
 
 ### Escalation Block
-A **Guardian** decision that does not hard-block an action but requires
-additional review, staging, or user **Approval** before proceeding.
+A **Guardian** decision that flags an action as risky or under-evidenced
+even though it does not violate a fundamental invariant. In v0.1 escalation
+is collapsed to a **denial** (ADR-0003): the action is blocked and the user
+is notified. To proceed, a re-planned action with stronger evidence re-enters
+the lifecycle for review and user **Approval**. See `docs/human-interaction.md`
+§5.
 
 ## F
 
@@ -148,8 +152,9 @@ timestamp, freshness, confidence, and any active warnings. See
 
 ### Infrastructure Guardian
 A specialized safety sentinel that inspects proposed actions, checks them
-against the **Operational Contract**, and blocks or escalates unsafe changes.
-It has no direct write capability. The actual block is enforced by the
+against the **Operational Contract**, and blocks unsafe changes. In v0.1 a
+block can only be lifted by re-planning, never by escalation through the
+Guardian. It has no direct write capability. The actual block is enforced by the
 **Policy Broker**. Read-only and veto-oriented.
 
 ### Invariant

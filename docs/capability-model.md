@@ -194,7 +194,7 @@ the request must pass:
 | **1** | Routine | Capability + broker validation | `restart`, `configure` (non-destructive) |
 | **2** | Staged mutation | Capability + broker + Guardian + staging | `stage`, `commit` |
 | **3** | Critical mutation | Capability + broker + Guardian + user approval + staging | `firmware_write`, `boot_config`, `kernel_module` |
-| **4** | Recovery | Capability + broker + Guardian + user approval | `reset`, `quarantine`, `rollback` |
+| **4** | Recovery | Capability + broker + Guardian + user approval (staging may be skipped only if the Guardian authorizes it; a checkpoint is still created first) | `reset`, `quarantine`, `rollback` |
 
 ### 4.2 Agent clearance
 
@@ -202,14 +202,19 @@ Each Agent Package declares a maximum clearance level in its manifest:
 
 ```text
 package: aios.specialist.network.wifi
-clearance: 2
+clearance: 4
 capabilities:
   - resource: "device:wifi0"
-    operations: [observe, diagnose, query, restart, stage, commit]
+    operations: [observe, diagnose, query, restart, stage, commit, reset]
 ```
 
 The broker grants or denies clearance at instantiation. An agent with
 clearance 1 cannot use level 2+ tools, even if it has the resource capability.
+
+Note: the Wi-Fi specialist declares clearance 4 because the M6 vertical
+slice requires `request_reset` (risk level 4). Compare the identical manifest
+declaration in `agent-packages.md` §1.1. A package that does not need
+recovery-level operations would declare a lower clearance.
 
 ### 4.3 Clearance is static
 
@@ -636,11 +641,11 @@ pub enum DenyReason {
 //
 // pub enum GuardianVerdict {
 //     Allow,
-//     Escalate(EscalationRequirements),
 //     Block(String),
 // }
 //
-// Note: Escalate is currently collapsed to Deny by the broker per ADR-0003.
+// Note: The Escalate variant is removed in v0.1 (collapsed to
+// Deny(GuardianEscalation) by the broker per ADR-0003).
 
 // ── Policy verdict (imported from message-protocol.md §2.10) ──
 // PolicyVerdict (bare return type) and PolicyDecision (enveloped message)
@@ -650,11 +655,11 @@ pub enum DenyReason {
 // pub enum PolicyVerdict {
 //     Allow,
 //     Deny(DenyReason),
-//     Escalate(EscalationRequirements),
 // }
 //
-// Note: Escalate is currently unreachable because Guardian Escalate
-// is collapsed to Deny(GuardianEscalation) per ADR-0003.
+// Note: The Escalate variant is removed in v0.1. Guardian Escalate is
+// collapsed to Deny(GuardianEscalation) per ADR-0003 (see
+// human-interaction.md §5).
 
 // ── Approval types (defined in message-protocol.md, reproduced for reference) ──
 //
@@ -680,9 +685,8 @@ pub enum DenyReason {
 // }
 // pub type PlanHash = [u8; 32];
 // pub type ActionId = Uuid;
-
-#[derive(Clone, Debug)]
-// EscalationRequirements removed in v0.1 (Escalate variant deleted).
+//
+// EscalationRequirements and the Escalate variant are removed in v0.1.
 
 // ── Broker ──
 
@@ -802,8 +806,14 @@ Agent sends ToolRequest to Broker
    the broker checks it at step 2.5. Agent lifetime is the default
    expiration for v0.1. Explicit expiration for v0.2+.
 2. **Resource state transitions.** How does the broker learn that a resource
-   moved from `Available` to `Degraded`? Does the System Graph push state
-   changes, or does the broker poll?
+   moved from `Available` to `Degraded`? Per ADR-0005 P1-5, the broker keeps
+   its **own** `resource_states` registry, updated only by signed events from
+   the trusted owning specialist — the System Graph is advisory and is not
+   the broker's source for permission decisions. M1 must fix the plumbing:
+   which message (`Event`?) carries the authoritative `ResourceState`
+   transition from the owning specialist to the broker, and how the broker
+   rejects state claims from non-owners. Until a resource has an entry in the
+   broker's registry, it is treated as `Unknown` and denied (fail-closed).
 3. **Guardian unavailability.** If the Guardian is temporarily unavailable,
    should level 2+ requests fail-closed (deny) or queue? (Recommendation:
    fail-closed per ADR-0003.)

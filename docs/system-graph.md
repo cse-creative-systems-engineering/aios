@@ -196,6 +196,11 @@ Every node and edge has a `last_observed` timestamp and optional `expires_at`.
 A node or edge is `STALE` if `now() > expires_at` or if `now() - last_observed`
 exceeds a type-specific TTL.
 
+The TTL table below is the v0.1 default for the `last_observed` check. Nodes
+whose lifetime is not bounded by telemetry (`Capability`, `BootImage`) set
+`expires_at: None` and appear in the "Does not expire" rows; their staleness
+is governed only by revocation or removal, not by the TTL sweep.
+
 | Node type | TTL (v0.1 default) |
 |---|---|
 | `Device` | 30 seconds |

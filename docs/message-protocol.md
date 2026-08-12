@@ -490,11 +490,11 @@ pub struct PolicyDecision {
 pub enum PolicyVerdict {
     Allow,
     Deny(DenyReason),
-    Deny(DenyReason),
 }
 
 // Note: Escalate variant removed in v0.1 (Guardian Escalate is
 // collapsed to Deny per ADR-0003). See human-interaction.md §5.
+// The `Escalate` variant is intentionally NOT present.
 // PolicyVerdict is the bare return type from PolicyBroker::evaluate
 // PolicyDecision is the enveloped message emitted to audit log and listeners
 ```
@@ -529,13 +529,14 @@ pub struct UserResponse {
     pub envelope: MessageEnvelope,
     pub approval_request_id: MessageId,  // References ApprovalRequest's envelope.message_id
     pub decision: UserDecision,
-    pub modifications: Option<String>,  // User may modify the plan (requires re-verification)
 }
 
 pub enum UserDecision {
     Approved,
     Rejected(String),
-    Modified(String),  // User modified the plan — requires re-verification
+    // No `Modified` variant in v0.1. A user who wants to change the plan
+    // responds `Rejected`; the Planner creates a new plan that goes
+    // through the full lifecycle again (see human-interaction.md §4.4).
 }
 ```
 
@@ -632,8 +633,8 @@ v0.2+ (IPC): Explicit ack with `MessageId` for `ToolRequest` and
 | Guardian | `GuardianBlocked` | Return `GuardianVerdict::Block`, log |
 | Tool | `ResourceUnavailable`, `OperationNotSupported` | Return `ToolResult::Failed`, log |
 | Tool | `StagingFailed`, `HealthCheckFailed` | Return `ToolResult::RolledBack`, trigger rollback, log |
-| Tool | `Timeout` | Return `ToolResult::Failed`, log, cancel operation |
-| Tool | `Internal` | Return `ToolResult::Failed`, log, escalate |
+| Tool | `Timeout` | Return `ToolResult::Failed`, log, cancel operation. Distinguished from `ExpiredDeadline`: the envelope deadline is checked at receipt (§3.2) and is a protocol error; a tool `Timeout` means the operation started but overran its own execution budget. |
+| Tool | `Internal` | Return `ToolResult::Failed`, log. No silent escalation in v0.1 — the failure surfaces to the caller and the audit log. |
 
 ### 4.2 Retry behavior
 
@@ -727,6 +728,19 @@ observability.md §1.3 and §6.
 Every message that passes through the broker generates an audit entry.
 The audit entry includes hash chaining (`previous_entry_hash`, `entry_hash`)
 for tamper detection, as defined in observability.md §1.4.
+
+Note on `PolicyVerdict` vs `PolicyDecision`: the broker's `evaluate()` returns
+a bare `PolicyVerdict` (§2.10) as its function result; the enveloped
+`PolicyDecision` message is what gets written to the audit log and emitted to
+listeners. The audit entry is derived from the verdict, not a separate
+attempt.
+
+**Audit-write failure terminates the flow.** If the audit entry for a request
+cannot be written, the broker fails that request (`Deny(AuditLogFailure)`) and
+enters a read-only/elevated-fail mode (observability.md §1.7). The broker does
+**not** recursively attempt to log the failed audit write — that would
+self-loop. Once the audit log is unavailable, further requests are rejected
+without fresh audit entries, and the System State panel flags `Audit: FAILED`.
 
 ### 6.2 What is NOT logged
 

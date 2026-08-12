@@ -41,7 +41,7 @@ execute a tool operation.
 | 1 | Routine | Non-destructive config, service restart, query state | Capability + broker validation |
 | 2 | Staged mutation | `stage_driver`, config changes with rollback | Capability + broker + Guardian + staging |
 | 3 | Critical mutation | Firmware writes, boot config, kernel module loading | Capability + broker + Guardian + user approval + staging |
-| 4 | Recovery | Device reset, quarantine, rollback to known-good | Capability + broker + Guardian + user approval |
+| 4 | Recovery | Device reset, quarantine, rollback to known-good | Capability + broker + Guardian + user approval (staging may be skipped only if the Guardian authorizes it; a checkpoint is still created first) |
 
 ### Agent clearance
 

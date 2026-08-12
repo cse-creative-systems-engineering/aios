@@ -164,7 +164,7 @@ aios.specialist.network.wifi/
 ├── manifest.yaml          # Signed manifest
 ├── manifest.sig           # Signature for manifest
 ├── prompt.txt             # System prompt (if AI-assisted)
-├── tools/                 # Tool implementations (Rust WASM or native)
+├── tools/                 # Tool implementations (native Rust in v0.1, WASM in v0.2+)
 │   ├── observe_device.rs
 │   ├── diagnose_fault.rs
 │   └── stage_driver.rs

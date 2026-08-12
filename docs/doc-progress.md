@@ -28,16 +28,16 @@ Updated whenever a document's status changes.
 | `decisions/0004-two-dimensional-authorization.md` | ✅ Accepted | 100% |
 | `decisions/0005-freeze-triage.md` | ✅ Accepted | 100% |
 | `security-model.md` | Draft — frozen for M1 | Passed adversarial review (round 2) |
-| `capability-model.md` | Draft — frozen for M1 | Fixes applied, dead types removed |
-| `message-protocol.md` | Draft — frozen for M1 | Fixes applied, dead types removed |
+| `capability-model.md` | Draft — frozen for M1 | Fixes applied, dead types removed; risk-4 gate aligned with state machine; broker resource-state plumbing noted |
+| `message-protocol.md` | Draft — frozen for M1 | Fixes applied; duplicate `Deny` removed, `Escalate`/`Modified` variants dropped, audit-loop termination defined |
 | `action-state-machine.md` | Draft — frozen for M1 | Passed adversarial review (round 4) |
-| `system-graph.md` | Draft — frozen for M1 | May need refinement during implementation |
+| `system-graph.md` | Draft — frozen for M1 | May need refinement during implementation; TTL vs `expires_at` clarified |
 | `agent-packages.md` | Draft — frozen for M1 | Mermaid/enum/manifest aligned |
 | `model-routing.md` | Draft — frozen for M1 | May need refinement during implementation |
-| `human-interaction.md` | Draft — frozen for M1 | New — consolidates approval/escalation/facade trust |
+| `human-interaction.md` | Draft — frozen for M1 | New — consolidates approval/escalation/facade trust; `Modified` decision removed (see message-protocol) |
 | `implementation-roadmap.md` | Draft — frozen for M1 | v0.1 scope clarified for M6 |
 | `testing-strategy.md` | Draft — frozen for M1 | Test code reconciled with protocol |
-| `observability.md` | Draft — frozen for M1 | May need refinement during implementation |
+| `observability.md` | Draft — frozen for M1 | May need refinement during implementation; retention advisory note and recursive-log-avoidance added |
 | `modules/` | ❌ Empty | 0% — first module created during Wi-Fi specialist work |
 
 ## Overall Progress

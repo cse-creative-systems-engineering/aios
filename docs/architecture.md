@@ -579,11 +579,10 @@ Its responsibilities are:
 - Determine whether an action affects critical systems.
 - Check the action against the Aios Operational Contract.
 - Identify affected components and dependencies.
-- Block or escalate unsafe changes.
-- Explain what rule caused the decision.
+- Block unsafe changes, and explain the rule behind the decision.
 - Verify system state after an approved change.
 
-The actual block must be enforced by the deterministic policy broker. If the Guardian only returns “deny” but another agent can ignore it, it is not a real security boundary.
+The actual block must be enforced by the deterministic policy broker. If the Guardian only returns “deny” but another agent can ignore it, it is not a real security boundary. In v0.1 the Guardian's decision is either `Allow` or `Block` — there is no automatic `Escalate` path. A blocked action must be re-planned and re-reviewed rather than forwarded to approval by the Guardian (see `human-interaction.md` §5).
 
 A denial should be structured and understandable:
 
@@ -607,7 +606,7 @@ Required:
 | Type | Meaning | Normal response |
 | --- | --- | --- |
 | Hard block | Violates a fundamental invariant or protected boundary | Cannot be overridden through the normal interface; use recovery procedures if appropriate |
-| Escalation block | May be valid but has significant risk or insufficient evidence | Produce a repair plan, stage it, and request user approval |
+| Escalation block | May be valid but has significant risk or insufficient evidence | In v0.1 this is collapsed to a denial (ADR-0003): the action is blocked, and the user is notified with the Guardian's explanation. To proceed, a re-planned action with stronger evidence re-enters the lifecycle for review and user approval. |
 
 The Guardian should block unauthorized critical mutations, not literally every operation that touches a critical subsystem. Normal scheduling, logging, device interrupts, and memory activity necessarily affect critical systems. Read-only observation and bounded routine operations should remain possible.
 
@@ -662,7 +661,7 @@ Reviewed (Planner and Verification Agent have weighed in)
    ↓
 PolicyValidated (broker validates capability + clearance)
    ↓
-GuardianChecked (risk level 2+: Guardian returns allow, escalate, or deny)
+GuardianChecked (risk level 2+: Guardian returns allow or deny; in v0.1 there is no escal gate)
    ↓
 Approved (risk level 3+: user approval obtained, scope checked)
    ↓
@@ -942,6 +941,7 @@ The following potentially conflicting ideas are currently compatible when interp
 | ~~Critical~~ | ~~Internal protocol~~ | ✅ Closed | `message-protocol.md` — versioned schemas, delivery semantics, error handling, security |
 | ~~Critical~~ | ~~Secrets and memory~~ | ✅ Closed | `security-model.md` section 5 — secret store, redaction rules, provenance labels, hard boundary |
 | High | Multi-agent concurrency | 🔶 Partial | Per-resource serialization in protocol; full concurrency model deferred to implementation |
+| High | Broker resource-state authority | 🔶 Partial | Per ADR-0005 P1-5 the broker keeps its own `resource_states` registry (System Graph is advisory). M1 must fix the plumbing: which signed event carries a `ResourceState` transition from the owning specialist to the broker, and how non-owner claims are rejected. See `capability-model.md` §10.2 |
 | High | Failure and degraded modes | ✅ Closed | `security-model.md` section 4 (compromise scenarios), `model-routing.md` (provider failure), `action-state-machine.md` (crash recovery) |
 | ~~High~~ | ~~Verification and evaluation~~ | ✅ Closed | `testing-strategy.md` — 6 test layers, safety-specific tests, Aios evaluations |
 | High | Updates and supply chain | ✅ Closed | `agent-packages.md` — signed packages, versioning, lifecycle, no silent capability expansion |
@@ -964,10 +964,14 @@ implementation (Milestone 1):
 1. **Multi-agent concurrency:** per-resource serialization is defined, but
    full concurrency control (deadlock handling, priority rules, cross-domain
    transactions) will be designed during M1.
-2. **Resource budget enforcement:** budgets are declared in packages but
+2. **Broker resource-state plumbing:** the broker's authoritative
+   `resource_states` registry and the System Graph must be reconciled —
+   which signed event updates the broker, and how the broker rejects
+   non-owner claims (ADR-0005 P1-5, `capability-model.md` §10.2).
+3. **Resource budget enforcement:** budgets are declared in packages but
    advisory in v0.1. Enforcement requires process isolation (v0.2+).
-3. **Multi-user identity:** deferred to v0.2+. v0.1 is single-user.
-4. **Artifact provenance tracking:** model provenance is defined; full
+4. **Multi-user identity:** deferred to v0.2+. v0.1 is single-user.
+5. **Artifact provenance tracking:** model provenance is defined; full
    tracking for all imported artifacts (drivers, firmware, packages) will be
    refined during specialist implementation.
 
