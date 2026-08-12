@@ -95,7 +95,41 @@ impl SysfsDiscovery {
         self.discover_block(root, &mut graph, t, expires)?;
         self.discover_filesystems(root, &mut graph, t, expires)?;
         self.discover_sensors(root, &mut graph, t, expires)?;
+        // After physical devices exist, link each network interface to its
+        // underlying PCI/USB device so the interface inherits the device's
+        // driver/firmware/bus dependencies (M6 acceptance criterion #6).
+        self.link_network_interfaces(root, &mut graph, t);
         Ok(graph)
+    }
+
+    /// Post-pass: for each `device:net-<iface>`, resolve the underlying
+    /// PCI/USB device via `sys/class/net/<iface>/device` and add a
+    /// `depends_on` edge to it. Runs after PCI/USB discovery so the target
+    /// nodes exist.
+    fn link_network_interfaces(
+        &self,
+        root: &Path,
+        graph: &mut SystemGraph,
+        t: Timestamp,
+    ) {
+        let nodes: Vec<NodeId> = graph
+            .nodes()
+            .values()
+            .filter(|n| n.node_type == NodeType::Device && n.node_id.0.starts_with("device:net-"))
+            .map(|n| n.node_id.clone())
+            .collect();
+        for iface_id in nodes {
+            let name = iface_id.0.trim_start_matches("device:net-");
+            let Some(slot) = self.underlying_device_slot(root, &format!("sys/class/net/{name}/device")) else {
+                continue;
+            };
+            for physical in [NodeId(format!("device:pci-{slot}")), NodeId(format!("device:usb-{slot}"))] {
+                if graph.get_node(&physical).is_some() {
+                    self.add_depends_on(graph, &iface_id, &physical, t);
+                    break;
+                }
+            }
+        }
     }
 
     pub fn reconcile(
@@ -443,6 +477,20 @@ impl SysfsDiscovery {
             }
         }
         Ok(())
+    }
+
+    /// Resolve `sys/class/net/<iface>/device` (a symlink to the PCI/USB
+    /// device path) to the slot identifier used for `device:pci-<slot>` or
+    /// `device:usb-<id>` nodes. Returns `None` if the link cannot be read.
+    fn underlying_device_slot(&self, root: &Path, rel: &str) -> Option<String> {
+        let path = root.join(rel);
+        let target = std::fs::read_link(&path).ok()?;
+        let leaf = target.file_name()?.to_string_lossy().into_owned();
+        if leaf.is_empty() {
+            None
+        } else {
+            Some(leaf)
+        }
     }
 
     fn discover_pci(
@@ -870,6 +918,12 @@ mod tests {
         write(&root.join("sys/class/net/wlan0/address"), "aa:bb:cc:dd:ee:ff\n");
         write(&root.join("sys/class/net/wlan0/mtu"), "1500\n");
         write(&root.join("sys/class/net/wlan0/operstate"), "up\n");
+        // wlan0 is backed by the PCI wireless device 0000:00:14.3.
+        std::os::unix::fs::symlink(
+            "../../../devices/pci0000:00/0000:00:1c.0/0000:00:14.3",
+            root.join("sys/class/net/wlan0/device"),
+        )
+        .unwrap();
         write(&root.join("sys/class/block/nvme0/size"), "1000215216\n");
         write(&root.join("sys/class/block/nvme0/ro"), "0\n");
         write(&root.join("sys/class/block/nvme0/removable"), "0\n");
@@ -943,6 +997,22 @@ mod tests {
             .map(|n| n.node_id.to_string())
             .collect();
         assert!(nvme_deps.contains(&"driver:nvme".to_string()), "deps: {nvme_deps:?}");
+    }
+
+    #[test]
+    fn network_interface_links_to_underlying_pci_device() {
+        let (_dir, root) = mock_root();
+        let graph = discovery(root).scan().unwrap();
+        let iface = NodeId("device:net-wlan0".into());
+        let deps: Vec<String> = graph
+            .get_dependencies(&iface)
+            .into_iter()
+            .map(|n| n.node_id.to_string())
+            .collect();
+        assert!(
+            deps.contains(&"device:pci-0000:00:14.3".to_string()),
+            "deps: {deps:?}"
+        );
     }
 
     #[test]

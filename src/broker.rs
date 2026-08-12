@@ -463,6 +463,13 @@ impl Broker {
         );
     }
 
+    pub fn grant_capability(&self, principal: &PrincipalId, capability: Capability) {
+        self.core
+            .lock()
+            .expect("broker lock")
+            .grant_capability(principal, capability);
+    }
+
     pub fn set_resource_state(&self, resource: ResourceId, state: ResourceState) {
         self.core
             .lock()
@@ -647,7 +654,27 @@ impl LocalBroker {
             }
         }
 
-        match ex.stage_and_commit(&action_id) {
+        // Extract the candidate module from the validated Stage payload
+        // (message-protocol §2.4 `ToolParameters::Stage { change }`). The
+        // executor applies it; validation of the module name happens in the
+        // executor (REQ-SAF-005). A risk-4 reset skips staging and goes
+        // straight to a checkpointed reset (action-state-machine §2.2).
+        let candidate = match &request.parameters {
+            crate::protocol::ToolParameters::Stage { change } => change
+                .get("module")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            _ => String::new(),
+        };
+
+        let result = if request.operation == Operation::Reset {
+            ex.reset_and_commit(&action_id)
+        } else {
+            ex.stage_and_commit(&action_id, &candidate)
+        };
+
+        match result {
             Ok(StagingResult::Committed) => Ok(ToolResult {
                 envelope: result_envelope(&request),
                 request_id: request.request_id,
@@ -1579,6 +1606,140 @@ mod tests {
         assert!(matches!(
             broker.evaluate(&req),
             PolicyVerdict::Deny(DenyReason::GuardianUnavailable)
+        ));
+    }
+
+    // A broker wired like staged_broker but for risk-4 reset: clearance
+    // Recovery, guardian set, MockWifiDriver, and a `wifi.request_reset` tool.
+    fn reset_broker() -> (Broker, PrincipalId, CapabilityToken, tempfile::TempDir) {
+        let broker = Broker::new();
+        let principal = PrincipalId::agent("wifi.specialist", "wifi0-instance-001");
+        let capability = Capability {
+            resource: ResourceId("device:wifi0".into()),
+            operation: Operation::Reset,
+        };
+        let token = CapabilityToken {
+            principal: principal.clone(),
+            capability: capability.clone(),
+            clearance: Clearance(RiskLevel::Recovery),
+            granted_at: crate::protocol::now(),
+            expires_at: crate::protocol::now() + 10_000,
+            provenance: Provenance {
+                granted_by: PrincipalId::system("policy-broker"),
+                package_id: "wifi.specialist".into(),
+                package_version: 1,
+                signature_verified: true,
+            },
+        };
+        broker.register_tool(ToolDefinition {
+            tool_id: "wifi.request_reset".into(),
+            specialist_package: "wifi.specialist".into(),
+            risk_level: RiskLevel::Recovery,
+            required_capabilities: vec![capability.clone()],
+            description: "reset a Wi-Fi device".into(),
+        });
+        broker.register_principal(
+            principal.clone(),
+            vec![capability.clone()],
+            Clearance(RiskLevel::Recovery),
+        );
+        broker.set_resource_state(ResourceId("device:wifi0".into()), ResourceState::Available);
+        broker.set_resource_owner(ResourceId("device:wifi0".into()), principal.clone());
+        broker.set_guardian(Guardian::new());
+        let dir = tempfile::tempdir().expect("action store directory");
+        let store = crate::action::FileActionStore::new(dir.path()).expect("action store");
+        let driver = crate::mocks::MockWifiDriver::new();
+        broker.set_executor(crate::executor::StagedExecutor::new(
+            Box::new(store),
+            Box::new(driver),
+        ));
+        (broker, principal, token, dir)
+    }
+
+    // M6 acceptance criterion #5: a driver reset is risk 4 and must be denied
+    // unless a broker-owned approval covering the exact action is present.
+    #[test]
+    fn reset_denied_without_approval() {
+        let (broker, principal, token, _dir) = reset_broker();
+        let mut request = request_for(
+            &principal,
+            &token,
+            Operation::Reset,
+            "wifi.request_reset",
+            ToolParameters::Reset {
+                to_known_good: true,
+            },
+            700,
+        );
+        let action_id = uuid::Uuid::new_v4();
+        request.action_id = Some(action_id);
+        request.plan_hash = Some([7; 32]);
+        let result = broker
+            .client(principal)
+            .request_tool(request)
+            .expect("broker response");
+        assert_eq!(result.status, ToolStatus::Denied);
+        let msg = result
+            .error
+            .expect("denial carries a reason")
+            .message;
+        assert!(msg.contains("approval"), "denied: {msg}");
+    }
+
+    // End-to-end: with a broker-owned approval scoped to this exact action,
+    // the risk-4 reset runs through the executor and commits.
+    #[test]
+    fn reset_commits_with_broker_owned_approval() {
+        let (broker, principal, token, _dir) = reset_broker();
+        let action_id = uuid::Uuid::new_v4();
+        let plan_hash = [9; 32];
+        broker.add_approval(Approval {
+            envelope: crate::protocol::MessageEnvelope::new(
+                crate::protocol::MessageType::Approval,
+                PrincipalId::user(),
+                uuid::Uuid::new_v4(),
+                crate::protocol::DataClassification::Protected,
+            ),
+            approval_id: uuid::Uuid::new_v4(),
+            plan_id: uuid::Uuid::new_v4(),
+            plan_hash,
+            approved_by: PrincipalId::user(),
+            granted_at: crate::protocol::now(),
+            expires_at: crate::protocol::now() + 60_000,
+            scope: ApprovalScope {
+                actions: vec![crate::protocol::ApprovedAction {
+                    action_id,
+                    resource: ResourceId("device:wifi0".into()),
+                    operation: Operation::Reset,
+                    tool_id: "wifi.request_reset".into(),
+                }],
+                resources: vec![ResourceId("device:wifi0".into())],
+                operations: vec![Operation::Reset],
+            },
+        });
+        let mut request = request_for(
+            &principal,
+            &token,
+            Operation::Reset,
+            "wifi.request_reset",
+            ToolParameters::Reset {
+                to_known_good: true,
+            },
+            701,
+        );
+        request.action_id = Some(action_id);
+        request.plan_hash = Some(plan_hash);
+        let result = broker
+            .client(principal)
+            .request_tool(request)
+            .expect("broker response");
+        assert_eq!(result.status, ToolStatus::Success);
+        assert!(matches!(
+            result.data,
+            Some(crate::protocol::ToolData::CommitResult {
+                committed: true,
+                health_verified: true
+            })
         ));
     }
 }

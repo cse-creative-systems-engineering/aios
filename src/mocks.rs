@@ -1,6 +1,6 @@
 use crate::action::{
-    Checkpoint, CheckpointError, CheckpointState, CommitError, HealthError, RollbackError,
-    StageError,
+    Checkpoint, CheckpointError, CheckpointState, CommitError, HealthError, ResetError,
+    RollbackError, StageError,
 };
 use crate::broker::{BrokerClient, LocalBroker, build_request};
 use crate::capability::{
@@ -279,6 +279,7 @@ pub struct MockWifiDriver {
     pub module: String,
     pub version: String,
     pub health_ok: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pub reset_ok: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl MockWifiDriver {
@@ -287,6 +288,7 @@ impl MockWifiDriver {
             module: "iwlwifi".into(),
             version: "1.0.0".into(),
             health_ok: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            reset_ok: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         }
     }
 }
@@ -320,7 +322,8 @@ impl ResourceDriver for MockWifiDriver {
         Ok(())
     }
 
-    fn stage(&mut self, _checkpoint: &Checkpoint) -> Result<(), StageError> {
+    fn stage(&mut self, _checkpoint: &Checkpoint, candidate: &str) -> Result<(), StageError> {
+        self.module = candidate.to_string();
         self.version = "9.9.9".into();
         Ok(())
     }
@@ -341,6 +344,18 @@ impl ResourceDriver for MockWifiDriver {
     }
 
     fn rollback(&mut self, _checkpoint: &Checkpoint) -> Result<(), RollbackError> {
+        self.version = "1.0.0".into();
+        Ok(())
+    }
+
+    fn reset(&mut self) -> Result<(), ResetError> {
+        if !self
+            .reset_ok
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return Err(ResetError::ResetFailed("mock reset failed".into()));
+        }
+        self.module = "iwlwifi".into();
         self.version = "1.0.0".into();
         Ok(())
     }

@@ -234,6 +234,17 @@ pub enum RollbackError {
     HealthCheckFailed(String),
 }
 
+#[derive(Debug)]
+pub enum ResetError {
+    /// This resource driver does not support a device reset.
+    Unsupported,
+    CheckpointMissing(CheckpointId),
+    CheckpointCorrupted(CheckpointId),
+    ResetFailed(String),
+    HealthCheckFailed(String),
+    Internal(String),
+}
+
 pub trait ActionStore {
     fn save(&self, record: &ActionRecord) -> Result<(), PersistenceError>;
     fn load(&self, action_id: &ActionId) -> Result<ActionRecord, PersistenceError>;
@@ -242,6 +253,20 @@ pub trait ActionStore {
     fn load_checkpoint(&self, checkpoint_id: &CheckpointId)
     -> Result<Checkpoint, PersistenceError>;
     fn delete_checkpoint(&self, checkpoint_id: &CheckpointId) -> Result<(), PersistenceError>;
+    /// Write-ahead: persist a pending transition intent BEFORE it is executed
+    /// (action-state-machine.md §5.3). If a crash occurs before the record's
+    /// state is advanced, recovery sees the intent and knows the transition
+    /// did not complete.
+    fn journal_pending_transition(
+        &self,
+        action_id: &ActionId,
+        from: ActionState,
+        to: ActionState,
+        reason: &str,
+    ) -> Result<(), PersistenceError>;
+    /// Clear the pending transition intent after the state change is durably
+    /// persisted.
+    fn clear_pending_transition(&self, action_id: &ActionId) -> Result<(), PersistenceError>;
 }
 
 pub struct FileActionStore {
@@ -267,8 +292,13 @@ impl ActionStore for FileActionStore {
         let json = serde_json::to_vec_pretty(record)
             .map_err(|e| PersistenceError::StorageFailed(e.to_string()))?;
         let tmp = self.dir.join(format!("{}.tmp", record.action_id));
-        std::fs::write(&tmp, &json).map_err(|e| PersistenceError::StorageFailed(e.to_string()))?;
+        // Atomic durable write: write, fsync the data, then rename into place
+        // and fsync the directory so the rename is durable across power loss
+        // (action-state-machine.md §5.3: "Writes are atomic (fsync)").
+        write_file_synced(&tmp, &json)
+            .map_err(|e| PersistenceError::StorageFailed(e.to_string()))?;
         std::fs::rename(&tmp, &path).map_err(|e| PersistenceError::StorageFailed(e.to_string()))?;
+        sync_dir(&self.dir).map_err(|e| PersistenceError::StorageFailed(e.to_string()))?;
         Ok(())
     }
 
@@ -297,7 +327,10 @@ impl ActionStore for FileActionStore {
                 .file_name()
                 .and_then(|name| name.to_str())
                 .unwrap_or("");
-            if file_name.ends_with(".tmp") || file_name.starts_with("checkpoint-") {
+            if file_name.ends_with(".tmp")
+                || file_name.starts_with("checkpoint-")
+                || file_name.starts_with("pending-")
+            {
                 continue;
             }
             let bytes =
@@ -318,8 +351,10 @@ impl ActionStore for FileActionStore {
             .join(format!("checkpoint-{}.tmp", checkpoint.checkpoint_id));
         let bytes = serde_json::to_vec_pretty(checkpoint)
             .map_err(|e| PersistenceError::StorageFailed(e.to_string()))?;
-        std::fs::write(&tmp, bytes).map_err(|e| PersistenceError::StorageFailed(e.to_string()))?;
-        std::fs::rename(tmp, path).map_err(|e| PersistenceError::StorageFailed(e.to_string()))
+        write_file_synced(&tmp, &bytes)
+            .map_err(|e| PersistenceError::StorageFailed(e.to_string()))?;
+        std::fs::rename(tmp, path).map_err(|e| PersistenceError::StorageFailed(e.to_string()))?;
+        sync_dir(&self.dir).map_err(|e| PersistenceError::StorageFailed(e.to_string()))
     }
 
     fn load_checkpoint(
@@ -340,11 +375,68 @@ impl ActionStore for FileActionStore {
     fn delete_checkpoint(&self, checkpoint_id: &CheckpointId) -> Result<(), PersistenceError> {
         let path = self.dir.join(format!("checkpoint-{}.json", checkpoint_id));
         match std::fs::remove_file(path) {
-            Ok(()) => Ok(()),
+            Ok(()) => sync_dir(&self.dir)
+                .map_err(|e| PersistenceError::StorageFailed(e.to_string())),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(PersistenceError::StorageFailed(e.to_string())),
         }
     }
+
+    fn journal_pending_transition(
+        &self,
+        action_id: &ActionId,
+        from: ActionState,
+        to: ActionState,
+        reason: &str,
+    ) -> Result<(), PersistenceError> {
+        let path = self.dir.join(format!("pending-{action_id}.json"));
+        let pending = PendingTransition {
+            action_id: *action_id,
+            from,
+            to,
+            reason: reason.to_string(),
+        };
+        let bytes = serde_json::to_vec_pretty(&pending)
+            .map_err(|e| PersistenceError::StorageFailed(e.to_string()))?;
+        write_file_synced(&path, &bytes)
+            .map_err(|e| PersistenceError::StorageFailed(e.to_string()))?;
+        sync_dir(&self.dir).map_err(|e| PersistenceError::StorageFailed(e.to_string()))
+    }
+
+    fn clear_pending_transition(&self, action_id: &ActionId) -> Result<(), PersistenceError> {
+        let path = self.dir.join(format!("pending-{action_id}.json"));
+        match std::fs::remove_file(path) {
+            Ok(()) => sync_dir(&self.dir)
+                .map_err(|e| PersistenceError::StorageFailed(e.to_string())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(PersistenceError::StorageFailed(e.to_string())),
+        }
+    }
+}
+
+/// A write-ahead pending transition intent (action-state-machine.md §5.3).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PendingTransition {
+    pub action_id: ActionId,
+    pub from: ActionState,
+    pub to: ActionState,
+    pub reason: String,
+}
+
+/// Write a file and fsync its data before returning, so the contents are
+/// durable across a crash or power loss (not just in the page cache).
+fn write_file_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut file = std::fs::File::create(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    Ok(())
+}
+
+/// fsync a directory so a rename/remove within it is durable across power
+/// loss (action-state-machine.md §5.3).
+fn sync_dir(dir: &Path) -> std::io::Result<()> {
+    std::fs::File::open(dir)?.sync_all()
 }
 
 #[cfg(test)]

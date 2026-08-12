@@ -80,6 +80,8 @@ impl HttpBackend {
                 function_tool("deps", "Query node dependencies", "target"),
                 function_tool("impact", "Query node impact relationships", "target"),
                 function_tool("health", "Summarize graph health", "query"),
+                function_tool("wifi.observe_device", "Observe the Wi-Fi specialist device", "target"),
+                function_tool("wifi.diagnose_fault", "Diagnose a Wi-Fi fault", "target"),
             ]);
             body["tool_choice"] = json!("auto");
         }

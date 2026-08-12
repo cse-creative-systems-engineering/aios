@@ -298,12 +298,23 @@ impl SpecialistTool for QueryNodes {
     }
     fn run(&self, graph: &SystemGraph, args: &str) -> Result<ToolResult, ToolError> {
         let needle = require_args(args, "query <type>")?;
-        let node_type = parse_node_type(&needle)?;
+        // Deterministic resolution: if the needle is a recognized node type,
+        // list all nodes of that type. Otherwise resolve it as a resource
+        // reference (system-graph §6) and return the matching node(s).
+        let node_type = parse_node_type(&needle).ok();
         let mut nodes: Vec<crate::graph::NodeMetadata> = match node_type {
-            Some(t) => graph.get_nodes_by_type(t),
-            None => graph.nodes().values().cloned().collect(),
+            Some(Some(t)) => graph.get_nodes_by_type(t),
+            Some(None) => graph.nodes().values().cloned().collect(),
+            None => {
+                let found = find_nodes(graph, &needle);
+                if found.is_empty() {
+                    return Err(ToolError::NotFound(needle.clone()));
+                }
+                found.into_iter().map(|(_, node)| node.clone()).collect()
+            }
         };
         nodes.sort_by(|a, b| a.node_id.to_string().cmp(&b.node_id.to_string()));
+        nodes.dedup_by(|a, b| a.node_id == b.node_id);
 
         if nodes.is_empty() {
             return Ok(ToolResult {
@@ -544,8 +555,79 @@ pub fn tools_context(graph: &SystemGraph) -> String {
     lines.join("\n")
 }
 
+/// Compact, discoverable index of all resources by type.
+///
+/// Per system-graph §6.1, agents receive a relevant projection of the graph,
+/// not the entire graph. This function returns a compact listing of valid
+/// target identifiers (node IDs and labels) that the model can use with
+/// observe/diagnose/deps/impact tools. Full attribute dumps are NOT included
+/// here — the model calls the tool with a target to get full details.
+pub fn resource_index(graph: &SystemGraph) -> String {
+    let mut lines = Vec::new();
+
+    let devices = graph.get_nodes_by_type(NodeType::Device);
+    if !devices.is_empty() {
+        lines.push(format!("{} devices:", devices.len()));
+        for node in &devices {
+            lines.push(format!("  {} ({})", node.node_id, node.label));
+        }
+    }
+
+    let services: Vec<_> = graph.get_nodes_by_type(NodeType::Service);
+    if !services.is_empty() {
+        lines.push(format!("{} services:", services.len()));
+        for node in services.iter().take(24) {
+            lines.push(format!("  {} health={:?}", node.node_id, node.health));
+        }
+        if services.len() > 24 {
+            lines.push(format!("  ... and {} more", services.len() - 24));
+        }
+    }
+
+    let sensors = graph.get_nodes_by_type(NodeType::Sensor);
+    if !sensors.is_empty() {
+        lines.push(format!("{} sensors:", sensors.len()));
+        for node in &sensors {
+            lines.push(format!("  {} ({})", node.node_id, node.label));
+        }
+    }
+
+    let drivers = graph.get_nodes_by_type(NodeType::Driver);
+    if !drivers.is_empty() {
+        lines.push(format!("{} drivers:", drivers.len()));
+        for node in &drivers {
+            lines.push(format!("  {} ({})", node.node_id, node.label));
+        }
+    }
+
+    let cpus = graph.get_nodes_by_type(NodeType::Cpu);
+    if !cpus.is_empty() {
+        lines.push(format!("{} cpus", cpus.len()));
+    }
+
+    let memory = graph.get_nodes_by_type(NodeType::Memory);
+    if !memory.is_empty() {
+        lines.push(format!("{} memory nodes", memory.len()));
+    }
+
+    let firmware = graph.get_nodes_by_type(NodeType::Firmware);
+    if !firmware.is_empty() {
+        lines.push(format!("{} firmware", firmware.len()));
+    }
+
+    let filesystems = graph.get_nodes_by_type(NodeType::Filesystem);
+    if !filesystems.is_empty() {
+        lines.push(format!("{} filesystems", filesystems.len()));
+    }
+
+    if lines.is_empty() {
+        return "no resources discovered".to_string();
+    }
+    lines.join("\n")
+}
+
 pub fn model_tool_instructions() -> &'static str {
-    "Read-only machine tools are available. Never invent command output and never claim to run shell commands. Before answering any user message, emit ONLY this JSON shape: {\"tool_calls\":[{\"tool\":\"observe|diagnose|query|deps|impact|health\",\"args\":\"...\"}]}. Use query sensor for sensor readings, query memory for memory data, and query device for hardware. After receiving tool results, answer only from those results. If a tool cannot establish a fact, say so."
+    "Read-only machine tools are available. Never invent command output and never claim to run shell commands. The available tools are: observe, diagnose, query, deps, impact, health, wifi.observe_device, wifi.diagnose_fault. To use a tool, emit a native function call: {\"tool_calls\":[{\"function\":{\"name\":\"<tool>\",\"arguments\":\"<args>\"}}]} where <tool> is exactly one of the available tools and <args> is a plain string argument. Use query sensor for sensor readings, query memory for memory data, and query device for hardware. For a Wi-Fi device, use wifi.observe_device to read its state and wifi.diagnose_fault to diagnose it. After receiving tool results, answer only from those results. If a tool cannot establish a fact, say so."
 }
 
 #[cfg(test)]
@@ -663,11 +745,17 @@ mod tests {
     }
 
     #[test]
-    fn query_unknown_type_is_usage_error() {
+    fn query_unknown_type_resolves_as_resource_or_not_found() {
         let graph = fixture();
         let registry = ToolRegistry::new();
+        // A free-text target that matches a node resolves (system-graph §6).
+        let result = registry
+            .run(&graph, "query", "wifi0")
+            .expect("free-text resolves");
+        assert!(result.text.contains("dev:wifi0"), "{}", result.text);
+        // A target matching nothing is NotFound, not a usage error.
         let err = registry.run(&graph, "query", "teleporter").unwrap_err();
-        assert!(matches!(err, ToolError::Usage(_)), "{err}");
+        assert!(matches!(err, ToolError::NotFound(_)), "{err}");
     }
 
     #[test]
@@ -710,5 +798,20 @@ mod tests {
         let ctx = tools_context(&graph);
         assert!(ctx.contains("dev:wifi0"), "{ctx}");
         assert!(ctx.contains("svc:networkd"), "{ctx}");
+    }
+
+    #[test]
+    fn resource_index_lists_valid_targets_compactly() {
+        let graph = fixture();
+        let index = resource_index(&graph);
+        // Device labels are included so the model can discover valid targets.
+        assert!(index.contains("dev:wifi0"), "{index}");
+        assert!(index.contains("Wireless controller"), "{index}");
+        assert!(index.contains("dev:eth0"), "{index}");
+        // The driver node is listed as a target.
+        assert!(index.contains("driver:iwlwifi"), "{index}");
+        // The index is a compact projection: it must not dump dependency
+        // chains or full attribute maps (system-graph §6.1).
+        assert!(!index.contains("->"), "{index}");
     }
 }

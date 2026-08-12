@@ -1,7 +1,7 @@
 use crate::action::{
     ActionError, ActionRecord, ActionState, ActionStore, Checkpoint, CheckpointError, CommitError,
-    HealthError, PersistenceError, RecoveryOutcome, RollbackError, StageError, TransitionError,
-    can_transition,
+    HealthError, PersistenceError, RecoveryOutcome, ResetError, RollbackError, StageError,
+    TransitionError, can_transition,
 };
 use crate::capability::{Operation, PrincipalId, ResourceId, RiskLevel};
 use crate::protocol::{ActionId, CorrelationId, HealthState};
@@ -29,10 +29,38 @@ pub trait ResourceDriver: Send {
         resource: &ResourceId,
     ) -> Result<Checkpoint, CheckpointError>;
     fn verify_checkpoint(&self, checkpoint: &Checkpoint) -> Result<(), CheckpointError>;
-    fn stage(&mut self, checkpoint: &Checkpoint) -> Result<(), StageError>;
+    /// Apply the candidate change (e.g. the driver module to load) to the
+    /// resource. The candidate comes from the validated `Stage.change`
+    /// payload of the ToolRequest (message-protocol §2.4), not from driver
+    /// state.
+    fn stage(&mut self, checkpoint: &Checkpoint, candidate: &str) -> Result<(), StageError>;
     fn health_check(&self, resource: &ResourceId) -> Result<HealthState, HealthError>;
     fn commit(&mut self, checkpoint: &Checkpoint) -> Result<(), CommitError>;
     fn rollback(&mut self, checkpoint: &Checkpoint) -> Result<(), RollbackError>;
+    /// Reset the resource to a known-good state (risk level 4
+    /// `request_reset`). A checkpoint is created before the reset so the
+    /// prior state can be restored if the reset or its health check fails
+    /// (action-state-machine §2.2 risk-4 path). Default: unsupported.
+    fn reset(&mut self) -> Result<(), ResetError> {
+        Err(ResetError::Unsupported)
+    }
+}
+
+/// Validate a kernel module name before it is passed to the driver. Accepts
+/// only `[A-Za-z0-9._-]` (kernel module syntax), trimming whitespace. Returns
+/// `None` if invalid (REQ-SAF-005: module names from requests are untrusted).
+fn validate_module(candidate: &str) -> Option<String> {
+    let trimmed = candidate.trim();
+    if trimmed.is_empty() || trimmed.len() > 256 {
+        return None;
+    }
+    if trimmed
+        .chars()
+        .any(|c| !c.is_ascii_alphanumeric() && !matches!(c, '-' | '_' | '.'))
+    {
+        return None;
+    }
+    Some(trimmed.to_string())
 }
 
 pub struct StagedExecutor {
@@ -87,6 +115,12 @@ impl StagedExecutor {
                 to,
             });
         }
+        // Write-ahead: persist the transition intent before executing it
+        // (action-state-machine.md §5.3). If we crash between here and the
+        // durable state update, recovery sees the pending intent.
+        self.store
+            .journal_pending_transition(action_id, record.state, to, reason)
+            .map_err(|e| TransitionError::PersistenceFailed(format!("{e:?}")))?;
         record.state_history.push(crate::action::StateTransition {
             from: record.state,
             to,
@@ -97,6 +131,10 @@ impl StagedExecutor {
         record.updated_at = crate::protocol::now();
         self.store
             .save(&record)
+            .map_err(|e| TransitionError::PersistenceFailed(format!("{e:?}")))?;
+        // The state change is durably persisted; the intent is fulfilled.
+        self.store
+            .clear_pending_transition(action_id)
             .map_err(|e| TransitionError::PersistenceFailed(format!("{e:?}")))?;
         Ok(())
     }
@@ -132,11 +170,11 @@ impl StagedExecutor {
             .verify_checkpoint(checkpoint)
     }
 
-    pub fn stage(&mut self, checkpoint: &Checkpoint) -> Result<(), StageError> {
+    pub fn stage(&mut self, checkpoint: &Checkpoint, candidate: &str) -> Result<(), StageError> {
         self.driver
             .lock()
             .map_err(|e| StageError::Internal(e.to_string()))?
-            .stage(checkpoint)
+            .stage(checkpoint, candidate)
     }
 
     pub fn health_check(&self, resource: &ResourceId) -> Result<HealthState, HealthError> {
@@ -167,7 +205,12 @@ impl StagedExecutor {
     pub fn stage_and_commit(
         &mut self,
         action_id: &ActionId,
+        candidate: &str,
     ) -> Result<StagingResult, StagingError> {
+        // The candidate module name is validated before staging: it must be a
+        // plain kernel module identifier to avoid shell/arg injection
+        // (REQ-SAF-005: external data is untrusted).
+        let module = validate_module(candidate).ok_or(StagingError::StageFailed)?;
         let record = self
             .store
             .load(action_id)
@@ -200,7 +243,7 @@ impl StagedExecutor {
             return Err(StagingError::CheckpointFailed);
         }
 
-        if self.stage(&checkpoint).is_err() {
+        if self.stage(&checkpoint, &module).is_err() {
             self.transition(action_id, ActionState::Failed, "stage failed")
                 .map_err(|_| StagingError::StageFailed)?;
             return Err(StagingError::StageFailed);
@@ -263,6 +306,73 @@ impl StagedExecutor {
             self.store.delete_checkpoint(&id)?;
         }
         Ok(())
+    }
+
+    /// Execute a risk-4 device reset (action-state-machine §2.2):
+    /// the action is already `Approved`; create a checkpoint, perform the
+    /// reset, health-check, then commit (deleting the checkpoint) or roll
+    /// back to the checkpointed state. Guarded by broker-owned approval
+    /// before this is reached (human-interaction §1).
+    pub fn reset_and_commit(&mut self, action_id: &ActionId) -> Result<StagingResult, StagingError> {
+        let record = self
+            .store
+            .load(action_id)
+            .map_err(|_| StagingError::CheckpointFailed)?;
+        if record.state != ActionState::Approved {
+            return Err(StagingError::CheckpointFailed);
+        }
+
+        let checkpoint = match self.create_checkpoint(action_id) {
+            Ok(cp) => cp,
+            Err(_) => {
+                self.transition(action_id, ActionState::Failed, "checkpoint creation failed")
+                    .map_err(|_| StagingError::CheckpointFailed)?;
+                return Err(StagingError::CheckpointFailed);
+            }
+        };
+        if self.verify_checkpoint(&checkpoint).is_err() {
+            self.transition(
+                action_id,
+                ActionState::Failed,
+                "checkpoint verification failed",
+            )
+            .map_err(|_| StagingError::CheckpointFailed)?;
+            return Err(StagingError::CheckpointFailed);
+        }
+
+        let reset_ok = {
+            let mut driver = self
+                .driver
+                .lock()
+                .map_err(|_| StagingError::RollbackFailed)?;
+            driver.reset().is_ok()
+        };
+        if !reset_ok {
+            return self.do_rollback(action_id, &checkpoint);
+        }
+
+        let healthy = match self.health_check(&record.resource) {
+            Ok(state) => matches!(state, HealthState::Healthy | HealthState::Degraded),
+            Err(_) => false,
+        };
+        if !healthy {
+            return self.do_rollback(action_id, &checkpoint);
+        }
+
+        // The risk-4 fast path leads Approved → Committed directly (skip
+        // staging and the HealthVerified state, action-state-machine §2.2).
+        // The health check above gates the commit; on failure we already
+        // rolled back. Commit consumes the checkpoint.
+        match self.commit(&checkpoint) {
+            Ok(()) => {
+                self.transition(action_id, ActionState::Committed, "reset committed")
+                    .map_err(|_| StagingError::CommitFailed)?;
+                self.delete_checkpoint(action_id)
+                    .map_err(|_| StagingError::CommitFailed)?;
+                Ok(StagingResult::Committed)
+            }
+            Err(_) => self.do_rollback(action_id, &checkpoint),
+        }
     }
 
     pub fn recover(&mut self) -> Result<Vec<RecoveryOutcome>, PersistenceError> {
@@ -494,6 +604,7 @@ mod tests {
         health_error: bool,
         verify_ok: bool,
         rollback_ok: bool,
+        reset_ok: bool,
     }
 
     impl MockDriver {
@@ -530,7 +641,7 @@ mod tests {
             }
         }
 
-        fn stage(&mut self, _cp: &Checkpoint) -> Result<(), StageError> {
+        fn stage(&mut self, _cp: &Checkpoint, _candidate: &str) -> Result<(), StageError> {
             self.state += 1;
             Ok(())
         }
@@ -559,6 +670,14 @@ mod tests {
             self.state = self.snapshot().saturating_sub(1);
             Ok(())
         }
+
+        fn reset(&mut self) -> Result<(), ResetError> {
+            if !self.reset_ok {
+                return Err(ResetError::ResetFailed("test reset failure".into()));
+            }
+            self.state += 10;
+            Ok(())
+        }
     }
 
     fn fresh(dir: &tempfile::TempDir, health_ok: bool) -> (StagedExecutor, u64) {
@@ -569,6 +688,7 @@ mod tests {
             health_error: false,
             verify_ok: true,
             rollback_ok: true,
+            reset_ok: true,
         };
         let current = driver.state;
         let executor = StagedExecutor::new(store, Box::new(driver));
@@ -589,6 +709,7 @@ mod tests {
             health_error,
             verify_ok,
             rollback_ok,
+            reset_ok: true,
         };
         StagedExecutor::new(store, Box::new(driver))
     }
@@ -645,7 +766,7 @@ mod tests {
             .unwrap();
         prestage(&mut executor, &action_id);
         assert_eq!(
-            executor.stage_and_commit(&action_id).unwrap(),
+            executor.stage_and_commit(&action_id, "mt7921e").unwrap(),
             StagingResult::Committed
         );
         let record = executor.load_record(&action_id).unwrap();
@@ -669,12 +790,121 @@ mod tests {
             .unwrap();
         prestage(&mut executor, &action_id);
         assert_eq!(
-            executor.stage_and_commit(&action_id).unwrap(),
+            executor.stage_and_commit(&action_id, "mt7921e").unwrap(),
             StagingResult::RolledBack
         );
         let record = executor.load_record(&action_id).unwrap();
         assert_eq!(record.state, ActionState::RolledBack);
         assert_eq!(checkpoint_count(&dir), 0);
+    }
+
+    // Risk-4 reset path (action-state-machine §2.2): from Approved, create a
+    // checkpoint, reset the device, health check, commit. No candidate module
+    // is staged.
+    #[test]
+    fn reset_commits_from_approved_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut executor, _) = fresh(&dir, true);
+        let action_id = executor
+            .create_action(
+                uuid::Uuid::new_v4(),
+                RiskLevel::Recovery,
+                ResourceId("device:wifi0".into()),
+                Operation::Reset,
+                PrincipalId::agent("wifi.specialist", "wifi0"),
+            )
+            .unwrap();
+        advance_to(&mut executor, &action_id, ActionState::Approved);
+        assert_eq!(
+            executor.reset_and_commit(&action_id).unwrap(),
+            StagingResult::Committed
+        );
+        let record = executor.load_record(&action_id).unwrap();
+        assert_eq!(record.state, ActionState::Committed);
+        assert_eq!(checkpoint_count(&dir), 0);
+    }
+
+    #[test]
+    fn reset_rolls_back_when_health_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut executor, _) = fresh(&dir, false);
+        let action_id = executor
+            .create_action(
+                uuid::Uuid::new_v4(),
+                RiskLevel::Recovery,
+                ResourceId("device:wifi0".into()),
+                Operation::Reset,
+                PrincipalId::agent("wifi.specialist", "wifi0"),
+            )
+            .unwrap();
+        advance_to(&mut executor, &action_id, ActionState::Approved);
+        assert_eq!(
+            executor.reset_and_commit(&action_id).unwrap(),
+            StagingResult::RolledBack
+        );
+        let record = executor.load_record(&action_id).unwrap();
+        assert_eq!(record.state, ActionState::RolledBack);
+        assert_eq!(checkpoint_count(&dir), 0);
+    }
+
+    #[test]
+    fn reset_requires_approved_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut executor, _) = fresh(&dir, true);
+        let action_id = executor
+            .create_action(
+                uuid::Uuid::new_v4(),
+                RiskLevel::Recovery,
+                ResourceId("device:wifi0".into()),
+                Operation::Reset,
+                PrincipalId::agent("wifi.specialist", "wifi0"),
+            )
+            .unwrap();
+        // Only GuardianChecked — reset must not proceed without approval.
+        advance_to(&mut executor, &action_id, ActionState::GuardianChecked);
+        assert_eq!(
+            executor.reset_and_commit(&action_id),
+            Err(StagingError::CheckpointFailed)
+        );
+        assert_eq!(
+            executor.load_record(&action_id).unwrap().state,
+            ActionState::GuardianChecked
+        );
+    }
+
+    #[test]
+    fn reset_rolls_back_when_reset_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Box::new(crate::action::FileActionStore::new(dir.path()).expect("store init"));
+        let mut executor = StagedExecutor::new(
+            store,
+            Box::new(MockDriver {
+                state: 10,
+                health_ok: true,
+                health_error: false,
+                verify_ok: true,
+                rollback_ok: true,
+                reset_ok: false,
+            }),
+        );
+        let action_id = executor
+            .create_action(
+                uuid::Uuid::new_v4(),
+                RiskLevel::Recovery,
+                ResourceId("device:wifi0".into()),
+                Operation::Reset,
+                PrincipalId::agent("wifi.specialist", "wifi0"),
+            )
+            .unwrap();
+        advance_to(&mut executor, &action_id, ActionState::Approved);
+        assert_eq!(
+            executor.reset_and_commit(&action_id).unwrap(),
+            StagingResult::RolledBack
+        );
+        assert_eq!(
+            executor.load_record(&action_id).unwrap().state,
+            ActionState::RolledBack
+        );
     }
 
     #[test]
@@ -762,7 +992,7 @@ mod tests {
             .unwrap();
         prestage(&mut executor, &action_id);
         assert_eq!(
-            executor.stage_and_commit(&action_id).unwrap(),
+            executor.stage_and_commit(&action_id, "mt7921e").unwrap(),
             StagingResult::RolledBack
         );
         assert_eq!(
@@ -786,7 +1016,7 @@ mod tests {
             .unwrap();
         prestage(&mut executor, &action_id);
         assert_eq!(
-            executor.stage_and_commit(&action_id),
+            executor.stage_and_commit(&action_id, "mt7921e"),
             Err(StagingError::RollbackFailed)
         );
         assert_eq!(
@@ -823,6 +1053,7 @@ mod tests {
                 health_error: false,
                 verify_ok: true,
                 rollback_ok: true,
+                reset_ok: true,
             }),
         );
         let outcomes = recovered.recover().expect("recovery store readable");
@@ -856,9 +1087,79 @@ mod tests {
                 health_error: false,
                 verify_ok: true,
                 rollback_ok: true,
+                reset_ok: true,
             }),
         );
         let outcomes = recovered.recover().expect("recovery store readable");
         assert_eq!(outcomes[0].to_state, ActionState::Rejected);
+    }
+
+    #[test]
+    fn transition_journals_write_ahead_and_clears_after_persist() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut executor, _) = fresh(&dir, true);
+        let action_id = executor
+            .create_action(
+                uuid::Uuid::new_v4(),
+                RiskLevel::Staged,
+                ResourceId("device:wifi0".into()),
+                Operation::Stage,
+                PrincipalId::agent("wifi.specialist", "wifi0"),
+            )
+            .unwrap();
+        // No pending journal exists yet.
+        assert_eq!(pending_count(&dir), 0);
+        executor
+            .transition(&action_id, ActionState::ImpactAnalyzed, "analyzed")
+            .unwrap();
+        // After a successful transition the pending intent is cleared.
+        assert_eq!(pending_count(&dir), 0);
+        let record = executor.load_record(&action_id).unwrap();
+        assert_eq!(record.state, ActionState::ImpactAnalyzed);
+    }
+
+    #[test]
+    fn leftover_pending_journal_does_not_pollute_load_all() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut executor, _) = fresh(&dir, true);
+        let action_id = executor
+            .create_action(
+                uuid::Uuid::new_v4(),
+                RiskLevel::Staged,
+                ResourceId("device:wifi0".into()),
+                Operation::Stage,
+                PrincipalId::agent("wifi.specialist", "wifi0"),
+            )
+            .unwrap();
+        // Simulate a crash mid-transition: journal the intent but never
+        // persist the state update.
+        let store = crate::action::FileActionStore::new(dir.path()).unwrap();
+        store
+            .journal_pending_transition(
+                &action_id,
+                ActionState::Proposed,
+                ActionState::ImpactAnalyzed,
+                "crash simulation",
+            )
+            .unwrap();
+        drop(executor);
+        // load_all must not treat the pending journal as an action record.
+        let store = crate::action::FileActionStore::new(dir.path()).unwrap();
+        let records = store.load_all().unwrap();
+        assert_eq!(records.len(), 1, "only the action record, not the journal");
+        assert_eq!(records[0].state, ActionState::Proposed);
+    }
+
+    fn pending_count(dir: &tempfile::TempDir) -> usize {
+        std::fs::read_dir(dir.path())
+            .expect("state directory")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("pending-")
+            })
+            .count()
     }
 }

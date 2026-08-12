@@ -40,40 +40,76 @@ impl std::fmt::Display for WifiError {
 impl std::error::Error for WifiError {}
 
 impl WifiSpecialist {
+    /// Deterministically resolve the single wireless device the specialist
+    /// owns (modules/wifi.md: "owns one discovered wireless device at a time").
+    ///
+    /// Preference order, all deterministic (no model):
+    ///   1. A wireless *network interface* that is actually up
+    ///      (attributes `operstate=up`, e.g. `wlp1s0`) — the active primary.
+    ///   2. Otherwise a wireless PCI/USB controller.
+    /// If more than one candidate remains at the same precedence level it is
+    /// genuinely ambiguous → `NoWirelessDevice` (fail-closed, read-only).
     pub fn discover(graph: &SystemGraph) -> Result<NodeId, WifiError> {
-        let mut devices = graph
+        let is_wireless = |node: &NodeMetadata| -> bool {
+            let text = format!("{} {}", node.node_id, node.label).to_lowercase();
+            let class = node
+                .attributes
+                .get("class")
+                .map(|value| value.to_lowercase())
+                .unwrap_or_default();
+            let wireless_name = node.attributes.values().any(|value| {
+                let value = value.to_lowercase();
+                value.contains("wireless") || value.contains("wifi")
+            });
+            class.starts_with("0x028")
+                || wireless_name
+                || text.contains("wlan")
+                || text.contains("wlp")
+                || text.contains("wireless")
+        };
+
+        let wireless: Vec<NodeMetadata> = graph
             .nodes()
             .values()
-            .filter(|node| node.node_type == NodeType::Device)
+            .filter(|node| node.node_type == NodeType::Device && is_wireless(node))
+            .cloned()
+            .collect();
+
+        // Prefer a wireless network interface that is up.
+        let active_interface: Vec<NodeId> = wireless
+            .iter()
             .filter(|node| {
-                let text = format!("{} {}", node.node_id, node.label).to_lowercase();
-                let class = node
-                    .attributes
-                    .get("class")
-                    .map(|value| value.to_lowercase())
-                    .unwrap_or_default();
-                let wireless_name = node.attributes.values().any(|value| {
-                    let value = value.to_lowercase();
-                    value.contains("wireless") || value.contains("wifi")
-                });
-                class.starts_with("0x028")
-                    || wireless_name
-                    || text.contains("wlan")
-                    || text.contains("wlp")
-                    || text.contains("wireless")
+                (node.label.to_lowercase().contains("network interface")
+                    || node.node_id.0.starts_with("device:net-"))
+                    && node
+                        .attributes
+                        .get("operstate")
+                        .map(|s| s.eq_ignore_ascii_case("up"))
+                        .unwrap_or(false)
             })
             .map(|node| node.node_id.clone())
-            .collect::<Vec<_>>();
-        devices.sort_by(|a, b| a.0.cmp(&b.0));
-        let pci_or_usb = devices
-            .iter()
-            .filter(|id| id.0.starts_with("device:pci-") || id.0.starts_with("device:usb-"))
-            .cloned()
-            .collect::<Vec<_>>();
-        if !pci_or_usb.is_empty() {
-            devices = pci_or_usb;
+            .collect();
+
+        if active_interface.len() == 1 {
+            return Ok(active_interface[0].clone());
         }
-        match devices.as_slice() {
+
+        // Otherwise a wireless PCI/USB controller.
+        let controllers: Vec<NodeId> = wireless
+            .iter()
+            .filter(|node| {
+                node.node_id.0.starts_with("device:pci-")
+                    || node.node_id.0.starts_with("device:usb-")
+            })
+            .map(|node| node.node_id.clone())
+            .collect();
+
+        let mut candidates = active_interface.clone();
+        if candidates.is_empty() {
+            candidates = controllers;
+        }
+        candidates.sort_by(|a, b| a.0.cmp(&b.0));
+        match candidates.as_slice() {
             [device] => Ok(device.clone()),
             _ => Err(WifiError::NoWirelessDevice),
         }
@@ -153,14 +189,20 @@ impl WifiSpecialist {
         let device = graph
             .get_node(&self.device)
             .ok_or_else(|| WifiError::Graph(format!("device {} disappeared", self.device)))?;
-        let dependencies = graph.get_dependencies(&self.device);
-        let driver_present = dependencies.iter().any(|node| {
+        // Walk the device's dependency neighborhood (the interface depends on
+        // the physical PCI/USB device, which depends on the driver, bus, and
+        // firmware). Direct deps alone would miss the 2-hop driver/firmware.
+        let neighborhood: Vec<crate::graph::NodeMetadata> = graph
+            .get_subgraph(&self.device, 3)
+            .map(|s| s.nodes)
+            .unwrap_or_else(|| graph.get_dependencies(&self.device));
+        let driver_present = neighborhood.iter().any(|node| {
             node.node_type == NodeType::Driver || node.node_id.0.starts_with("driver:")
         });
-        let bus_present = dependencies
+        let bus_present = neighborhood
             .iter()
             .any(|node| node.node_type == NodeType::Bus);
-        let network_service_present = dependencies.iter().any(|node| {
+        let network_service_present = neighborhood.iter().any(|node| {
             node.node_type == NodeType::Service
                 && (node.label.to_lowercase().contains("network")
                     || node.node_id.0.contains("networkd"))
@@ -171,6 +213,97 @@ impl WifiSpecialist {
             bus_present,
             network_service_present,
         })
+    }
+
+    /// Bounded observe tool: read device, driver, bus, and network-service state.
+    /// Returns a structured `ToolData::DeviceState`. (REQ-FUNC-003 / message-protocol §8.1)
+    pub fn observe(&self, graph: &SystemGraph) -> crate::protocol::ToolResult {
+        let device = graph.get_node(&self.device);
+        let mut metrics = HashMap::new();
+        match self.health(graph) {
+            Ok(health) => {
+                metrics.insert("driver".into(), health.driver_present.to_string());
+                metrics.insert("bus".into(), health.bus_present.to_string());
+                metrics.insert(
+                    "network_service".into(),
+                    health.network_service_present.to_string(),
+                );
+                metrics.insert("device_health".into(), format!("{:?}", health.device));
+            }
+            Err(e) => {
+                metrics.insert("error".into(), e.to_string());
+            }
+        }
+        if let Some(node) = &device {
+            metrics.insert(
+                "state".into(),
+                graph
+                    .get_owner(&self.device)
+                    .map(|_| "available".to_string())
+                    .unwrap_or_else(|| "unknown".to_string()),
+            );
+            let _ = node;
+        }
+        crate::protocol::ToolResult {
+            envelope: crate::protocol::MessageEnvelope::new(
+                crate::protocol::MessageType::ToolResult,
+                PrincipalId::system(PACKAGE_ID),
+                uuid::Uuid::new_v4(),
+                crate::protocol::DataClassification::SystemConfig,
+            ),
+            request_id: uuid::Uuid::new_v4(),
+            status: crate::protocol::ToolStatus::Success,
+            data: Some(crate::protocol::ToolData::DeviceState {
+                state: crate::capability::ResourceState::Available,
+                metrics,
+            }),
+            error: None,
+            health_impact: None,
+        }
+    }
+
+    /// Bounded diagnose tool: compare observations with the Wi-Fi invariants
+    /// (DRIVER-001, NETWORK-002). (modules/wifi.md)
+    pub fn diagnose(&self, graph: &SystemGraph) -> crate::protocol::ToolResult {
+        let mut findings: Vec<String> = Vec::new();
+        let mut confidence: f64 = 0.5;
+        match self.health(graph) {
+            Ok(health) => {
+                if !health.driver_present {
+                    findings.push("DRIVER-001: no active driver present".into());
+                    confidence = 0.8;
+                }
+                if !health.network_service_present {
+                    findings.push("NETWORK-002: network service not detected".into());
+                    confidence = 0.8;
+                }
+                if health.device == HealthState::Unhealthy {
+                    findings.push("device reports unhealthy".into());
+                    confidence = 0.7;
+                }
+                if findings.is_empty() {
+                    findings.push("no invariant violation found".into());
+                    confidence = 0.9;
+                }
+            }
+            Err(e) => {
+                findings.push(format!("graph error: {e}"));
+                confidence = 0.3;
+            }
+        }
+        crate::protocol::ToolResult {
+            envelope: crate::protocol::MessageEnvelope::new(
+                crate::protocol::MessageType::ToolResult,
+                PrincipalId::system(PACKAGE_ID),
+                uuid::Uuid::new_v4(),
+                crate::protocol::DataClassification::SystemConfig,
+            ),
+            request_id: uuid::Uuid::new_v4(),
+            status: crate::protocol::ToolStatus::Success,
+            data: Some(crate::protocol::ToolData::Diagnosis { findings, confidence }),
+            error: None,
+            health_impact: None,
+        }
     }
 }
 
@@ -209,6 +342,7 @@ mod tests {
             1,
         );
         wifi.label = "network interface wlp1s0".into();
+        wifi.attributes.insert("operstate".into(), "up".into());
         graph.add_node(wifi).unwrap();
         graph
     }
@@ -259,5 +393,151 @@ mod tests {
         assert!(!health.driver_present);
         assert!(!health.bus_present);
         assert!(!health.network_service_present);
+    }
+
+    // Build the real 2-hop dependency shape seen in live discovery:
+    // interface (device:net-wlp1s0) depends_on PCI device
+    // (device:pci-...), which depends_on the driver, bus, and network
+    // service. Direct 1-hop deps miss the driver/bus; health() must walk
+    // the subgraph to see them (modules/wifi.md invariants DRIVER-001,
+    // NETWORK-002).
+    fn seeded_two_hop_graph() -> SystemGraph {
+        let mut graph = wifi_graph();
+        let mut pci = NodeMetadata::new(
+            NodeId("device:pci-0000:01:00.0".into()),
+            NodeType::Device,
+            ProvenanceSource::Discovered {
+                via: "sysfs".into(),
+            },
+            TrustLevel::Trusted,
+            1,
+        );
+        pci.label = "wireless PCI device".into();
+        let driver = NodeMetadata::new(
+            NodeId("driver:mt7921e_git".into()),
+            NodeType::Driver,
+            ProvenanceSource::Discovered {
+                via: "sysfs".into(),
+            },
+            TrustLevel::Trusted,
+            1,
+        );
+        let bus = NodeMetadata::new(
+            NodeId("bus:pci0000:01".into()),
+            NodeType::Bus,
+            ProvenanceSource::Discovered {
+                via: "sysfs".into(),
+            },
+            TrustLevel::Trusted,
+            1,
+        );
+        let service = NodeMetadata::new(
+            NodeId("service:systemd-networkd".into()),
+            NodeType::Service,
+            ProvenanceSource::Discovered {
+                via: "systemd".into(),
+            },
+            TrustLevel::Trusted,
+            1,
+        );
+        for node in [pci, driver, bus, service] {
+            graph.add_node(node).unwrap();
+        }
+        graph
+            .add_edge(EdgeMetadata {
+                edge_id: EdgeId::new(),
+                edge_type: EdgeType::DependsOn,
+                source_node: NodeId("device:net-wlp1s0".into()),
+                target_node: NodeId("device:pci-0000:01:00.0".into()),
+                provenance: EdgeProvenance::Observed {
+                    observed_by: PrincipalId::system("mock-discovery"),
+                    event_type: crate::protocol::EventType::DeviceAdded,
+                },
+                created_at: crate::protocol::now(),
+                last_observed: crate::protocol::now(),
+                expires_at: None,
+                attributes: Default::default(),
+            })
+            .unwrap();
+        for target in [
+            "driver:mt7921e_git",
+            "bus:pci0000:01",
+            "service:systemd-networkd",
+        ] {
+            graph
+                .add_edge(EdgeMetadata {
+                    edge_id: EdgeId::new(),
+                    edge_type: EdgeType::DependsOn,
+                    source_node: NodeId("device:pci-0000:01:00.0".into()),
+                    target_node: NodeId(target.into()),
+                    provenance: EdgeProvenance::Observed {
+                        observed_by: PrincipalId::system("mock-discovery"),
+                        event_type: crate::protocol::EventType::DeviceAdded,
+                    },
+                    created_at: crate::protocol::now(),
+                    last_observed: crate::protocol::now(),
+                    expires_at: None,
+                    attributes: Default::default(),
+                })
+                .unwrap();
+        }
+        graph
+    }
+
+    // Regression test for the M6 health() subgraph walk: the interface is
+    // only 1 hop from the PCI device, and the driver/bus/network service are
+    // a further hop beyond it. health() must report them present rather than
+    // "no active driver / network service not detected" (wifi.rs bug fixed
+    // this milestone).
+    #[test]
+    fn health_sees_two_hop_driver_and_network_service() {
+        let mut graph = seeded_two_hop_graph();
+        let specialist = WifiSpecialist::instantiate(&mut graph).unwrap();
+        let health = specialist.health(&graph).unwrap();
+        assert!(
+            health.driver_present,
+            "2-hop driver must be reported present; got {health:?}"
+        );
+        assert!(
+            health.bus_present,
+            "2-hop bus must be reported present; got {health:?}"
+        );
+        assert!(
+            health.network_service_present,
+            "2-hop network service must be reported present; got {health:?}"
+        );
+    }
+
+    #[test]
+    fn observe_returns_device_state_metrics() {
+        let mut graph = wifi_graph();
+        let specialist = WifiSpecialist::instantiate(&mut graph).unwrap();
+        let result = specialist.observe(&graph);
+        assert_eq!(result.status, crate::protocol::ToolStatus::Success);
+        match result.data {
+            Some(crate::protocol::ToolData::DeviceState { metrics, .. }) => {
+                assert!(metrics.contains_key("driver"), "{metrics:?}");
+                assert!(metrics.contains_key("bus"), "{metrics:?}");
+            }
+            other => panic!("expected DeviceState, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn diagnose_flags_missing_driver() {
+        let mut graph = wifi_graph();
+        let specialist = WifiSpecialist::instantiate(&mut graph).unwrap();
+        let result = specialist.diagnose(&graph);
+        assert_eq!(result.status, crate::protocol::ToolStatus::Success);
+        match result.data {
+            Some(crate::protocol::ToolData::Diagnosis { findings, confidence }) => {
+                assert!(
+                    findings.iter().any(|f| f.contains("DRIVER-001")),
+                    "{findings:?}"
+                );
+                assert!(confidence > 0.0, "{confidence}");
+            }
+            other => panic!("expected Diagnosis, got {other:?}"),
+        }
     }
 }

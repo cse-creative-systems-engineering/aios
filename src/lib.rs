@@ -20,6 +20,7 @@ pub mod protocol;
 pub mod tools;
 pub mod verifier;
 pub mod wifi;
+pub mod wifi_driver;
 
 #[cfg(test)]
 pub mod testutil;

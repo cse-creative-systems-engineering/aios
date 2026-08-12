@@ -1,12 +1,16 @@
+use crate::action::FileActionStore;
 use crate::audit::{AuditLog, audit_log_path};
 use crate::broker::{Broker, BrokerClient};
 use crate::capability::{
-    Capability, Clearance, Operation, PrincipalId, ResourceId, ResourceState, ToolDefinition,
+    Capability, CapabilityToken, Clearance, Operation, PrincipalId, ResourceId, ResourceState,
+    ToolDefinition,
 };
 use crate::config::{AiosConfig, ConfigError, ModelConfig, ProviderConfig};
+use crate::executor::StagedExecutor;
 use crate::graph::{NodeType, SystemGraph};
 use crate::http::HttpBackend;
 use crate::local::LocalLlama;
+use crate::wifi_driver::{MockDriverControl, WifiDriverResourceDriver};
 use crate::model::{
     AgentRole, ConnectivityProbe, ConnectivityState, ModelEntry, ModelGateway, ModelId,
     ModelMessage, ModelRegistry, ModelRole, ModelTask, ProviderId, RoutingDecision, RoutingError,
@@ -15,7 +19,7 @@ use crate::planner::{
     AgentError, Planner, ToolCallRequest, parse_tool_calls, strip_tool_calls_json,
 };
 use crate::protocol::{DataClassification, HealthState, now};
-use crate::tools::{ToolError, ToolRegistry, model_tool_instructions, tools_context};
+use crate::tools::{ToolError, ToolRegistry, model_tool_instructions, resource_index};
 use crate::verifier::Verifier;
 use crate::wifi::WifiSpecialist;
 use std::path::{Path, PathBuf};
@@ -39,6 +43,8 @@ pub struct Coordinator {
     pub tools: ToolRegistry,
     pub broker: Broker,
     pub shell_max_tokens: u32,
+    session_tokens: Vec<CapabilityToken>,
+    session_principal: PrincipalId,
     last_scan_summary: RwLock<Option<String>>,
     local_model_path: Option<PathBuf>,
     wifi_specialist: Option<WifiSpecialist>,
@@ -173,6 +179,8 @@ impl Coordinator {
             broker: Broker::new(),
             config,
             shell_max_tokens,
+            session_tokens: Vec::new(),
+            session_principal: PrincipalId::agent("aios.core", "session"),
             last_scan_summary: RwLock::new(None),
             local_model_path,
             wifi_specialist: None,
@@ -214,16 +222,113 @@ impl Coordinator {
                 .iter()
                 .flat_map(|definition| definition.required_capabilities.clone())
                 .collect();
+            // Register the specialist's bounded tools in the registry AND
+            // spawn handlers so the Planner can route to them through the
+            // broker (message-protocol §8.1). Read-only tools operate on the
+            // live discovery graph.
+            let device = specialist.device.clone();
+            let specialist_id = specialist.specialist.clone();
             for definition in definitions {
+                let tool_id = definition.tool_id.clone();
                 coordinator.broker.register_tool(definition);
+                let graph = coordinator.graph.clone();
+                let device = device.clone();
+                let specialist_id = specialist_id.clone();
+                let handler_tool_id = tool_id.clone();
+                coordinator.broker.spawn_specialist(&tool_id, {
+                    std::sync::Arc::new(move |request| {
+                        let specialist =
+                            WifiSpecialist { device: device.clone(), specialist: specialist_id.clone() };
+                        let graph = graph.read().expect("graph lock");
+                        if handler_tool_id.ends_with("observe_device") {
+                            specialist.observe(&graph)
+                        } else if handler_tool_id.ends_with("diagnose_fault") {
+                            specialist.diagnose(&graph)
+                        } else {
+                            crate::protocol::ToolResult {
+                                envelope: crate::protocol::MessageEnvelope::new(
+                                    crate::protocol::MessageType::ToolResult,
+                                    request.envelope.origin,
+                                    request.envelope.correlation_id,
+                                    request.envelope.data_classification,
+                                ),
+                                request_id: request.request_id,
+                                status: crate::protocol::ToolStatus::Failed,
+                                data: None,
+                                error: Some(crate::protocol::ToolError {
+                                    code: crate::protocol::ToolErrorCode::OperationNotSupported,
+                                    message: format!("{handler_tool_id} not supported in read-only mode"),
+                                    recoverable: false,
+                                }),
+                                health_impact: None,
+                            }
+                        }
+                    })
+                });
             }
             coordinator
                 .broker
                 .register_principal(principal, capabilities, Clearance::max());
+            // Routing to the specialist requires the wifi device to be known
+            // and available in the broker's own resource-state registry
+            // (ADR-0005 P1-5 / capability-model §10.2).
+            coordinator.broker.set_resource_state(
+                crate::capability::ResourceId(specialist.device.0.clone()),
+                ResourceState::Available,
+            );
+            // Grant the session planner the wifi specialist's read-only tools
+            // so it can route observe/diagnose through the broker to the owning
+            // specialist (message-protocol §8.1, capability-model §3.3 per-resource).
+            let wifi_capabilities: Vec<Capability> = coordinator
+                .broker
+                .client(crate::capability::PrincipalId::system("policy-broker"))
+                .get_capabilities(&crate::capability::PrincipalId::agent(
+                    crate::wifi::PACKAGE_ID,
+                    specialist.specialist.0.clone(),
+                ))
+                .into_iter()
+                .filter(|c| matches!(c.operation, Operation::Observe | Operation::Diagnose))
+                .collect();
+            for wifi_capability in wifi_capabilities {
+                coordinator
+                    .broker
+                    .grant_capability(&coordinator.session_principal, wifi_capability);
+            }
+            coordinator.session_tokens = coordinator
+                .broker
+                .client(coordinator.session_principal.clone())
+                .capability_tokens(&coordinator.session_principal);
         }
+        // Wire the staged executor so risk-2/risk-4 wifi tools (stage_driver,
+        // request_reset) run through the M5 action state machine instead of
+        // failing with "no executor configured" (modules/wifi.md, M6). The
+        // v0.1 driver control is a mock that records the intended modprobe
+        // commands — real kernel changes are executed by the user on the
+        // wired-connected machine (safety boundary).
+        let action_dir = coordinator.config_dir.join("actions");
+        let store = match FileActionStore::new(&action_dir) {
+            Ok(store) => store,
+            Err(e) => {
+                return Err(BootError::Discovery(
+                    format!("failed to init action store: {e:?}"),
+                ));
+            }
+        };
+        let device_id = coordinator
+            .wifi_specialist
+            .as_ref()
+            .map(|s| ResourceId(s.device.0.clone()))
+            .unwrap_or_else(|| ResourceId("device:net-wlp1s0".into()));
+        let driver = WifiDriverResourceDriver::new(
+            Box::new(MockDriverControl::new()),
+            device_id,
+        );
+        coordinator.broker.set_executor(StagedExecutor::new(
+            Box::new(store),
+            Box::new(driver),
+        ));
         coordinator
-            .audit
-            .record("coordinator", "boot", "system", "ok");
+            .record_audit("coordinator", "boot", "system", "ok");
         Ok(coordinator)
     }
 
@@ -231,6 +336,16 @@ impl Coordinator {
         let state = self.connectivity_probe.probe();
         self.gateway.set_connectivity(state);
         state
+    }
+
+    /// Record an audit entry and fail closed if the audit log cannot be
+    /// written (observability.md §1.7): the broker denies all further
+    /// actions once the audit log is unavailable.
+    pub(crate) fn record_audit(&self, actor: &str, action: &str, target: &str, outcome: &str) {
+        if let Err(e) = self.audit.record(actor, action, target, outcome) {
+            self.broker.core().lock().expect("broker lock").set_audit_broken(true);
+            eprintln!("aios: audit log failure — entering read-only mode: {e}");
+        }
     }
 
     pub fn connectivity(&self) -> ConnectivityState {
@@ -258,10 +373,8 @@ impl Coordinator {
     pub fn chat(&self, text: &str) -> Result<String, AgentError> {
         let result = self.planner.explain(text, self.local_context());
         match &result {
-            Ok(_) => self.audit.record("user", "chat", text, "ok"),
-            Err(e) => self
-                .audit
-                .record("user", "chat", text, &format!("error: {e}")),
+            Ok(_) => self.record_audit("user", "chat", text, "ok"),
+            Err(e) => self.record_audit("user", "chat", text, &format!("error: {e}")),
         }
         result
     }
@@ -289,21 +402,18 @@ impl Coordinator {
             system.content.push_str(&context);
         }
         let mut answer = self.planner.chat_with(messages.clone(), None)?;
-        let mut used_tool = false;
 
         for turn in 0..MAX_TOOL_TURNS {
             let calls = parse_tool_calls(&answer);
             if calls.is_empty() {
-                if !used_tool {
-                    return Err(AgentError::Format(
-                        "planner produced no executable tool call; refusing ungrounded answer"
-                            .into(),
-                    ));
-                }
+                // Architecture §4: conversational answers are valid without a
+                // tool call. Simple queries and greetings do not need to invoke
+                // a model tool, and we do not force a tool for every trivial
+                // read. If the Planner chose not to call a tool, its plain
+                // answer is returned.
                 return Ok(strip_tool_calls_json(&answer).trim().to_string());
             }
 
-            used_tool = true;
             messages.push(ModelMessage::new(ModelRole::Assistant, &answer));
             for call in calls {
                 let result = self.run_tool_as("planner", &call);
@@ -314,8 +424,7 @@ impl Coordinator {
                 messages.push(ModelMessage::new(ModelRole::User, content));
             }
             if turn + 1 == MAX_TOOL_TURNS {
-                self.audit
-                    .record("planner", "tool_loop", "chat", "turn cap reached");
+                self.record_audit("planner", "tool_loop", "chat", "turn cap reached");
                 return Err(AgentError::Format(
                     "tool-call turn cap reached before a grounded answer".into(),
                 ));
@@ -338,10 +447,10 @@ impl Coordinator {
         }
         let mut context = summary;
         let graph = self.graph.read().expect("graph lock");
-        let tools = tools_context(&graph);
-        if !tools.is_empty() {
+        let index = resource_index(&graph);
+        if !index.is_empty() {
             context.push('\n');
-            context.push_str(&tools);
+            context.push_str(&index);
         }
         Some(context)
     }
@@ -361,17 +470,46 @@ impl Coordinator {
     ) -> Result<crate::tools::ToolResult, ToolError> {
         let operation =
             operation_for_tool(&call.name).ok_or_else(|| ToolError::Unknown(call.name.clone()))?;
-        let principal = PrincipalId::agent("aios.planner", "session");
+        // Specialist tools route to the owning specialist's resource
+        // (message-protocol §8.1); generic read-only tools route to the graph.
+        let is_wifi_tool = matches!(
+            call.name.as_str(),
+            "wifi.observe_device" | "wifi.diagnose_fault"
+                | "wifi.stage_driver"
+                | "wifi.request_reset"
+        );
+        let resource = if is_wifi_tool {
+            let device = self
+                .wifi_specialist
+                .as_ref()
+                .ok_or_else(|| {
+                    ToolError::Permission("no wi-fi specialist instantiated".into())
+                })?
+                .device
+                .clone();
+            ResourceId(device.0)
+        } else {
+            ResourceId("system:graph".into())
+        };
+        let principal = self.session_principal.clone();
         let client = self.broker.client(principal.clone());
-        let token = client
-            .capability_tokens(&principal)
-            .into_iter()
-            .find(|token| token.capability.operation == operation)
-            .ok_or_else(|| ToolError::Permission(format!("no token for {operation:?}")))?;
+        // Static session tokens issued at session start (capability-model §6.3).
+        let token = self
+            .session_tokens
+            .iter()
+            .find(|token| {
+                token.capability.operation == operation && token.capability.resource == resource
+            })
+            .cloned()
+            .ok_or_else(|| {
+                ToolError::Permission(format!(
+                    "no session token for {operation:?} on {resource}"
+                ))
+            })?;
         let parameters = tool_parameters(operation, &call.arguments);
         let mut request = crate::protocol::ToolRequest::new(
             principal,
-            ResourceId("system:graph".into()),
+            resource,
             operation,
             call.name.clone(),
             token,
@@ -386,13 +524,13 @@ impl Coordinator {
             .map_err(|e| ToolError::Permission(e.to_string()))?;
         let result = protocol_tool_result(&call.name, protocol_result);
         match &result {
-            Ok(tool_result) => self.audit.record(
+            Ok(tool_result) => self.record_audit(
                 actor,
                 "tool",
                 &format!("{} {}", call.name, call.arguments),
                 &format!("ok ({} chars)", tool_result.text.len()),
             ),
-            Err(e) => self.audit.record(
+            Err(e) => self.record_audit(
                 actor,
                 "tool",
                 &format!("{} {}", call.name, call.arguments),
@@ -403,7 +541,7 @@ impl Coordinator {
     }
 
     fn configure_read_only_broker(&mut self) {
-        let principal = PrincipalId::agent("aios.planner", "session");
+        let principal = self.session_principal.clone();
         let resource = ResourceId("system:graph".into());
         self.broker
             .set_resource_state(resource.clone(), ResourceState::Available);
@@ -479,17 +617,25 @@ impl Coordinator {
                 })
             });
         }
+        // Static session tokens are granted once at session start
+        // (capability-model §6.3). The session holds them for its lifetime;
+        // it does not pull tokens from the broker on demand (M1 carry-forward).
+        let capabilities: Vec<Capability> = operations
+            .into_iter()
+            .map(|(_, operation, _)| Capability {
+                resource: resource.clone(),
+                operation,
+            })
+            .collect();
         self.broker.register_principal(
-            principal,
-            operations
-                .into_iter()
-                .map(|(_, operation, _)| Capability {
-                    resource: resource.clone(),
-                    operation,
-                })
-                .collect(),
+            principal.clone(),
+            capabilities,
             Clearance::max(),
         );
+        self.session_tokens = self
+            .broker
+            .client(principal.clone())
+            .capability_tokens(&principal);
     }
 
     pub fn tools_help(&self) -> String {
@@ -515,15 +661,13 @@ impl Coordinator {
             Ok((plan, review))
         })();
         match &result {
-            Ok((plan, review)) => self.audit.record(
+            Ok((plan, review)) => self.record_audit(
                 "user",
                 "plan",
                 intent,
                 &format!("ok ({} steps, {:?})", plan.steps.len(), review.verdict),
             ),
-            Err(e) => self
-                .audit
-                .record("user", "plan", intent, &format!("error: {e}")),
+            Err(e) => self.record_audit("user", "plan", intent, &format!("error: {e}")),
         }
         result
     }
@@ -537,13 +681,13 @@ impl Coordinator {
             .grant_consent(record)
             .map_err(|e| e.to_string());
         match &result {
-            Ok(()) => self.audit.record(
+            Ok(()) => self.record_audit(
                 "user",
                 "consent",
                 &format!("{provider} {class:?}"),
                 "granted",
             ),
-            Err(e) => self.audit.record(
+            Err(e) => self.record_audit(
                 "user",
                 "consent",
                 &format!("{provider} {class:?}"),
@@ -557,13 +701,87 @@ impl Coordinator {
         self.gateway
             .router()
             .revoke_consent(&ProviderId::new(provider));
-        self.audit.record("user", "consent", provider, "revoked");
+        self.record_audit("user", "consent", provider, "revoked");
     }
 
     pub fn consent_for(&self, provider: &str) -> Option<crate::model::ConsentRecord> {
         self.gateway
             .router()
             .consent_for(&ProviderId::new(provider))
+    }
+
+    /// Issue a broker-owned approval request covering a single reset action
+    /// (human-interaction §1.4: the broker stores the approval, never the
+    /// facade). The returned message id is what the user responds to. The
+    /// scope binds exactly the given action, resource, operation, and tool.
+    pub fn issue_reset_approval(
+        &self,
+        action_id: crate::protocol::ActionId,
+        plan_hash: [u8; 32],
+        resource: ResourceId,
+        tool_id: String,
+    ) -> Result<(uuid::Uuid, crate::protocol::PlanHash), String> {
+        let plan_id = uuid::Uuid::new_v4();
+        let request = crate::protocol::ApprovalRequest {
+            envelope: crate::protocol::MessageEnvelope::new(
+                crate::protocol::MessageType::ApprovalRequest,
+                PrincipalId::user(),
+                uuid::Uuid::new_v4(),
+                DataClassification::Protected,
+            ),
+            plan_id,
+            plan_hash,
+            plan_summary: format!("reset device {resource} to known-good state"),
+            affected_systems: vec![resource.clone()],
+            expected_risks: vec!["driver reload".into()],
+            rollback_state: None,
+            // Risk-4 recovery approval window is 5 minutes (human-interaction
+            // §3.3).
+            expires_at: crate::protocol::now() + 300_000,
+        };
+        let scope = crate::protocol::ApprovalScope {
+            actions: vec![crate::protocol::ApprovedAction {
+                action_id,
+                resource: resource.clone(),
+                operation: Operation::Reset,
+                tool_id: tool_id.clone().into(),
+            }],
+            resources: vec![resource.clone()],
+            operations: vec![Operation::Reset],
+        };
+        let mut core = self.broker.core().lock().expect("broker lock");
+        let request_id = core
+            .issue_approval_request(request, scope)
+            .map_err(|e| format!("{e:?}"))?;
+        Ok((request_id, plan_hash))
+    }
+
+    /// Submit the user's decision through the broker-owned channel. Only the
+    /// broker may record an approval; the facade only relays the yes/no
+    /// (human-interaction §1).
+    pub fn submit_approval(&self, approval_request_id: uuid::Uuid, approved: bool) -> String {
+        let response = crate::protocol::UserResponse {
+            envelope: crate::protocol::MessageEnvelope::new(
+                crate::protocol::MessageType::UserResponse,
+                PrincipalId::user(),
+                uuid::Uuid::new_v4(),
+                DataClassification::Protected,
+            ),
+            approval_request_id,
+            decision: if approved {
+                crate::protocol::UserDecision::Approved
+            } else {
+                crate::protocol::UserDecision::Rejected("user denied reset".into())
+            },
+        };
+        let mut core = self.broker.core().lock().expect("broker lock");
+        match core.submit_user_response(response) {
+            Ok(()) => {
+                self.record_audit("user", "approval", &format!("{approval_request_id}"), "approved");
+                "approval recorded".to_string()
+            }
+            Err(e) => format!("approval failed: {e:?}"),
+        }
     }
 
     pub fn scan(&self) -> String {
@@ -582,12 +800,11 @@ impl Coordinator {
                     .write()
                     .expect("scan lock")
                     .replace(text.clone());
-                self.audit.record("facade", "scan", "system", "ok");
+                self.record_audit("facade", "scan", "system", "ok");
                 text
             }
             Err(e) => {
-                self.audit
-                    .record("facade", "scan", "system", &format!("error: {e}"));
+                self.record_audit("facade", "scan", "system", &format!("error: {e}"));
                 let text = format!("scan failed: {e}");
                 self.last_scan_summary
                     .write()
@@ -649,6 +866,10 @@ fn operation_for_tool(name: &str) -> Option<Operation> {
         "observe" => Some(Operation::Observe),
         "diagnose" => Some(Operation::Diagnose),
         "query" | "deps" | "impact" | "health" => Some(Operation::Query),
+        "wifi.observe_device" => Some(Operation::Observe),
+        "wifi.diagnose_fault" => Some(Operation::Diagnose),
+        "wifi.stage_driver" => Some(Operation::Stage),
+        "wifi.request_reset" => Some(Operation::Reset),
         _ => None,
     }
 }
@@ -662,7 +883,13 @@ fn tool_parameters(operation: Operation, args: &str) -> crate::protocol::ToolPar
             symptom: args.into(),
         },
         Operation::Query => crate::protocol::ToolParameters::Query { query: args.into() },
-        _ => unreachable!("read-only operation mapping is exhaustive"),
+        Operation::Stage => crate::protocol::ToolParameters::Stage {
+            change: serde_json::json!({ "module": args.trim() }),
+        },
+        Operation::Reset => crate::protocol::ToolParameters::Reset {
+            to_known_good: true,
+        },
+        _ => unreachable!("operation mapping is exhaustive"),
     }
 }
 
@@ -696,6 +923,19 @@ fn protocol_tool_result(
             .and_then(|value| value.as_str())
             .ok_or_else(|| ToolError::Usage(format!("tool {name} returned malformed data")))?
             .to_string(),
+        Some(crate::protocol::ToolData::DeviceState { state, metrics }) => {
+            let mut parts = vec![format!("state={state:?}")];
+            let mut metrics: Vec<(String, String)> = metrics.into_iter().collect();
+            metrics.sort();
+            for (k, v) in metrics {
+                parts.push(format!("{k}={v}"));
+            }
+            parts.join(" ")
+        }
+        Some(crate::protocol::ToolData::Diagnosis { findings, confidence }) => format!(
+            "confidence={confidence} findings=[{}]",
+            findings.join(" | ")
+        ),
         _ => {
             return Err(ToolError::Usage(format!(
                 "tool {name} returned no result data"

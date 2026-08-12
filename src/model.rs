@@ -239,6 +239,9 @@ pub struct ProviderHealth {
     pub last_checked: Timestamp,
     pub latency_ms: Option<u32>,
     pub error_rate: f64,
+    /// Earliest time (unix seconds) at which an unhealthy provider may be
+    /// re-probed and returned to the routing pool (model-routing §3.5).
+    pub retry_after: Option<Timestamp>,
 }
 
 impl ProviderHealth {
@@ -248,6 +251,7 @@ impl ProviderHealth {
             last_checked: now(),
             latency_ms: None,
             error_rate: 0.0,
+            retry_after: None,
         }
     }
 }
@@ -416,6 +420,9 @@ impl ModelRegistry {
                 entry.health.state = HealthState::Unhealthy;
                 entry.health.last_checked = now();
                 entry.health.error_rate += 1.0;
+                // Cooldown before the provider may be re-probed (model-routing
+                // §3.5: unhealthy provider is re-checked periodically).
+                entry.health.retry_after = Some(now() + HEALTH_RETRY_SECONDS);
             }
         }
     }
@@ -426,6 +433,17 @@ impl ModelRegistry {
                 entry.health.state = HealthState::Healthy;
                 entry.health.last_checked = now();
                 entry.health.error_rate *= 0.5;
+                entry.health.retry_after = None;
+            }
+        }
+    }
+
+    /// Expire the cooldown for a provider so it becomes eligible for re-probe
+    /// (used by tests to simulate the cooldown elapsing).
+    pub fn expire_cooldown(&mut self, provider: &ProviderId) {
+        for entry in &mut self.entries {
+            if entry.provider == *provider {
+                entry.health.retry_after = Some(now() - 1);
             }
         }
     }
@@ -437,10 +455,15 @@ impl ModelRegistry {
                 entry.health.last_checked = now();
                 entry.health.latency_ms = Some(latency_ms.min(u32::MAX as u64) as u32);
                 entry.health.error_rate *= 0.5;
+                entry.health.retry_after = None;
             }
         }
     }
 }
+
+/// Cooldown (seconds) before an unhealthy provider may be re-probed and
+/// returned to the routing pool (model-routing §3.5).
+const HEALTH_RETRY_SECONDS: u64 = 30;
 
 #[derive(Clone, Debug)]
 pub struct Pin {
@@ -591,8 +614,18 @@ impl ModelRouter {
                 continue;
             }
             if entry.health.state == HealthState::Unhealthy {
-                unhealthy.push(entry.provider.clone());
-                continue;
+                // model-routing §3.5: an unhealthy provider is re-checked
+                // periodically and returns to the pool once its cooldown has
+                // passed. It is re-probed via is_healthy() on selection.
+                let cooldown_elapsed = entry
+                    .health
+                    .retry_after
+                    .map(|t| now() >= t)
+                    .unwrap_or(false);
+                if !cooldown_elapsed {
+                    unhealthy.push(entry.provider.clone());
+                    continue;
+                }
             }
             let consent_ok = consent
                 .get(&entry.provider)
@@ -1232,6 +1265,35 @@ mod tests {
             r.route(&public_task(), &[]),
             Err(RoutingError::ProviderUnhealthy(p)) if p == ProviderId::new("openrouter")
         ));
+    }
+
+    #[test]
+    fn unhealthy_provider_returns_after_cooldown() {
+        let registry = registry_with(vec![
+            internet_model("net-a", &reasoning()),
+            lan_model("lan-a", &reasoning()),
+        ]);
+        registry
+            .write()
+            .expect("lock")
+            .mark_provider_unhealthy(&ProviderId::new("openrouter"));
+        let r = ModelRouter::new(registry.clone());
+        r.set_connectivity(ConnectivityState::Internet);
+
+        // Immediately after the failure the provider is still in cooldown and
+        // is excluded (model-routing §3.5: unhealthy providers excluded until
+        // re-checked).
+        let d = r.route(&public_task(), &[]).expect("route while cooling down");
+        assert_eq!(d.provider, ProviderId::new("lan-gpu-01"));
+
+        // Simulate the cooldown elapsing. The provider becomes eligible again
+        // and, being the higher tier, is selected so it can be re-probed.
+        registry
+            .write()
+            .expect("lock")
+            .expire_cooldown(&ProviderId::new("openrouter"));
+        let d = r.route(&public_task(), &[]).expect("route after cooldown");
+        assert_eq!(d.provider, ProviderId::new("openrouter"));
     }
 
     #[test]
