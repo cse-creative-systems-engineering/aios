@@ -214,6 +214,12 @@ impl SystemGraph {
         if !self.nodes.contains_key(&edge.target_node) {
             return Err(format!("edge target {} missing", edge.target_node));
         }
+        if edge.edge_type == EdgeType::Owns && self.get_owner(&edge.target_node).is_some() {
+            return Err(format!(
+                "resource {} already has an owner",
+                edge.target_node
+            ));
+        }
         let id = edge.edge_id.clone();
         let source = edge.source_node.clone();
         let target = edge.target_node.clone();
@@ -439,6 +445,22 @@ mod tests {
         let same = edge("dev1", "dev2", EdgeType::DependsOn);
         graph.add_edge(same.clone()).unwrap();
         assert!(graph.add_edge(same).is_err());
+    }
+
+    #[test]
+    fn owns_edge_enforces_single_owner() {
+        let mut graph = SystemGraph::new();
+        graph.add_node(node("wifi0", NodeType::Device)).unwrap();
+        graph.add_node(node("wifi-specialist", NodeType::Specialist)).unwrap();
+        graph.add_node(node("storage-specialist", NodeType::Specialist)).unwrap();
+        graph
+            .add_edge(edge("wifi-specialist", "wifi0", EdgeType::Owns))
+            .unwrap();
+        let err = graph
+            .add_edge(edge("storage-specialist", "wifi0", EdgeType::Owns))
+            .unwrap_err();
+        assert!(err.contains("already has an owner"));
+        assert_eq!(graph.get_owner(&NodeId("wifi0".into())).unwrap().node_id.0, "wifi-specialist");
     }
 
     #[test]

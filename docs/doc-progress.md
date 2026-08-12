@@ -57,7 +57,7 @@ Module specs: 0 of ~10 planned              (0%)
 ```
 
 Implementation status is tracked in `implementation-roadmap.md`. Current:
-M1 (In-Process Simulation) is **complete** — 46 tests passing, mock agents and
+M1 (In-Process Simulation) is **complete** — 47 tests passing, mock agents and
 demo binary built (`src/main.rs`). Next up: M2 (Read-Only Linux Discovery).
 
 ## Dependency Graph

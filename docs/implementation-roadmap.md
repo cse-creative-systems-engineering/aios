@@ -93,8 +93,8 @@ Planner, mock Verification agent, and two mock specialists (Wi-Fi, storage)
 live in `aios::mocks`; the demo binary `src/main.rs` drives the full flow:
 observe → diagnose → query → verifier review → staged driver commit →
 rollback on failed health check → guardian block → approval-gated module
-load. 46 tests pass (broker 13, guardian 6, executor 4, action 5, protocol 5,
-capability 5, graph 8). Broker runtime methods use `expect()` on mutex locks —
+load. 47 tests pass (broker 13, guardian 6, executor 4, action 5, protocol 5,
+capability 5, graph 9). Broker runtime methods use `expect()` on mutex locks —
 intentional fail-fast under ADR-0003, no silent fallbacks.
 
 ### Goal
@@ -148,13 +148,6 @@ other.
 These items were deliberately left loose in the simulation and need a decision
 before they become real:
 
-- **Graph single-owner rule is not enforced.** `system-graph.md` 2.3 says a
-  resource has exactly one `owns` edge, but the API only rejects duplicate
-  `edge_id`s. `get_owner` returns the first match. Decide: enforce at insert,
-  or last-writer-wins during reconciliation (M2).
-- **Duplicate logical edges are allowed.** Same source/target/type can be added
-  twice with different edge ids. Confirm whether that is a wanted model (e.g.,
-  separate Declared vs Observed edges) or a bug to close.
 - **The broker hands out capability tokens on demand.** `capability_tokens()`
   is a convenience for `MockPlanner`. The real planner should present tokens
   issued at session start, not pull them from the broker. Settle the handshake
@@ -168,6 +161,15 @@ before they become real:
 - **Guardian driver verification is seeded by hand.** The demo just tells the
   guardian "iwlwifi-next is tested". Real verification needs a source of truth
   (package metadata, test logs).
+
+### Resolved during M1 wrap-up
+
+- **Graph single-owner rule now enforced.** `add_edge` rejects a second `owns`
+  edge on a resource; `get_owner` is still first-match as a fallback. Spec
+  `system-graph.md` 2.3 holds.
+- **Duplicate logical edges: allowed by design.** Parallel edges between the
+  same pair are legitimate when provenance differs (e.g., a Declared and an
+  Observed edge). The `edge_id` key is the differentiator; the model stays.
 
 ---
 
