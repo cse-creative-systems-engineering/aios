@@ -419,6 +419,12 @@ fn main() {
         .audit_entries()
         .len();
     println!("policy decisions logged -> {audit_count}");
+
+    let discovered = aios::discovery::SysfsDiscovery::new()
+        .scan()
+        .expect("discovery scan");
+    aios::discovery::print_hardware_report(&discovered);
+
     println!("== done ==");
 }
 

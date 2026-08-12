@@ -57,8 +57,9 @@ Module specs: 0 of ~10 planned              (0%)
 ```
 
 Implementation status is tracked in `implementation-roadmap.md`. Current:
-M1 (In-Process Simulation) is **complete** — 47 tests passing, mock agents and
-demo binary built (`src/main.rs`). Next up: M2 (Read-Only Linux Discovery).
+M1 (In-Process Simulation) is **complete** — mock agents and demo binary built
+(`src/main.rs`). M2 (Read-Only Linux Discovery) is in progress — `aios::discovery`
+scans sysfs/procfs and populates the System Graph (first slice done).
 
 ## Dependency Graph
 

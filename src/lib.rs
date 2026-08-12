@@ -1,6 +1,7 @@
 pub mod action;
 pub mod broker;
 pub mod capability;
+pub mod discovery;
 pub mod executor;
 pub mod graph;
 pub mod guardian;

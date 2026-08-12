@@ -46,7 +46,8 @@ graph TD
     classDef planned fill:#4a90d9,color:#fff,stroke:#2a6db0,stroke-width:2px
 
     class M0,M1 done
-    class M2,M3,M4,M5,M6,M7,M8 planned
+    class M2 current
+    class M3,M4,M5,M6,M7,M8 planned
 ```
 
 ---
@@ -175,9 +176,16 @@ before they become real:
 
 ## Milestone 2: Read-Only Linux Discovery
 
-**Status:** Not started  
+**Status:** In progress  
 **Estimated effort:** 2–3 weeks  
 **Dependencies:** M1
+
+**Progress note (2026-08-11):** first slice done — `aios::discovery` scans
+sysfs/procfs (kernel, CPU, memory, network, PCI, USB, block, driver,
+filesystem), populates the System Graph with `depends_on` edges and TTL-based
+staleness, and prints a hardware report; verified against a real machine (390
+nodes, 20 CPUs, 4 buses, 75 devices). Mock-sysfs test suite passes. Still
+ahead: udev events, the reconciliation cycle, service and sensor discovery.
 
 ### Goal
 
@@ -186,14 +194,19 @@ Graph from actual udev, sysfs, and procfs data.
 
 ### Deliverables
 
-- [ ] `aios::discovery` — udev, sysfs, procfs discovery modules
-- [ ] CPU, memory, bus, device, driver, service, filesystem, network, sensor discovery
-- [ ] Graph population from discovery results
+- [x] `aios::discovery` — sysfs/procfs scanner, graph population, hardware report
+- [ ] udev event handling (DeviceAdded, DeviceRemoved)
+- [x] CPU, memory, bus, device, driver, filesystem, network discovery
+- [ ] Service discovery (systemctl/D-Bus)
+- [ ] Sensor discovery (hwmon)
+- [x] Graph population from discovery results
 - [ ] Event-driven graph updates (DeviceAdded, DeviceRemoved, etc.)
 - [ ] Reconciliation cycle (periodic re-discovery)
-- [ ] Staleness detection and `STALE`/`UNKNOWN` states
-- [ ] Basic terminal output showing discovered hardware and graph state
-- [ ] Test suite: discovery tests (mock sysfs/procfs), graph population tests, reconciliation tests
+- [x] Staleness detection — discovered nodes carry `expires_at` TTL and can be
+      marked `STALE` via `SystemGraph::mark_stale`
+- [x] Basic terminal output showing discovered hardware and graph state
+- [x] Test suite: discovery tests (mock sysfs/procfs), graph population tests
+- [ ] Test suite: reconciliation tests
 
 ### Acceptance criteria
 
