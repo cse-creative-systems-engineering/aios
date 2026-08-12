@@ -1,4 +1,5 @@
 pub mod action;
+pub mod audit;
 pub mod broker;
 pub mod capability;
 pub mod config;
@@ -15,6 +16,7 @@ pub mod mocks;
 pub mod model;
 pub mod planner;
 pub mod protocol;
+pub mod tools;
 pub mod verifier;
 
 #[cfg(test)]

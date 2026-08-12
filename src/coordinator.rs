@@ -1,3 +1,4 @@
+use crate::audit::{AuditLog, audit_log_path};
 use crate::config::{AiosConfig, ConfigError, ModelConfig, ProviderConfig};
 use crate::graph::{NodeType, SystemGraph};
 use crate::http::HttpBackend;
@@ -8,6 +9,7 @@ use crate::model::{
 };
 use crate::planner::{AgentError, Planner};
 use crate::protocol::{DataClassification, HealthState, now};
+use crate::tools::{ToolError, ToolRegistry, tools_context};
 use crate::verifier::Verifier;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
@@ -21,6 +23,8 @@ pub struct Coordinator {
     pub graph: Arc<RwLock<SystemGraph>>,
     pub planner: Planner,
     pub verifier: Verifier,
+    pub audit: Arc<AuditLog>,
+    pub tools: ToolRegistry,
     pub shell_max_tokens: u32,
     last_scan_summary: RwLock<Option<String>>,
     local_model_path: Option<PathBuf>,
@@ -140,6 +144,8 @@ impl Coordinator {
             .map(|s| s.max_tokens)
             .unwrap_or(max_tokens);
 
+        let audit_path = audit_log_path(&config_dir);
+
         let coordinator = Self {
             config_dir,
             registry,
@@ -148,12 +154,15 @@ impl Coordinator {
             graph: Arc::new(RwLock::new(SystemGraph::new())),
             planner: Planner::new(gateway.clone(), shell_max_tokens),
             verifier: Verifier::new(gateway.clone(), shell_max_tokens),
+            audit: Arc::new(AuditLog::new(Some(audit_path))),
+            tools: ToolRegistry::new(),
             config,
             shell_max_tokens,
             last_scan_summary: RwLock::new(None),
             local_model_path,
         };
         coordinator.refresh_connectivity();
+        coordinator.audit.record("coordinator", "boot", "system", "ok");
         Ok(coordinator)
     }
 
@@ -177,7 +186,12 @@ impl Coordinator {
     }
 
     pub fn chat(&self, text: &str) -> Result<String, AgentError> {
-        self.planner.explain(text, self.local_context())
+        let result = self.planner.explain(text, self.local_context());
+        match &result {
+            Ok(_) => self.audit.record("user", "chat", text, "ok"),
+            Err(e) => self.audit.record("user", "chat", text, &format!("error: {e}")),
+        }
+        result
     }
 
     pub fn local_context(&self) -> Option<String> {
@@ -186,31 +200,78 @@ impl Coordinator {
             return None;
         }
         match self.current_route() {
-            Ok(route) if route.provider == ProviderId::local() => summary,
+            Ok(route) if route.provider == ProviderId::local() => {
+                let mut context = summary.unwrap_or_default();
+                let graph = self.graph.read().expect("graph lock");
+                let tools = tools_context(&graph);
+                if !tools.is_empty() {
+                    context.push('\n');
+                    context.push_str(&tools);
+                }
+                Some(context)
+            }
             _ => None,
         }
+    }
+
+    pub fn run_tool(&self, name: &str, args: &str) -> Result<crate::tools::ToolResult, ToolError> {
+        let graph = self.graph.read().expect("graph lock");
+        let result = self.tools.run(&graph, name, args);
+        match &result {
+            Ok(tool_result) => self.audit.record(
+                "user",
+                "tool",
+                &format!("{name} {args}"),
+                &format!("ok ({} chars)", tool_result.text.len()),
+            ),
+            Err(e) => self.audit.record("user", "tool", &format!("{name} {args}"), &format!("error: {e}")),
+        }
+        result
+    }
+
+    pub fn tools_help(&self) -> String {
+        self.tools.help()
     }
 
     pub fn plan_and_review(
         &self,
         intent: &str,
     ) -> Result<(crate::planner::GeneratedPlan, crate::verifier::ReviewResult), AgentError> {
-        let plan = self.planner.plan(intent)?;
-        let review = self.verifier.review(&plan)?;
-        Ok((plan, review))
+        let result = (|| {
+            let plan = self.planner.plan(intent)?;
+            let review = self.verifier.review(&plan)?;
+            Ok((plan, review))
+        })();
+        match &result {
+            Ok((plan, review)) => self.audit.record(
+                "user",
+                "plan",
+                intent,
+                &format!("ok ({} steps, {:?})", plan.steps.len(), review.verdict),
+            ),
+            Err(e) => self.audit.record("user", "plan", intent, &format!("error: {e}")),
+        }
+        result
     }
 
     pub fn grant_consent(&self, provider: &str, class: DataClassification) -> Result<(), String> {
         let provider_id = ProviderId::new(provider);
         let record = crate::model::ConsentRecord::new(provider_id.clone(), vec![class]);
-        self.gateway
+        let result = self
+            .gateway
             .router()
             .grant_consent(record)
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string());
+        match &result {
+            Ok(()) => self.audit.record("user", "consent", &format!("{provider} {class:?}"), "granted"),
+            Err(e) => self.audit.record("user", "consent", &format!("{provider} {class:?}"), &format!("error: {e}")),
+        }
+        result
     }
 
     pub fn revoke_consent(&self, provider: &str) {
         self.gateway.router().revoke_consent(&ProviderId::new(provider));
+        self.audit.record("user", "consent", provider, "revoked");
     }
 
     pub fn consent_for(&self, provider: &str) -> Option<crate::model::ConsentRecord> {
@@ -227,9 +288,13 @@ impl Coordinator {
                 *self.graph.write().expect("graph lock") = graph.clone();
                 let text = scan_summary(graph);
                 self.last_scan_summary.write().expect("scan lock").replace(text.clone());
+                self.audit.record("facade", "scan", "system", "ok");
                 text
             }
-            Err(e) => format!("scan failed: {e}"),
+            Err(e) => {
+                self.audit.record("facade", "scan", "system", &format!("error: {e}"));
+                format!("scan failed: {e}")
+            }
         };
         summary
     }

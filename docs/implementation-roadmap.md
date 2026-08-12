@@ -299,15 +299,17 @@ gateway, router, and data classification system.
 working offline on the real local model. `aios::config` loads `~/.aios/config.toml`
 (providers as `[[provider]]` entries); `aios::http` implements the
 OpenAI-compatible `HttpBackend` from ADR-0006, so any OpenAI-compatible
-provider (DeepSeek, Ling, Ollama, OpenRouter) is a config change, not code.
-`aios::coordinator` boots the gateway from config and probes connectivity;
+provider (OpenAI, DeepSeek, OpenRouter, Kimi, Ollama) is a config change, not
+code. `aios::coordinator` boots the gateway from config and probes connectivity;
 `aios::planner` and `aios::verifier` run the real model with structured JSON
 prompts; `aios::facade` is the interactive `aios shell` (status, scan,
-providers, consent, plan, model, chat). Verified end-to-end on
-`Qwen3-4B-Q4_K_M`: the shell plans a 7-step Wi-Fi fix and the verifier
-reviews it, fully offline. 144 tests pass. Still open: read-only specialist
-tools wired to live discovery data, audit logging, and hardening the
-planner-verifier flow against noisy model output.
+providers, consent, plan, model, chat). Read-only specialist tools
+(`aios::tools`: observe, diagnose, query, deps, impact, health) run against
+the live discovery graph, and `aios::audit` logs every interaction to
+`~/.aios/audit.log`. Verified on the real machine with OpenAI, OpenRouter and
+Kimi wired in: the shell scans 491 nodes, observes the Wi-Fi interface,
+and chats through the cloud provider when online. 164 tests pass. Still open:
+hardening the planner-verifier flow against noisy model output.
 
 ### Goal
 
@@ -316,18 +318,18 @@ user can ask about hardware and get diagnoses and explanations.
 
 ### Deliverables
 
-- [ ] `aios::planner` — Planner agent with model integration
-- [ ] `aios::verifier` — Verification agent with model integration
+- [x] `aios::planner` — Planner agent with model integration
+- [x] `aios::verifier` — Verification agent with model integration
 - [x] `aios::facade` — Conversational facade (terminal-based for v0.1)
 - [x] `aios::coordinator` — Session coordinator
 - [x] `aios::config` + `aios::http` — config-driven providers and
       OpenAI-compatible `HttpBackend` (ADR-0006)
-- [ ] Read-only specialist tools (observe, diagnose, query) wired to real
+- [x] Read-only specialist tools (observe, diagnose, query) wired to real
    Linux discovery data
 - [x] Action plan creation and verification flow (planner → verifier, JSON
       parsing with freeform fallback)
-- [ ] Audit logging for all agent interactions
-- [ ] Test suite: planner tests, verifier tests, end-to-end conversation tests
+- [x] Audit logging for all agent interactions
+- [x] Test suite: planner tests, verifier tests, end-to-end conversation tests
 
 ### Acceptance criteria
 

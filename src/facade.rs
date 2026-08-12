@@ -77,8 +77,71 @@ impl Facade {
                 ),
                 Err(e) => format!("no route: {e}"),
             },
+            "tools" => self.coordinator.tools_help(),
+            "audit" => {
+                if rest.is_empty() {
+                    self.audit()
+                } else {
+                    self.audit_filtered(rest)
+                }
+            }
+            "observe" | "diagnose" | "query" | "deps" | "impact" | "health" => {
+                if command == "health" && rest.is_empty() {
+                    self.tool(command, "")
+                } else if rest.is_empty() {
+                    format!("usage: {command} <target>")
+                } else {
+                    self.tool(command, rest)
+                }
+            }
             "exit" | "quit" => String::new(),
             _ => self.chat(line),
+        }
+    }
+
+    fn audit(&self) -> String {
+        let entries = self.coordinator.audit.entries();
+        if entries.is_empty() {
+            return "audit log: empty".into();
+        }
+        let mut lines = Vec::new();
+        for entry in entries.iter().rev().take(20) {
+            lines.push(format!(
+                "{} {} {} {} {}",
+                entry.timestamp, entry.actor, entry.action, entry.target, entry.outcome
+            ));
+        }
+        lines.join("\n")
+    }
+
+    fn audit_filtered(&self, filter: &str) -> String {
+        let entries = self
+            .coordinator
+            .audit
+            .entries()
+            .into_iter()
+            .rev()
+            .filter(|e| {
+                e.actor.contains(filter)
+                    || e.action.contains(filter)
+                    || e.target.contains(filter)
+            })
+            .take(20)
+            .collect::<Vec<_>>();
+        if entries.is_empty() {
+            return format!("audit log: no entries matching '{filter}'");
+        }
+        entries
+            .iter()
+            .map(|e| format!("{} {} {} {} {}", e.timestamp, e.actor, e.action, e.target, e.outcome))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn tool(&self, name: &str, args: &str) -> String {
+        match self.coordinator.run_tool(name, args) {
+            Ok(result) => result.text,
+            Err(e) => format!("tool failed: {e}"),
         }
     }
 
@@ -141,8 +204,18 @@ impl Facade {
 
     fn direct(&self, text: &str) -> String {
         match send_direct(&self.coordinator, text) {
-            Ok(answer) => answer,
-            Err(e) => format!("model call failed: {e}"),
+            Ok(answer) => {
+                self.coordinator
+                    .audit
+                    .record("user", "model", text, "ok");
+                answer
+            }
+            Err(e) => {
+                self.coordinator
+                    .audit
+                    .record("user", "model", text, &format!("error: {e}"));
+                format!("model call failed: {e}")
+            }
         }
     }
 
@@ -171,13 +244,21 @@ impl Facade {
             .chat_with(messages, self.coordinator.local_context());
         match result {
             Ok(answer) => {
+                self.coordinator
+                    .audit
+                    .record("user", "chat", text, "ok");
                 self.history.push_back(format!("assistant: {answer}"));
                 while self.history.len() > self.max_history {
                     self.history.pop_front();
                 }
                 answer
             }
-            Err(e) => format!("chat failed: {e}\nhint: check 'status' for provider health"),
+            Err(e) => {
+                self.coordinator
+                    .audit
+                    .record("user", "chat", text, &format!("error: {e}"));
+                format!("chat failed: {e}\nhint: check 'status' for provider health")
+            }
         }
     }
 }
@@ -203,6 +284,14 @@ pub fn help_text() -> &'static str {
      \x20 plan <intent>    plan steps then verify them\n\
      \x20 model <text>     ask the model directly, no agent framing\n\
      \x20 route            show the current model route\n\
+     \x20 tools            list read-only specialist tools\n\
+     \x20 observe <t>      node details (id, label, or attribute value)\n\
+     \x20 diagnose <t>     health and dependency summary for a node\n\
+     \x20 query <type>     list nodes of a type (device, service, driver, ...)\n\
+     \x20 deps <t>         full dependency chain of a node\n\
+     \x20 impact <t>       what a node depends on and what depends on it\n\
+     \x20 health           roll up node health across the graph\n\
+     \x20 audit            recent audit log entries (or audit <filter>)\n\
      \x20 exit, quit       leave the shell\n\
      anything else is sent to the model as a chat message"
 }
@@ -366,5 +455,57 @@ mod tests {
         assert!(off.contains("revoked"), "{off}");
         let bad_class = f.run_line("consent stub nonsense on");
         assert!(bad_class.contains("unknown class"), "{bad_class}");
+    }
+
+    #[test]
+    fn tools_lists_specialist_tools() {
+        let port = testutil::spawn_json_server(handler);
+        let mut f = facade(port);
+        let out = f.run_line("tools");
+        assert!(out.contains("observe"), "{out}");
+        assert!(out.contains("diagnose"), "{out}");
+        assert!(out.contains("query"), "{out}");
+    }
+
+    #[test]
+    fn tool_commands_against_empty_graph() {
+        let port = testutil::spawn_json_server(handler);
+        let mut f = facade(port);
+        let out = f.run_line("observe wifi0");
+        assert!(out.contains("tool failed: nothing matches"), "{out}");
+        let out = f.run_line("query device");
+        assert!(out.contains("no device nodes found"), "{out}");
+        let out = f.run_line("diagnose");
+        assert!(out.contains("usage"), "{out}");
+    }
+
+    #[test]
+    fn health_command_without_scan() {
+        let port = testutil::spawn_json_server(handler);
+        let mut f = facade(port);
+        let out = f.run_line("health");
+        assert!(out.contains("0 nodes total"), "{out}");
+    }
+
+    #[test]
+    fn audit_records_boot_and_commands() {
+        let port = testutil::spawn_json_server(handler);
+        let mut f = facade(port);
+        let out = f.run_line("audit");
+        assert!(out.contains("boot"), "{out}");
+        let filtered = f.run_line("audit boot");
+        assert!(filtered.contains("boot"), "{filtered}");
+        let empty = f.run_line("audit zzz-nothing");
+        assert!(empty.contains("no entries"), "{empty}");
+    }
+
+    #[test]
+    fn audit_logs_chat_attempt() {
+        let port = testutil::spawn_json_server(handler);
+        let mut f = facade(port);
+        f.run_line("hello there");
+        let out = f.run_line("audit chat");
+        assert!(out.contains("chat"), "{out}");
+        assert!(out.contains("hello there"), "{out}");
     }
 }
