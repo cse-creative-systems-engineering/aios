@@ -75,28 +75,38 @@ or firmware requires a scoped, expiring approval tied to the exact plan.
 
 ## Where the project actually is
 
-Honest status: there is no runnable Aios yet. There is a complete design for
-one.
+It's further along than the first draft of this section claimed, but not done.
 
-That design is 15 documents and five decision records, about 9,000 lines,
+The design is 15 documents and six decision records, about 9,000 lines,
 covering the security model, the capability system, the internal message
 protocol, the action state machine, and a milestone plan with acceptance
 criteria. I did the design first on purpose: the hard problems here are about
 what an agent is *allowed* to do, and those are cheaper to get wrong on paper
-than in production code. Right now the repo builds a trivial Rust scaffold,
-mostly so the CI badge has something to do.
+than in production code.
+
+There is now also a runnable core. `cargo run` drives the in-process demo
+(broker, guardian, executor, mock planner and specialists against fake
+hardware). `cargo run -- shell` boots the interactive shell: it loads
+`~/.aios/config.toml`, runs a local Qwen model through llama.cpp, and routes
+chat through the model gateway, with discovery, provider status, consent, and
+a plan-and-verify flow. `cargo test` is 144 tests and counting.
 
 Milestones, briefly:
 
-- **M0 — Design foundation.** Done. Docs frozen for M1.
-- **M1 — In-process simulation.** Not started. This is the next thing and the
-  best place to start contributing. A real broker, real guardian, real state
-  machine, running against fake hardware and fake models in one process. No
-  kernel, no devices, no GPU. Its whole job is to find where the design is
-  wrong.
-- **M2–M5.** Real Linux device discovery (read-only) → a local model runtime →
-  planner and verifier talking to real state → checkpoint/stage/rollback
-  against real services.
+- **M0 — Design foundation.** Done.
+- **M1 — In-process simulation.** Done. Broker, guardian, executor, and mock
+  agents proving the contracts against each other in one process.
+- **M2 — Read-only Linux discovery.** Done. Sysfs/procfs scanning, systemctl
+  service discovery, reconciliation diff with `DeviceAdded`/`DeviceRemoved`
+  events. Verified on a real machine: ~490 nodes.
+- **M3 — Local model runtime.** Done. Model registry, router, gateway,
+  pinner, SHA-256 hub verification, and a llama.cpp backend running a real
+  Qwen GGUF offline.
+- **M4 — Dual-agent orchestration.** In progress. The config loader and the
+  OpenAI-compatible `HttpBackend` landed, and the shell's planner + verifier
+  already produce and review action plans against the local model. Still to
+  come: read-only specialist tools wired to live discovery and audit logging.
+- **M5.** Checkpoint/stage/rollback against real services.
 - **M6.** The first real hardware specialist: Wi-Fi, end to end. Discover,
   diagnose, stage a driver, verify, roll back if it's worse. The vertical
   slice that proves whether the whole architecture works.
@@ -170,7 +180,7 @@ map is stale or wrong, the system assumes the worst.
 | [implementation-roadmap.md](docs/implementation-roadmap.md) | Milestones M0–M8 with acceptance criteria |
 | [glossary.md](docs/glossary.md) | Terms |
 | [doc-progress.md](docs/doc-progress.md) | What's done and what's stuck |
-| [decisions/](docs/decisions/) | ADR-0001 through ADR-0005 |
+| [decisions/](docs/decisions/) | ADR-0001 through ADR-0006 |
 
 Reading order: glossary → requirements → security-model → capability-model →
 message-protocol → action-state-machine → system-graph → agent-packages →
@@ -178,14 +188,17 @@ model-routing → human-interaction. Takes an afternoon.
 
 ## Building
 
-There isn't much to build yet, but the toolchain is real:
-
 ```bash
-cargo check    # verify the scaffold compiles
-cargo test     # run tests
+cargo build          # compile everything
+cargo test           # run the test suite (144 tests)
+cargo run            # in-process demo: broker, guardian, mock agents
+cargo run -- shell   # interactive shell against your real config and models
 ```
 
-Real implementation starts at M1; the roadmap says what M1 has to prove.
+The shell reads `~/.aios/config.toml`. Point the `[model] path` at a GGUF
+file, or leave providers empty and it runs degraded. Remote providers are
+`[[provider]]` entries with an OpenAI-compatible endpoint; see
+`model-routing.md` §6.3 for the shape.
 
 ## Contributing
 

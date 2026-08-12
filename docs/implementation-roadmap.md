@@ -1,6 +1,6 @@
 # Aios Implementation Roadmap
 
-**Status:** Draft — updated for M3 (M0–M3 complete)  
+**Status:** Draft — updated for M4 (M0–M3 complete, M4 in progress)  
 **Depends on:** architecture.md, requirements.md, security-model.md, capability-model.md, message-protocol.md, action-state-machine.md, system-graph.md, agent-packages.md, model-routing.md, all ADRs
 
 ## Purpose
@@ -46,7 +46,8 @@ graph TD
     classDef planned fill:#4a90d9,color:#fff,stroke:#2a6db0,stroke-width:2px
 
     class M0,M1,M2,M3 done
-    class M4,M5,M6,M7,M8 planned
+    class M4 current
+    class M5,M6,M7,M8 planned
 ```
 
 ---
@@ -290,9 +291,23 @@ gateway, router, and data classification system.
 
 ## Milestone 4: Dual-Agent Orchestration
 
-**Status:** Not started  
+**Status:** In progress  
 **Estimated effort:** 4–6 weeks  
 **Dependencies:** M2, M3
+
+**Progress note (2026-08-12):** the conversational foundation is in place and
+working offline on the real local model. `aios::config` loads `~/.aios/config.toml`
+(providers as `[[provider]]` entries); `aios::http` implements the
+OpenAI-compatible `HttpBackend` from ADR-0006, so any OpenAI-compatible
+provider (DeepSeek, Ling, Ollama, OpenRouter) is a config change, not code.
+`aios::coordinator` boots the gateway from config and probes connectivity;
+`aios::planner` and `aios::verifier` run the real model with structured JSON
+prompts; `aios::facade` is the interactive `aios shell` (status, scan,
+providers, consent, plan, model, chat). Verified end-to-end on
+`Qwen3-4B-Q4_K_M`: the shell plans a 7-step Wi-Fi fix and the verifier
+reviews it, fully offline. 144 tests pass. Still open: read-only specialist
+tools wired to live discovery data, audit logging, and hardening the
+planner-verifier flow against noisy model output.
 
 ### Goal
 
@@ -303,11 +318,14 @@ user can ask about hardware and get diagnoses and explanations.
 
 - [ ] `aios::planner` — Planner agent with model integration
 - [ ] `aios::verifier` — Verification agent with model integration
-- [ ] `aios::facade` — Conversational facade (terminal-based for v0.1)
-- [ ] `aios::coordinator` — Session coordinator
+- [x] `aios::facade` — Conversational facade (terminal-based for v0.1)
+- [x] `aios::coordinator` — Session coordinator
+- [x] `aios::config` + `aios::http` — config-driven providers and
+      OpenAI-compatible `HttpBackend` (ADR-0006)
 - [ ] Read-only specialist tools (observe, diagnose, query) wired to real
    Linux discovery data
-- [ ] Action plan creation and verification flow
+- [x] Action plan creation and verification flow (planner → verifier, JSON
+      parsing with freeform fallback)
 - [ ] Audit logging for all agent interactions
 - [ ] Test suite: planner tests, verifier tests, end-to-end conversation tests
 
@@ -502,7 +520,7 @@ model connectivity, and recovery state.
 | M1: In-Process Simulation | ✅ Complete | 3–4 weeks | M0 |
 | M2: Read-Only Linux Discovery | ✅ Complete | 2–3 weeks | M1 |
 | M3: Local Model Runtime | ✅ Complete | 5–7 weeks (parallel) | M1 |
-| M4: Dual-Agent Orchestration | 4–6 weeks | 9–13 weeks | M2, M3 |
+| M4: Dual-Agent Orchestration | In progress | 9–13 weeks | M2, M3 |
 | M5: Transactions and Staging | 4–6 weeks | 9–13 weeks (parallel with M4) | M2 |
 | M6: First Hardware Specialist | 4–6 weeks | 13–19 weeks | M4, M5 |
 | M7: Additional Specialists | 2–4 weeks each | +2–4 weeks per specialist | M6 |

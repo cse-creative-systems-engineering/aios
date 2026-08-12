@@ -315,6 +315,15 @@ fn build_graph() -> SystemGraph {
 }
 
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(|s| s == "shell").unwrap_or(false) {
+        aios::facade::run_interactive();
+        return;
+    }
+    run_demo();
+}
+
+fn run_demo() {
     let state_dir = std::env::temp_dir().join("aios-demo-state");
     let _ = std::fs::remove_dir_all(&state_dir);
     let store = FileActionStore::new(&state_dir).expect("action store init");

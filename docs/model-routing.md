@@ -435,8 +435,13 @@ changes how it is routed to.
 (model metadata, SHA-256 verification of the on-disk model), and `aios::local`
 (Llama llama.cpp backend) are implemented and tested. The baseline Qwen model
 ships with Aios and is verified on disk — never downloaded at runtime, since
-offline mode has no network. The config loader and the OpenAI-compatible
-`HttpBackend` are specified here and in ADR-0006 but not yet implemented.
+offline mode has no network.
+
+`aios::config` (config loader) and `aios::http` (OpenAI-compatible
+`HttpBackend`) landed with M4. Providers are declared in `~/.aios/config.toml`
+as `[[provider]]` entries (the §6.3 sketch repeats the `provider:` key for
+readability; TOML uses array-of-tables). The `aios shell` facade boots the
+gateway from that config and routes chat through it.
 
 ---
 
