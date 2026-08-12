@@ -5,5 +5,8 @@ pub mod discovery;
 pub mod executor;
 pub mod graph;
 pub mod guardian;
+pub mod hub;
+pub mod local;
 pub mod mocks;
+pub mod model;
 pub mod protocol;

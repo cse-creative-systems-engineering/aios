@@ -1,0 +1,4 @@
+[env]
+# bindgen needs a C stdbool.h; this machine's clang install lacks its own
+# resource headers, so point bindgen at gcc's include dir.
+BINDGEN_EXTRA_CLANG_ARGS_x86_64_unknown_linux_gnu = "-isystem /usr/lib/gcc/x86_64-linux-gnu/15/include"
