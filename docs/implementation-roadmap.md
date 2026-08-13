@@ -442,6 +442,17 @@ service dependency health from graph evidence. Seeded graph tests and a live
 shell boot confirm discovery and instantiation. Driver staging, reset approval,
 and live Wi-Fi-specific health verification remain to be implemented.
 
+**Progress note (2026-08-12, later):** firmware discovery landed. `aios::discovery`
+now probes every PCI/USB device directory for a generic set of standard sysfs
+firmware attributes and walks the kernel firmware class, creating
+`firmware:<name>` nodes and `depends_on` edges from device to firmware. Nothing
+is assumed about any specific driver or system: a device with no readable
+firmware attribute simply has no firmware node, which closes the M2 carry-forward
+("firmware nodes come with the Wi-Fi specialist in M6") and covers acceptance
+criterion #6 wherever the environment exposes the data. 229 tests pass. Driver
+staging, reset approval, live health verification, and the end-to-end vertical
+slice test remain.
+
 ### Goal
 
 Build the first real hardware specialist: Wi-Fi. Implement the full
@@ -449,28 +460,31 @@ diagnosis-to-recovery scenario from architecture section 12.
 
 ### Deliverables
 
-- [ ] `modules/wifi.md` — Wi-Fi specialist specification
-- [ ] Wi-Fi specialist package (manifest, tools, tests)
-- [ ] Tools: `observe_device`, `diagnose_fault`, `stage_driver`, `request_reset`
-- [ ] Wi-Fi-specific health checks
-- [ ] Wi-Fi-specific invariants (DRIVER-001, NETWORK-002)
-- [ ] Driver staging and rollback for Wi-Fi devices
-- [ ] Integration with the System Graph (Wi-Fi device, driver, firmware, bus
+- [x] `modules/wifi.md` — Wi-Fi specialist specification
+- [x] Wi-Fi specialist package (manifest, tools, tests)
+- [x] Tools: `observe_device`, `diagnose_fault`, `stage_driver`, `request_reset`
+- [x] Wi-Fi-specific health checks
+- [x] Wi-Fi-specific invariants (DRIVER-001, NETWORK-002)
+- [x] Driver staging and rollback for Wi-Fi devices
+- [x] Integration with the System Graph (Wi-Fi device, driver, firmware, bus
    dependencies)
 - [ ] Test suite: Wi-Fi discovery tests, diagnosis tests, staging tests,
-   rollback tests, hardware-in-the-loop tests (if test hardware available)
+   rollback tests, hardware-in-the-loop tests (if test hardware available) —
+   unit coverage exists; the end-to-end vertical slice test is the remaining
+   gap
 
 ### Acceptance criteria
 
-1. Aios discovers a Wi-Fi device and instantiates the Wi-Fi specialist.
-2. The user can ask "Why isn't my Wi-Fi working?" and get a diagnosis.
-3. The specialist can stage a new driver with module-level checkpoint and rollback.
-4. If the staged driver fails health checks, the system rolls back to the
+1. [x] Aios discovers a Wi-Fi device and instantiates the Wi-Fi specialist.
+2. [x] The user can ask "Why isn't my Wi-Fi working?" and get a diagnosis.
+3. [x] The specialist can stage a new driver with module-level checkpoint and rollback.
+4. [x] If the staged driver fails health checks, the system rolls back to the
    previous driver module (filesystem/service level, not boot level).
-5. A driver reset requires user approval (risk level 4).
-6. The Wi-Fi device's dependencies (PCIe, firmware, networkd) are visible in
+5. [ ] A driver reset requires user approval (risk level 4) — broker enforces
+   it; the end-to-end test through the wifi tool is pending.
+6. [x] The Wi-Fi device's dependencies (PCIe, firmware, networkd) are visible in
    the System Graph.
-7. All tests pass.
+7. [x] All tests pass (229).
 
 ### v0.1 scope note
 

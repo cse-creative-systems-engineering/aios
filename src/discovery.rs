@@ -39,6 +39,22 @@ fn is_dynamic(node_type: &NodeType) -> bool {
     matches!(node_type, NodeType::Device | NodeType::Bus | NodeType::Sensor)
 }
 
+/// Standard sysfs attribute names that drivers use to expose the loaded
+/// firmware revision. Probed generically on every device directory; Aios does
+/// not assume any particular driver or system.
+const FIRMWARE_ATTRIBUTES: &[&str] = &[
+    "firmware",
+    "firmware_name",
+    "firmware_version",
+    "firmware_rev",
+    "fw_ver",
+    "fw_version",
+    "ucode",
+];
+
+/// Control files in `sys/class/firmware` that are not firmware entries.
+const FIRMWARE_CLASS_CONTROL_FILES: &[&str] = &["timeout"];
+
 pub struct DiscoveryOptions {
     pub root: PathBuf,
     pub now: Timestamp,
@@ -92,6 +108,7 @@ impl SysfsDiscovery {
         self.discover_network(root, &mut graph, t, expires)?;
         self.discover_pci(root, &mut graph, t, expires)?;
         self.discover_usb(root, &mut graph, t, expires)?;
+        self.discover_firmware(root, &mut graph, t, expires)?;
         self.discover_block(root, &mut graph, t, expires)?;
         self.discover_filesystems(root, &mut graph, t, expires)?;
         self.discover_sensors(root, &mut graph, t, expires)?;
@@ -592,6 +609,121 @@ impl SysfsDiscovery {
         Ok(())
     }
 
+    /// Probe every PCI/USB device directory for firmware attributes (a
+    /// generic set of standard sysfs names; drivers differ in which one they
+    /// expose) and the kernel firmware class, creating `firmware:<name>` nodes
+    /// and `depends_on` edges from each device to its firmware. The firmware
+    /// version is discovered, never assumed: a device with no readable
+    /// firmware attribute simply has no firmware node (M6 acceptance #6).
+    fn discover_firmware(
+        &self,
+        root: &Path,
+        graph: &mut SystemGraph,
+        t: Timestamp,
+        expires: Option<Timestamp>,
+    ) -> Result<(), DiscoveryError> {
+        for slot in self.list_dir(root, "sys/bus/pci/devices") {
+            let base = format!("sys/bus/pci/devices/{slot}");
+            if let Some(fw) = self.firmware_attribute(root, &base) {
+                self.add_firmware(
+                    graph,
+                    Some(&NodeId(format!("device:pci-{slot}"))),
+                    &fw,
+                    t,
+                    expires,
+                );
+            }
+        }
+        for id in self.list_dir(root, "sys/bus/usb/devices") {
+            if id.contains(':') {
+                continue;
+            }
+            let base = format!("sys/bus/usb/devices/{id}");
+            if let Some(fw) = self.firmware_attribute(root, &base) {
+                self.add_firmware(
+                    graph,
+                    Some(&NodeId(format!("device:usb-{id}"))),
+                    &fw,
+                    t,
+                    expires,
+                );
+            }
+        }
+        // The kernel firmware class is transient: entries appear while a
+        // firmware request is in flight. Control files are not firmware.
+        // Firmware names are paths relative to the firmware search path and
+        // may nest in subdirectories (e.g. `nvidia/gsp`), so the walk is
+        // recursive.
+        for entry in self.firmware_class_entries(root, "sys/class/firmware") {
+            self.add_firmware(graph, None, &entry, t, expires);
+        }
+        Ok(())
+    }
+
+    fn firmware_class_entries(&self, root: &Path, rel: &str) -> Vec<String> {
+        let mut entries = Vec::new();
+        for name in self.list_dir(root, rel) {
+            if FIRMWARE_CLASS_CONTROL_FILES.contains(&name.as_str()) {
+                continue;
+            }
+            let nested = format!("{rel}/{name}");
+            let children = self.list_dir(root, &nested);
+            if children.is_empty() {
+                entries.push(name);
+            } else {
+                for child in children {
+                    if !FIRMWARE_CLASS_CONTROL_FILES.contains(&child.as_str()) {
+                        entries.push(format!("{name}/{child}"));
+                    }
+                }
+            }
+        }
+        entries.sort();
+        entries
+    }
+
+    fn firmware_attribute(&self, root: &Path, base: &str) -> Option<String> {
+        for name in FIRMWARE_ATTRIBUTES {
+            if let Some(value) = self.read_optional(root, &format!("{base}/{name}")) {
+                let value = value.trim();
+                if !value.is_empty() {
+                    return Some(value.to_string());
+                }
+            }
+        }
+        None
+    }
+
+    fn add_firmware(
+        &self,
+        graph: &mut SystemGraph,
+        device: Option<&NodeId>,
+        name: &str,
+        t: Timestamp,
+        expires: Option<Timestamp>,
+    ) {
+        let slug = name.trim().replace(['/', ' '], "-");
+        if slug.is_empty() {
+            return;
+        }
+        let id = NodeId(format!("firmware:{slug}"));
+        if graph.get_node(&id).is_none() {
+            self.add_node(
+                graph,
+                id.clone(),
+                NodeType::Firmware,
+                format!("firmware {name}"),
+                None,
+                t,
+                expires,
+                HashMap::new(),
+            );
+        }
+        if let Some(device) = device {
+            self.add_depends_on(graph, device, &id, t);
+        }
+    }
+
     fn discover_block(
         &self,
         root: &Path,
@@ -1065,6 +1197,81 @@ mod tests {
         assert_eq!(temp.attributes.get("label").unwrap(), "Package id 0");
         let fan = graph.get_node(&NodeId("sensor:hwmon1-fan1".into())).unwrap();
         assert_eq!(fan.attributes.get("unit").unwrap(), "rpm");
+    }
+
+    #[test]
+    fn device_firmware_attributes_create_nodes_and_edges() {
+        let (_dir, root) = mock_root();
+        // The mock wifi PCI device exposes a firmware version attribute; the
+        // USB device exposes a different (fw_version) attribute name. Both
+        // must be discovered without any per-driver knowledge.
+        write(
+            &root.join("sys/bus/pci/devices/0000:00:14.3/firmware_version"),
+            "iwlwifi-46\n",
+        );
+        write(
+            &root.join("sys/bus/usb/devices/1-1/fw_version"),
+            "2.0.1\n",
+        );
+        let graph = discovery(root).scan().unwrap();
+
+        let fw = graph
+            .get_node(&NodeId("firmware:iwlwifi-46".into()))
+            .expect("wifi firmware node present");
+        assert_eq!(fw.node_type, NodeType::Firmware);
+        let wifi_deps: Vec<String> = graph
+            .get_dependencies(&NodeId("device:pci-0000:00:14.3".into()))
+            .into_iter()
+            .map(|n| n.node_id.to_string())
+            .collect();
+        assert!(
+            wifi_deps.contains(&"firmware:iwlwifi-46".to_string()),
+            "wifi deps: {wifi_deps:?}"
+        );
+
+        assert!(graph.get_node(&NodeId("firmware:2.0.1".into())).is_some());
+        let usb_deps: Vec<String> = graph
+            .get_dependencies(&NodeId("device:usb-1-1".into()))
+            .into_iter()
+            .map(|n| n.node_id.to_string())
+            .collect();
+        assert!(
+            usb_deps.contains(&"firmware:2.0.1".to_string()),
+            "usb deps: {usb_deps:?}"
+        );
+    }
+
+    #[test]
+    fn firmware_class_entries_create_nodes_but_not_control_files() {
+        let (_dir, root) = mock_root();
+        fs::create_dir_all(root.join("sys/class/firmware/iwlwifi-ty-a0-gf-a0-83.ucode")).unwrap();
+        fs::create_dir_all(root.join("sys/class/firmware/nvidia/gsp")).unwrap();
+        write(&root.join("sys/class/firmware/timeout"), "60\n");
+        let graph = discovery(root).scan().unwrap();
+
+        assert!(graph
+            .get_node(&NodeId("firmware:iwlwifi-ty-a0-gf-a0-83.ucode".into()))
+            .is_some());
+        // Slashes in the firmware name are sanitized into the node id.
+        assert!(graph.get_node(&NodeId("firmware:nvidia-gsp".into())).is_some());
+        assert!(
+            graph.get_node(&NodeId("firmware:timeout".into())).is_none(),
+            "timeout is a control file, not firmware"
+        );
+    }
+
+    #[test]
+    fn devices_without_firmware_attributes_get_no_firmware_node() {
+        let (_dir, root) = mock_root();
+        let graph = discovery(root).scan().unwrap();
+        assert_eq!(
+            graph
+                .nodes()
+                .values()
+                .filter(|n| n.node_type == NodeType::Firmware)
+                .count(),
+            0
+        );
     }
 
     #[test]
