@@ -1,0 +1,25 @@
+running: cd "/home/shane/RustroverProjects/aios/src-tauri/target/debug/build/llama-cpp-sys-2-6a3f0877c372cf72/out/build" && CMAKE_PREFIX_PATH="" LC_ALL="C" "cmake" "/home/shane/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/llama-cpp-sys-2-0.1.154/llama.cpp" "-B" "/home/shane/RustroverProjects/aios/src-tauri/target/debug/build/llama-cpp-sys-2-6a3f0877c372cf72/out/build" "-DLLAMA_BUILD_TESTS=OFF" "-DLLAMA_BUILD_EXAMPLES=OFF" "-DLLAMA_BUILD_SERVER=OFF" "-DLLAMA_BUILD_TOOLS=OFF" "-DLLAMA_BUILD_APP=OFF" "-DLLAMA_BUILD_COMMON=ON" "-DLLAMA_CURL=OFF" "-DCMAKE_BUILD_PARALLEL_LEVEL=20" "-DGGML_NATIVE=OFF" "-DBUILD_SHARED_LIBS=OFF" "-DGGML_OPENMP=ON" "-DCMAKE_INSTALL_PREFIX=/home/shane/RustroverProjects/aios/src-tauri/target/debug/build/llama-cpp-sys-2-6a3f0877c372cf72/out" "-DCMAKE_C_FLAGS= -ffunction-sections -fdata-sections -fPIC -m64 -w" "-DCMAKE_C_COMPILER=/usr/bin/cc" "-DCMAKE_CXX_FLAGS= -ffunction-sections -fdata-sections -fPIC -m64 -w" "-DCMAKE_CXX_COMPILER=/usr/bin/c++" "-DCMAKE_ASM_FLAGS= -ffunction-sections -fdata-sections -fPIC -m64 -w" "-DCMAKE_ASM_COMPILER=/usr/bin/cc" "-DCMAKE_BUILD_TYPE=Release"
+CMAKE_BUILD_TYPE=Release
+fatal: not a git repository (or any of the parent directories): .git
+fatal: not a git repository (or any of the parent directories): .git
+CMake Warning at cmake/license.cmake:18 (message):
+  License file
+  '/home/shane/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/llama-cpp-sys-2-0.1.154/llama.cpp/LICENSE'
+  not found
+Call Stack (most recent call first):
+  CMakeLists.txt:182 (license_add_file)
+
+
+CMake Warning at common/CMakeLists.txt:33 (message):
+  Git repository not found; to enable automatic generation of build info,
+  make sure Git is installed and the project is a Git repository.
+
+
+CMake Warning:
+  Manually-specified variables were not used by the project:
+
+    CMAKE_BUILD_PARALLEL_LEVEL
+
+
+running: cd "/home/shane/RustroverProjects/aios/src-tauri/target/debug/build/llama-cpp-sys-2-6a3f0877c372cf72/out/build" && LC_ALL="C" MAKEFLAGS="-j --jobserver-fds=3,8 --jobserver-auth=3,8" "cmake" "--build" "/home/shane/RustroverProjects/aios/src-tauri/target/debug/build/llama-cpp-sys-2-6a3f0877c372cf72/out/build" "--target" "install" "--config" "Release"
+gmake: warning: -j20 forced in submake: resetting jobserver mode.

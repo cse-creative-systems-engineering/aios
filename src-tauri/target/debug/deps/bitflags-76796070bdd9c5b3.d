@@ -1,0 +1,12 @@
+/home/shane/RustroverProjects/aios/src-tauri/target/debug/deps/bitflags-76796070bdd9c5b3.d: /home/shane/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-2.13.1/src/lib.rs /home/shane/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-2.13.1/src/iter.rs /home/shane/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-2.13.1/src/parser.rs /home/shane/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-2.13.1/src/traits.rs /home/shane/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-2.13.1/src/public.rs /home/shane/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-2.13.1/src/internal.rs /home/shane/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-2.13.1/src/external.rs /home/shane/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-2.13.1/src/external/serde.rs
+
+/home/shane/RustroverProjects/aios/src-tauri/target/debug/deps/libbitflags-76796070bdd9c5b3.rmeta: /home/shane/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-2.13.1/src/lib.rs /home/shane/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-2.13.1/src/iter.rs /home/shane/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-2.13.1/src/parser.rs /home/shane/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-2.13.1/src/traits.rs /home/shane/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-2.13.1/src/public.rs /home/shane/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-2.13.1/src/internal.rs /home/shane/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-2.13.1/src/external.rs /home/shane/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-2.13.1/src/external/serde.rs
+
+/home/shane/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-2.13.1/src/lib.rs:
+/home/shane/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-2.13.1/src/iter.rs:
+/home/shane/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-2.13.1/src/parser.rs:
+/home/shane/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-2.13.1/src/traits.rs:
+/home/shane/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-2.13.1/src/public.rs:
+/home/shane/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-2.13.1/src/internal.rs:
+/home/shane/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-2.13.1/src/external.rs:
+/home/shane/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-2.13.1/src/external/serde.rs:

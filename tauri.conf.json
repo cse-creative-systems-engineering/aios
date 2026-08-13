@@ -1,0 +1,42 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Aios",
+  "version": "0.1.0",
+  "identifier": "aios.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://localhost:5173",
+    "frontendDist": "../frontend/dist"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "Aios",
+        "width": 1200,
+        "height": 800,
+        "minWidth": 800,
+        "minHeight": 600,
+        "resizable": true,
+        "decorations": false,
+        "transparent": false,
+        "url": "dev://localhost:5173"
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "assets/32x32.png",
+      "assets/128x128.png",
+      "assets/128x128@2x.png",
+      "assets/icon.icns",
+      "assets/icon.ico"
+    ]
+  }
+}

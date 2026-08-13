@@ -1,0 +1,13 @@
+{
+	"InstallScripts" : 
+	[
+		"/home/shane/RustroverProjects/aios/src-tauri/target/debug/build/llama-cpp-sys-2-6a3f0877c372cf72/out/build/cmake_install.cmake",
+		"/home/shane/RustroverProjects/aios/src-tauri/target/debug/build/llama-cpp-sys-2-6a3f0877c372cf72/out/build/ggml/cmake_install.cmake",
+		"/home/shane/RustroverProjects/aios/src-tauri/target/debug/build/llama-cpp-sys-2-6a3f0877c372cf72/out/build/ggml/src/cmake_install.cmake",
+		"/home/shane/RustroverProjects/aios/src-tauri/target/debug/build/llama-cpp-sys-2-6a3f0877c372cf72/out/build/ggml/src/ggml-cpu/cmake_install.cmake",
+		"/home/shane/RustroverProjects/aios/src-tauri/target/debug/build/llama-cpp-sys-2-6a3f0877c372cf72/out/build/src/cmake_install.cmake",
+		"/home/shane/RustroverProjects/aios/src-tauri/target/debug/build/llama-cpp-sys-2-6a3f0877c372cf72/out/build/common/cmake_install.cmake",
+		"/home/shane/RustroverProjects/aios/src-tauri/target/debug/build/llama-cpp-sys-2-6a3f0877c372cf72/out/build/vendor/cpp-httplib/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

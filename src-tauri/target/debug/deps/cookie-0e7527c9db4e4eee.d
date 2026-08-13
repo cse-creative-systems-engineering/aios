@@ -1,0 +1,12 @@
+/home/shane/RustroverProjects/aios/src-tauri/target/debug/deps/cookie-0e7527c9db4e4eee.d: /home/shane/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-0.18.2/src/lib.rs /home/shane/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-0.18.2/src/builder.rs /home/shane/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-0.18.2/src/parse.rs /home/shane/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-0.18.2/src/jar.rs /home/shane/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-0.18.2/src/delta.rs /home/shane/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-0.18.2/src/same_site.rs /home/shane/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-0.18.2/src/expiration.rs /home/shane/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-0.18.2/src/prefix.rs
+
+/home/shane/RustroverProjects/aios/src-tauri/target/debug/deps/libcookie-0e7527c9db4e4eee.rmeta: /home/shane/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-0.18.2/src/lib.rs /home/shane/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-0.18.2/src/builder.rs /home/shane/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-0.18.2/src/parse.rs /home/shane/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-0.18.2/src/jar.rs /home/shane/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-0.18.2/src/delta.rs /home/shane/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-0.18.2/src/same_site.rs /home/shane/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-0.18.2/src/expiration.rs /home/shane/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-0.18.2/src/prefix.rs
+
+/home/shane/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-0.18.2/src/lib.rs:
+/home/shane/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-0.18.2/src/builder.rs:
+/home/shane/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-0.18.2/src/parse.rs:
+/home/shane/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-0.18.2/src/jar.rs:
+/home/shane/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-0.18.2/src/delta.rs:
+/home/shane/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-0.18.2/src/same_site.rs:
+/home/shane/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-0.18.2/src/expiration.rs:
+/home/shane/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cookie-0.18.2/src/prefix.rs:

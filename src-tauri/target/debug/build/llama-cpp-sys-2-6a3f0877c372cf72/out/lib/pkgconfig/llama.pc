@@ -1,0 +1,10 @@
+prefix=/home/shane/RustroverProjects/aios/src-tauri/target/debug/build/llama-cpp-sys-2-6a3f0877c372cf72/out
+exec_prefix=/home/shane/RustroverProjects/aios/src-tauri/target/debug/build/llama-cpp-sys-2-6a3f0877c372cf72/out
+libdir=/home/shane/RustroverProjects/aios/src-tauri/target/debug/build/llama-cpp-sys-2-6a3f0877c372cf72/out/lib
+includedir=/home/shane/RustroverProjects/aios/src-tauri/target/debug/build/llama-cpp-sys-2-6a3f0877c372cf72/out/include
+
+Name: llama
+Description: Port of Facebook's LLaMA model in C/C++
+Version: 0.0.0
+Libs: -L${libdir} -lggml -lggml-base -lllama
+Cflags: -I${includedir}
