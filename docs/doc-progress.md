@@ -39,7 +39,7 @@ Updated whenever a document's status changes.
 | `implementation-roadmap.md` | Draft — updated for M3 | v0.1 scope clarified for M6; M0–M3 complete |
 | `testing-strategy.md` | Draft — frozen for M1 | Test code reconciled with protocol |
 | `observability.md` | Draft — frozen for M1 | May need refinement during implementation; retention advisory note and recursive-log-avoidance added |
-| `modules/` | ❌ Empty | 0% — first module created during Wi-Fi specialist work |
+| `modules/` | 📝 Drafted | 19 of 19 module specs written (wifi, storage, network, drivers, graphics, memory, power-thermal, security, processes, packages, boot-recovery, block-disk, filesystem, files-data, gpu, display, session, bluetooth, wired-lan) |
 
 ## Overall Progress
 
@@ -54,17 +54,17 @@ Core contracts: 8 of 8 drafted              (100%)
   (SEC, CAP, MSG, ASM, GRAPH, PKG, MODEL, HI)
 Human interaction: 1 of 1 drafted           (100%)
 ADRs: 6 accepted                             (6 of expected ~15-20)
-Module specs: 0 of ~10 planned              (0%)
+Module specs: 19 of 19 drafted              (100%)
 ```
 
 Implementation status is tracked in `implementation-roadmap.md`. Current:
-M1 (In-Process Simulation), M2 (Read-Only Linux Discovery), and M3 (Local
-Model Runtime) are **complete**. `aios::discovery` reads real
-sysfs/procfs/hwmon/systemctl data into the System Graph with a
-reconciliation cycle (489 nodes on a live machine); `aios::model` + `aios::local`
-run a real Qwen GGUF through llama.cpp with gateway routing, consent,
-pinning, and fallback (95 pass, 1 ignored). Next up: M4 (Dual-Agent
-Orchestration), including the config-driven `HttpBackend` from ADR-0006.
+M0–M6 and the M8 terminal panel are **complete**; M7 (Additional
+Specialists) is **in progress** with the Storage, Network, Drivers, and
+Graphics umbrella specialists wired through the broker. The full test suite
+passes (290 passed, 1 ignored — the real-model test). Remaining M7
+specialists: Memory, Power/thermal, Security/identity, Processes/resources,
+Packages/updates, Boot/recovery. The full Aios UI (presence, screen space,
+screen vision) is a separate workstream tracked in `docs/ui.md`.
 
 ## Dependency Graph
 
@@ -102,10 +102,10 @@ graph TD
     end
 
     subgraph Modules
-        WIFI[modules/wifi.md<br/>Missing]
-        STORAGE[modules/storage.md<br/>Missing]
-        NET[modules/network.md<br/>Missing]
-        MORE[...<br/>Missing]
+        WIFI[modules/wifi.md<br/>Drafted]
+        STORAGE[modules/storage.md<br/>Drafted]
+        NET[modules/network.md<br/>Drafted]
+        MORE[modules/...<br/>Drafted]
     end
 
     ARCH --> GLOSS
@@ -156,7 +156,7 @@ graph TD
 
     class ADR1,ADR2,ADR3,ADR4,ADR5 accepted
     class SEC,CAP,MSG,ASM,GRAPH,MODEL,PKG,HI,ROAD,TEST,OBS,GLOSS,REQ drafted
-    class WIFI,STORAGE,NET,MORE missing
+    class WIFI,STORAGE,NET,MORE drafted
 ```
 
 ## Recommended Drafting Order
@@ -179,7 +179,8 @@ Row 5 (done):     action-state-machine.md, system-graph.md, model-routing.md,
 Row 6 (done):     agent-packages.md
   → ADR-0006 done (model gateway — M3 implementation, accepted 2026-08-12)
 Row 7 (done):     implementation-roadmap.md, testing-strategy.md, observability.md
-Row 8 (next):     modules/wifi.md, modules/storage.md, ... (one at a time)
+Row 8 (done):     modules/wifi.md, modules/storage.md, ... (all 19 module specs
+                   drafted; refined as each specialist is implemented)
 ```
 
 ## ADR Log

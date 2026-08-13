@@ -1,8 +1,8 @@
 # Aios Implementation Roadmap
 
 **Status:** Draft — updated for M7 (M0–M6 and the M8 terminal panel
-complete, M7 in progress with the Storage specialist, M8 full UI tracked in
-`docs/ui.md`)  
+complete, M7 in progress with the Storage, Network, Drivers, and Graphics
+specialists, M8 full UI tracked in `docs/ui.md`)  
 **Depends on:** architecture.md, requirements.md, security-model.md, capability-model.md, message-protocol.md, action-state-machine.md, system-graph.md, agent-packages.md, model-routing.md, all ADRs
 
 ## Purpose
@@ -522,7 +522,7 @@ It validates the entire architecture against a real hardware scenario.
 
 ## Milestone 7: Additional Specialists
 
-**Status:** In progress (Storage, Network, and Drivers specialists)
+**Status:** In progress (Storage, Network, Drivers, and Graphics specialists)
 **Estimated effort:** 2–4 weeks per specialist
 **Dependencies:** M6
 
@@ -597,6 +597,26 @@ through the broker and reported the live hardware state (31 unclaimed
 devices, 17 with attached drivers, no firmware). 278 tests pass.
 `stage_driver` and `request_reset`, which will reuse the staged-executor
 path the wifi tools already use, are deferred to the mutation pass.
+
+**Progress note (2026-08-12, graphics):** the Graphics umbrella specialist
+follows the same pattern (`aios::graphics`, docs/modules/graphics.md). It
+owns the graphics and session domain: GPUs (structural PCI display-controller
+class `0x03`, or a self-identifying GPU), displays and the display service,
+and user/desktop sessions. It instantiates when any of these exist
+(`GraphicsError::NoGraphicsResources` fails closed otherwise). The drivers
+peer now excludes GPU-class devices so they stay unclaimed for the graphics
+domain (one-owner rule, architecture §5). It declares the read-only tools
+`graphics.observe_graphics` and `graphics.diagnose_fault` on the
+`graphics:domain` resource (invariant GFX-001: the GPU is present and
+reports state; GFX-002 belongs to the mutation pass). Coordinator boot
+registers the tools with the broker, spawns the specialist handlers, grants
+the session principal the read-only capabilities, and routes `run_tool_as`
+calls for the graphics tools to `graphics:domain` exactly like the other
+specialist read-only tools. Coordinator-level tests drive broker →
+specialist for observe and diagnose (hermetic `wire_graphics` helper seeds a
+GPU when the machine has none). 290 tests pass. Display configuration, GPU
+reset, and any mutating graphics operations are deferred to the mutation
+pass.
 
 ### Storage specialist: complete
 
@@ -750,7 +770,7 @@ its own workstream; the panel is the first concrete piece.
 | M4: Dual-Agent Orchestration | ✅ Complete (offline shell deferred) | 9–13 weeks | M2, M3 |
 | M5: Transactions and Staging | ✅ Complete | 9–13 weeks (parallel with M4) | M2 |
 | M6: First Hardware Specialist | ✅ Complete | 13–19 weeks | M4, M5 |
-| M7: Additional Specialists | In progress (Storage, Network, Drivers specialists) | +2–4 weeks per specialist | M6 |
+| M7: Additional Specialists | In progress (Storage, Network, Drivers, Graphics specialists) | +2–4 weeks per specialist | M6 |
 | M8: System State Panel | ✅ Terminal panel complete; full UI in `docs/ui.md` | 15–22 weeks (parallel) | M2 |
 
 **Estimated time to working v0.1 with Wi-Fi vertical slice:** 4–5 months  
