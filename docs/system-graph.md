@@ -59,7 +59,7 @@ The graph has five layers, each with specific node types:
 |---|---|---|
 | `PlannerAgent` | `agent:planner` | Core package instantiation |
 | `VerificationAgent` | `agent:verifier` | Core package instantiation |
-| `Specialist` | `agent:wifi0-specialist` | Specialist package instantiation |
+| `Specialist` | `agent:wifi0-specialist`, `agent:storage-specialist` | Specialist package instantiation |
 | `Guardian` | `agent:guardian` | Guardian package instantiation |
 | `Coordinator` | `agent:coordinator` | Coordinator package instantiation |
 
@@ -332,6 +332,34 @@ fn analyze_impact(&self, resource: &NodeId) -> ImpactReport {
 ```
 
 The impact report is passed to the Guardian for review.
+
+### 6.4 Ownership map: Storage specialist (M7)
+
+The storage umbrella owns the storage domain as a whole. Its per-resource
+ownership follows the domain hierarchy (architecture §6): block devices and
+mounted filesystems are owned by the umbrella through `owns` edges; the
+`storage:domain` resource carries the specialist's read-only capabilities
+(`observe_storage`, `diagnose_fault`). The umbrella node itself is linked to
+each child resource, and the child stack (filesystem → block device → bus or
+driver) is captured by `depends_on` edges when discovery can verify it:
+
+```text
+Subgraph rooted at device:nvme0n1 (2 hops):
+
+device:nvme0n1
+  ├── owns ← agent:storage-specialist
+  ├── depends_on → bus:pci0
+  └── depends_on → driver:nvme
+
+fs:ext4-root
+  ├── owns ← agent:storage-specialist
+  └── depends_on → device:nvme0n1
+```
+
+Exactly one `owns` edge per resource (§2.3) — the storage specialist is the
+single owner of block devices and filesystems; the generic Driver and Bus
+specialists own their own inventory, and observed relationships never
+substitute for broker capability checks (docs/modules/storage.md).
 
 ---
 

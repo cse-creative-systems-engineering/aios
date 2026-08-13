@@ -42,6 +42,40 @@ pub enum NodeType {
     Watchdog,
 }
 
+impl NodeType {
+    /// Every node type in the model, in declaration order.
+    pub fn all() -> Vec<NodeType> {
+        vec![
+            NodeType::Cpu,
+            NodeType::Memory,
+            NodeType::Bus,
+            NodeType::Device,
+            NodeType::Firmware,
+            NodeType::Sensor,
+            NodeType::Kernel,
+            NodeType::Driver,
+            NodeType::Service,
+            NodeType::Filesystem,
+            NodeType::Process,
+            NodeType::Namespace,
+            NodeType::PlannerAgent,
+            NodeType::VerificationAgent,
+            NodeType::Specialist,
+            NodeType::Guardian,
+            NodeType::Coordinator,
+            NodeType::LocalModel,
+            NodeType::LanGateway,
+            NodeType::InternetProvider,
+            NodeType::FallbackRoute,
+            NodeType::Capability,
+            NodeType::Policy,
+            NodeType::BootImage,
+            NodeType::Snapshot,
+            NodeType::Watchdog,
+        ]
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProvenanceSource {
     Discovered { via: String },

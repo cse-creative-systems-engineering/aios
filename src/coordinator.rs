@@ -22,6 +22,7 @@ use crate::protocol::{DataClassification, HealthState, now};
 use crate::tools::{ToolError, ToolRegistry, model_tool_instructions, resource_index};
 use crate::verifier::Verifier;
 use crate::wifi::WifiSpecialist;
+use crate::storage::StorageSpecialist;
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc, RwLock,
@@ -48,6 +49,7 @@ pub struct Coordinator {
     last_scan_summary: RwLock<Option<String>>,
     local_model_path: Option<PathBuf>,
     wifi_specialist: Option<WifiSpecialist>,
+    storage_specialist: Option<StorageSpecialist>,
 }
 
 impl Coordinator {
@@ -184,6 +186,7 @@ impl Coordinator {
             last_scan_summary: RwLock::new(None),
             local_model_path,
             wifi_specialist: None,
+            storage_specialist: None,
         };
         coordinator.configure_read_only_broker();
         coordinator.refresh_connectivity();
@@ -299,12 +302,82 @@ impl Coordinator {
                 .client(coordinator.session_principal.clone())
                 .capability_tokens(&coordinator.session_principal);
         }
+        // Storage specialist (M7): the umbrella owns every discovered block
+        // device and mounted filesystem. v0.1 is read-only (docs/modules/
+        // storage.md) — observe_storage and diagnose_fault run through the
+        // broker against the live graph exactly like the wifi read-only tools.
+        let storage_specialist = {
+            let mut graph = coordinator.graph.write().expect("graph lock");
+            match StorageSpecialist::instantiate(&mut graph) {
+                Ok(specialist) => Some(specialist),
+                Err(crate::storage::StorageError::NoStorageResources) => None,
+                Err(error) => return Err(BootError::Discovery(error.to_string())),
+            }
+        };
+        coordinator.storage_specialist = storage_specialist;
+        if let Some(specialist) = coordinator.storage_specialist.as_ref() {
+            let definitions = specialist.tool_definitions();
+            let principal =
+                PrincipalId::agent(crate::storage::PACKAGE_ID, specialist.specialist.0.clone());
+            let capabilities = definitions
+                .iter()
+                .flat_map(|definition| definition.required_capabilities.clone())
+                .collect();
+            let storage_domain = specialist.clone();
+            for definition in definitions {
+                let tool_id = definition.tool_id.clone();
+                coordinator.broker.register_tool(definition);
+                let graph = coordinator.graph.clone();
+                let domain = storage_domain.clone();
+                let handler_tool_id = tool_id.clone();
+                coordinator.broker.spawn_specialist(&tool_id, {
+                    std::sync::Arc::new(move |request| {
+                        let graph = graph.read().expect("graph lock");
+                        let target = tool_arguments(&request.parameters);
+                        if handler_tool_id.ends_with("observe_storage") {
+                            domain.observe(&graph, &target)
+                        } else {
+                            domain.diagnose(&graph, &target)
+                        }
+                    })
+                });
+            }
+            coordinator
+                .broker
+                .register_principal(principal, capabilities, Clearance::max());
+            coordinator.broker.set_resource_state(
+                crate::capability::ResourceId("storage:domain".into()),
+                ResourceState::Available,
+            );
+            let storage_capabilities: Vec<Capability> = coordinator
+                .broker
+                .client(crate::capability::PrincipalId::system("policy-broker"))
+                .get_capabilities(&crate::capability::PrincipalId::agent(
+                    crate::storage::PACKAGE_ID,
+                    specialist.specialist.0.clone(),
+                ))
+                .into_iter()
+                .filter(|c| matches!(c.operation, Operation::Observe | Operation::Diagnose))
+                .collect();
+            for storage_capability in storage_capabilities {
+                coordinator
+                    .broker
+                    .grant_capability(&coordinator.session_principal, storage_capability);
+            }
+            coordinator.session_tokens = coordinator
+                .broker
+                .client(coordinator.session_principal.clone())
+                .capability_tokens(&coordinator.session_principal);
+        }
         // Wire the staged executor so risk-2/risk-4 wifi tools (stage_driver,
         // request_reset) run through the M5 action state machine instead of
         // failing with "no executor configured" (modules/wifi.md, M6). The
-        // v0.1 driver control is a mock that records the intended modprobe
+        // default control is a mock that records the intended modprobe
         // commands — real kernel changes are executed by the user on the
-        // wired-connected machine (safety boundary).
+        // wired-connected machine (safety boundary). Setting
+        // AIOS_LIVE_DRIVER_CONTROL switches to the live sysfs control, which
+        // health-checks the real interface but still only plans mutations
+        // unless execute is opted in on the control itself.
         let action_dir = coordinator.config_dir.join("actions");
         let store = match FileActionStore::new(&action_dir) {
             Ok(store) => store,
@@ -319,10 +392,18 @@ impl Coordinator {
             .as_ref()
             .map(|s| ResourceId(s.device.0.clone()))
             .unwrap_or_else(|| ResourceId("device:net-wlp1s0".into()));
-        let driver = WifiDriverResourceDriver::new(
-            Box::new(MockDriverControl::new()),
-            device_id,
-        );
+        let control: Box<dyn crate::wifi_driver::DriverControl> =
+            if std::env::var_os("AIOS_LIVE_DRIVER_CONTROL").is_some() {
+                let interface = device_id
+                    .0
+                    .strip_prefix("device:net-")
+                    .unwrap_or("wlan0")
+                    .to_string();
+                Box::new(crate::wifi_driver::LinuxDriverControl::new(interface))
+            } else {
+                Box::new(MockDriverControl::new())
+            };
+        let driver = WifiDriverResourceDriver::new(control, device_id);
         coordinator.broker.set_executor(StagedExecutor::new(
             Box::new(store),
             Box::new(driver),
@@ -363,6 +444,10 @@ impl Coordinator {
 
     pub fn wifi_specialist(&self) -> Option<&WifiSpecialist> {
         self.wifi_specialist.as_ref()
+    }
+
+    pub fn storage_specialist(&self) -> Option<&StorageSpecialist> {
+        self.storage_specialist.as_ref()
     }
 
     pub fn current_route(&self) -> Result<RoutingDecision, RoutingError> {
@@ -478,6 +563,10 @@ impl Coordinator {
                 | "wifi.stage_driver"
                 | "wifi.request_reset"
         );
+        let is_storage_tool = matches!(
+            call.name.as_str(),
+            "storage.observe_storage" | "storage.diagnose_fault"
+        );
         let resource = if is_wifi_tool {
             let device = self
                 .wifi_specialist
@@ -488,6 +577,8 @@ impl Coordinator {
                 .device
                 .clone();
             ResourceId(device.0)
+        } else if is_storage_tool {
+            ResourceId("storage:domain".into())
         } else {
             ResourceId("system:graph".into())
         };
@@ -822,27 +913,7 @@ impl Coordinator {
     }
 
     pub fn state_panel(&self) -> String {
-        let graph = self.graph.read().expect("graph lock");
-        let mut counts = std::collections::BTreeMap::new();
-        for node in graph.nodes().values() {
-            *counts.entry(format!("{:?}", node.health)).or_insert(0usize) += 1;
-        }
-        let route = self
-            .current_route()
-            .map(|route| format!("{} / {:?}", route.provider, route.model))
-            .unwrap_or_else(|error| format!("UNAVAILABLE ({error})"));
-        let mut lines = vec![
-            "system state".to_string(),
-            format!("connectivity: {:?}", self.connectivity()),
-            format!("route: {route}"),
-            format!("graph: {} nodes", graph.nodes().len()),
-            "health:".to_string(),
-        ];
-        for (state, count) in counts {
-            lines.push(format!("  {state}: {count}"));
-        }
-        lines.push(format!("audit entries: {}", self.audit.entries().len()));
-        lines.join("\n")
+        crate::panel::render(&crate::panel::snapshot(self))
     }
 
     pub fn local_model_path(&self) -> Option<&PathBuf> {
@@ -870,6 +941,8 @@ fn operation_for_tool(name: &str) -> Option<Operation> {
         "wifi.diagnose_fault" => Some(Operation::Diagnose),
         "wifi.stage_driver" => Some(Operation::Stage),
         "wifi.request_reset" => Some(Operation::Reset),
+        "storage.observe_storage" => Some(Operation::Observe),
+        "storage.diagnose_fault" => Some(Operation::Diagnose),
         _ => None,
     }
 }
@@ -1147,8 +1220,16 @@ pub fn send_direct(coordinator: &Coordinator, text: &str) -> Result<String, Agen
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::broker::build_request;
+    use crate::capability::{RiskLevel, ToolDefinition};
+    use crate::guardian::Guardian;
     use crate::config::ProviderConfig;
-    use crate::protocol::{DataClassification, HealthState, VerificationVerdict};
+    use crate::graph::NodeId;
+    use crate::mocks::MockWifiDriver;
+    use crate::protocol::{
+        DataClassification, HealthState, ToolData, ToolErrorCode, ToolParameters, ToolStatus,
+        VerificationVerdict,
+    };
     use crate::testutil;
 
     struct FakeProbe(ConnectivityState);
@@ -1370,5 +1451,392 @@ mod tests {
             Coordinator::boot_with_probe(config, Box::new(FakeProbe(ConnectivityState::Offline)))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn panel_renders_live_snapshot() {
+        let port = testutil::spawn_json_server(handler);
+        let coordinator = stub_coordinator(port);
+        let text = coordinator.state_panel();
+        assert!(text.contains("== aios system state =="), "{text}");
+        assert!(text.contains("connectivity:"), "{text}");
+        assert!(text.contains("route:"), "{text}");
+        assert!(text.contains("graph:"), "{text}");
+        assert!(text.contains("recovery:"), "{text}");
+        assert!(text.contains("subsystems:"), "{text}");
+    }
+
+    // M7: the storage specialist must be reachable through the broker like the
+    // wifi read-only tools. This helper seeds storage nodes into the graph
+    // when the machine discovered none, instantiates the specialist, and
+    // registers its tools + session grants exactly like boot does.
+    fn wire_storage(coordinator: &mut Coordinator) {
+        if coordinator.storage_specialist.is_some() {
+            return;
+        }
+        {
+            let mut graph = coordinator.graph.write().expect("graph lock");
+            let has_storage = graph
+                .nodes()
+                .values()
+                .any(|node| node.node_type == NodeType::Filesystem
+                    || node.label.starts_with("block device "));
+            if !has_storage {
+                let mut nvme = crate::graph::NodeMetadata::new(
+                    NodeId("device:nvme0n1".into()),
+                    NodeType::Device,
+                    crate::graph::ProvenanceSource::Discovered { via: "sysfs".into() },
+                    crate::graph::TrustLevel::Trusted,
+                    crate::protocol::now(),
+                );
+                nvme.label = "block device nvme0n1".into();
+                nvme.attributes
+                    .insert("size_bytes".into(), "500107862016".into());
+                graph.add_node(nvme).unwrap();
+            }
+            crate::storage::StorageSpecialist::instantiate(&mut graph).unwrap();
+        }
+        let specialist = coordinator.storage_specialist.as_ref().unwrap().clone();
+        for definition in specialist.tool_definitions() {
+            let tool_id = definition.tool_id.clone();
+            coordinator.broker.register_tool(definition);
+            let graph = coordinator.graph.clone();
+            let domain = specialist.clone();
+            coordinator.broker.spawn_specialist(&tool_id.clone(), {
+                std::sync::Arc::new(move |request| {
+                    let graph = graph.read().expect("graph lock");
+                    let target = tool_arguments(&request.parameters);
+                    if tool_id.ends_with("observe_storage") {
+                        domain.observe(&graph, &target)
+                    } else {
+                        domain.diagnose(&graph, &target)
+                    }
+                })
+            });
+        }
+        coordinator.broker.set_resource_state(
+            ResourceId("storage:domain".into()),
+            ResourceState::Available,
+        );
+        let principal = PrincipalId::agent(
+            crate::storage::PACKAGE_ID,
+            specialist.specialist.0.clone(),
+        );
+        coordinator.broker.register_principal(
+            principal.clone(),
+            vec![
+                Capability {
+                    resource: ResourceId("storage:domain".into()),
+                    operation: Operation::Observe,
+                },
+                Capability {
+                    resource: ResourceId("storage:domain".into()),
+                    operation: Operation::Diagnose,
+                },
+            ],
+            Clearance::max(),
+        );
+        coordinator.broker.grant_capability(
+            &coordinator.session_principal,
+            Capability {
+                resource: ResourceId("storage:domain".into()),
+                operation: Operation::Observe,
+            },
+        );
+        coordinator.broker.grant_capability(
+            &coordinator.session_principal,
+            Capability {
+                resource: ResourceId("storage:domain".into()),
+                operation: Operation::Diagnose,
+            },
+        );
+        coordinator.session_tokens = coordinator
+            .broker
+            .client(coordinator.session_principal.clone())
+            .capability_tokens(&coordinator.session_principal);
+    }
+
+    #[test]
+    fn storage_observe_runs_through_broker() {
+        let port = testutil::spawn_json_server(handler);
+        let mut coordinator = stub_coordinator(port);
+        wire_storage(&mut coordinator);
+        let call = ToolCallRequest {
+            name: "storage.observe_storage".into(),
+            arguments: "all".into(),
+        };
+        let result = coordinator
+            .run_tool_as("planner", &call)
+            .expect("storage observe through broker");
+        assert!(result.text.contains("block_devices"), "{}", result.text);
+    }
+
+    #[test]
+    fn storage_diagnose_reports_domain_invariants() {
+        let port = testutil::spawn_json_server(handler);
+        let mut coordinator = stub_coordinator(port);
+        wire_storage(&mut coordinator);
+        let call = ToolCallRequest {
+            name: "storage.diagnose_fault".into(),
+            arguments: "all".into(),
+        };
+        let result = coordinator
+            .run_tool_as("planner", &call)
+            .expect("storage diagnose through broker");
+        assert!(result.text.contains("findings"), "{}", result.text);
+    }
+
+    // The executor wired at boot (modules/wifi.md, M6) must run mutating
+    // wifi tools (stage_driver, request_reset) through the action state
+    // machine. When a device was discovered, boot already registered the tool
+    // and the specialist principal (with the right capabilities); otherwise
+    // they are registered here so the tests pass on machines without a Wi-Fi
+    // controller. Either way the resource owner is wired explicitly.
+    fn wire_specialist(
+        coordinator: &Coordinator,
+        device: &ResourceId,
+        tool_id: &str,
+        operation: Operation,
+        risk: RiskLevel,
+        clearance: Clearance,
+    ) -> PrincipalId {
+        coordinator.broker.set_guardian(Guardian::new());
+        if let Some(specialist) = coordinator.wifi_specialist.as_ref() {
+            let principal =
+                PrincipalId::agent(crate::wifi::PACKAGE_ID, specialist.specialist.0.clone());
+            coordinator
+                .broker
+                .set_resource_owner(device.clone(), principal.clone());
+            return principal;
+        }
+        let principal = PrincipalId::agent("wifi.specialist", "wifi0-instance-001");
+        let capability = Capability {
+            resource: device.clone(),
+            operation,
+        };
+        coordinator.broker.register_tool(ToolDefinition {
+            tool_id: tool_id.to_string(),
+            specialist_package: "wifi.specialist".into(),
+            risk_level: risk,
+            required_capabilities: vec![capability.clone()],
+            description: format!("{tool_id} on {device}"),
+        });
+        coordinator.broker.register_principal(
+            principal.clone(),
+            vec![capability],
+            clearance,
+        );
+        coordinator
+            .broker
+            .set_resource_state(device.clone(), ResourceState::Available);
+        coordinator
+            .broker
+            .set_resource_owner(device.clone(), principal.clone());
+        principal
+    }
+
+    fn boot_device(coordinator: &Coordinator) -> ResourceId {
+        coordinator
+            .wifi_specialist
+            .as_ref()
+            .map(|s| ResourceId(s.device.0.clone()))
+            .unwrap_or_else(|| ResourceId("device:net-wlp1s0".into()))
+    }
+
+    fn capability_token(
+        coordinator: &Coordinator,
+        principal: &PrincipalId,
+        operation: Operation,
+    ) -> CapabilityToken {
+        coordinator
+            .broker
+            .client(principal.clone())
+            .capability_tokens(principal)
+            .into_iter()
+            .find(|token| token.capability.operation == operation)
+            .expect("capability token issued")
+    }
+
+    fn stage_request(
+        principal: &PrincipalId,
+        device: &ResourceId,
+        token: &CapabilityToken,
+        nonce: u64,
+    ) -> crate::protocol::ToolRequest {
+        build_request(
+            principal.clone(),
+            device.clone(),
+            Operation::Stage,
+            "wifi.stage_driver",
+            token,
+            ToolParameters::Stage {
+                change: serde_json::json!({ "module": "iwlwifi-next" }),
+            },
+            uuid::Uuid::new_v4(),
+            nonce,
+        )
+    }
+
+    fn reset_request(
+        principal: &PrincipalId,
+        device: &ResourceId,
+        token: &CapabilityToken,
+        action_id: uuid::Uuid,
+        plan_hash: [u8; 32],
+        nonce: u64,
+    ) -> crate::protocol::ToolRequest {
+        let mut request = build_request(
+            principal.clone(),
+            device.clone(),
+            Operation::Reset,
+            "wifi.request_reset",
+            token,
+            ToolParameters::Reset {
+                to_known_good: true,
+            },
+            uuid::Uuid::new_v4(),
+            nonce,
+        );
+        request.action_id = Some(action_id);
+        request.plan_hash = Some(plan_hash);
+        request
+    }
+
+    #[test]
+    fn broker_runs_staged_commit_through_booted_executor() {
+        let port = testutil::spawn_json_server(handler);
+        let coordinator = stub_coordinator(port);
+        let device = boot_device(&coordinator);
+        let principal = wire_specialist(
+            &coordinator,
+            &device,
+            "wifi.stage_driver",
+            Operation::Stage,
+            RiskLevel::Staged,
+            Clearance(RiskLevel::Staged),
+        );
+        let token = capability_token(&coordinator, &principal, Operation::Stage);
+        let request = stage_request(&principal, &device, &token, 9001);
+        let result = coordinator
+            .broker
+            .client(principal)
+            .request_tool(request)
+            .expect("broker response");
+        assert_eq!(result.status, ToolStatus::Success);
+        assert!(matches!(
+            result.data,
+            Some(ToolData::CommitResult {
+                committed: true,
+                health_verified: true
+            })
+        ));
+    }
+
+    #[test]
+    fn broker_rolls_back_staged_request_when_health_fails() {
+        let port = testutil::spawn_json_server(handler);
+        let coordinator = stub_coordinator(port);
+        let device = boot_device(&coordinator);
+        let principal = wire_specialist(
+            &coordinator,
+            &device,
+            "wifi.stage_driver",
+            Operation::Stage,
+            RiskLevel::Staged,
+            Clearance(RiskLevel::Staged),
+        );
+        let dir = tempfile::tempdir().expect("action store directory");
+        let store = crate::action::FileActionStore::new(dir.path()).expect("action store");
+        let driver = MockWifiDriver::new();
+        driver
+            .health_ok
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        coordinator.broker.set_executor(crate::executor::StagedExecutor::new(
+            Box::new(store),
+            Box::new(driver),
+        ));
+        let token = capability_token(&coordinator, &principal, Operation::Stage);
+        let request = stage_request(&principal, &device, &token, 9002);
+        let result = coordinator
+            .broker
+            .client(principal)
+            .request_tool(request)
+            .expect("broker response");
+        assert_eq!(result.status, ToolStatus::RolledBack);
+        assert_eq!(
+            result
+                .error
+                .expect("rollback explains health failure")
+                .code,
+            ToolErrorCode::HealthCheckFailed
+        );
+    }
+
+    // M6 acceptance criterion #5: a driver reset is risk 4 and must be denied
+    // unless a broker-owned approval covering the exact action is present.
+    // This is the same guarantee the broker-level test makes, reached through
+    // the boot-wired coordinator.
+    #[test]
+    fn reset_denied_without_broker_owned_approval() {
+        let port = testutil::spawn_json_server(handler);
+        let coordinator = stub_coordinator(port);
+        let device = boot_device(&coordinator);
+        let principal = wire_specialist(
+            &coordinator,
+            &device,
+            "wifi.request_reset",
+            Operation::Reset,
+            RiskLevel::Critical,
+            Clearance(RiskLevel::Recovery),
+        );
+        let token = capability_token(&coordinator, &principal, Operation::Reset);
+        let request = reset_request(&principal, &device, &token, uuid::Uuid::new_v4(), [7; 32], 9101);
+        let result = coordinator
+            .broker
+            .client(principal)
+            .request_tool(request)
+            .expect("broker response");
+        assert_eq!(result.status, ToolStatus::Denied);
+        let message = result.error.expect("denial carries a reason").message;
+        assert!(message.contains("approval"), "denied: {message}");
+    }
+
+    // End-to-end through the facade's own approval channel: issue_reset_approval
+    // then submit_approval record the broker-owned approval (human-interaction
+    // §1.4), and the risk-4 reset commits through the executor.
+    #[test]
+    fn reset_commits_through_facade_approval_channel() {
+        let port = testutil::spawn_json_server(handler);
+        let coordinator = stub_coordinator(port);
+        let device = boot_device(&coordinator);
+        let principal = wire_specialist(
+            &coordinator,
+            &device,
+            "wifi.request_reset",
+            Operation::Reset,
+            RiskLevel::Critical,
+            Clearance(RiskLevel::Recovery),
+        );
+        let action_id = uuid::Uuid::new_v4();
+        let plan_hash = [9; 32];
+        let (request_id, _) = coordinator
+            .issue_reset_approval(action_id, plan_hash, device.clone(), "wifi.request_reset".into())
+            .expect("approval request issued");
+        coordinator.submit_approval(request_id, true);
+        let token = capability_token(&coordinator, &principal, Operation::Reset);
+        let request = reset_request(&principal, &device, &token, action_id, plan_hash, 9102);
+        let result = coordinator
+            .broker
+            .client(principal)
+            .request_tool(request)
+            .expect("broker response");
+        assert_eq!(result.status, ToolStatus::Success);
+        assert!(matches!(
+            result.data,
+            Some(ToolData::CommitResult {
+                committed: true,
+                health_verified: true
+            })
+        ));
     }
 }

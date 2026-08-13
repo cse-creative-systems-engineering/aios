@@ -1,6 +1,8 @@
 # Aios Implementation Roadmap
 
-**Status:** Draft — updated for M4 (M0–M3 complete, M4 in progress)  
+**Status:** Draft — updated for M7 (M0–M6 and the M8 terminal panel
+complete, M7 in progress with the Storage specialist, M8 full UI tracked in
+`docs/ui.md`)  
 **Depends on:** architecture.md, requirements.md, security-model.md, capability-model.md, message-protocol.md, action-state-machine.md, system-graph.md, agent-packages.md, model-routing.md, all ADRs
 
 ## Purpose
@@ -45,9 +47,8 @@ graph TD
     classDef current fill:#d4a017,color:#fff,stroke:#a07c10,stroke-width:2px
     classDef planned fill:#4a90d9,color:#fff,stroke:#2a6db0,stroke-width:2px
 
-    class M0,M1,M2,M3 done
-    class M4 current
-    class M5,M6,M7,M8 planned
+    class M0,M1,M2,M3,M4,M5,M6,M8 done
+    class M7 current
 ```
 
 ---
@@ -429,7 +430,7 @@ and user approval. Enable safe mutations.
 
 ## Milestone 6: First Hardware Specialist (Wi-Fi)
 
-**Status:** In progress
+**Status:** ✅ Complete
 **Estimated effort:** 4–6 weeks  
 **Dependencies:** M4, M5
 
@@ -453,6 +454,22 @@ criterion #6 wherever the environment exposes the data. 229 tests pass. Driver
 staging, reset approval, live health verification, and the end-to-end vertical
 slice test remain.
 
+**Progress note (2026-08-12, final):** the end-to-end vertical slice now runs
+through the boot-wired coordinator. Coordinator-level tests drive the broker
+into the staged executor for all four wifi flows: healthy risk-2 `stage_driver`
+commits, unhealthy staging auto-rolls back (`ToolStatus::RolledBack` with
+`HealthCheckFailed`), risk-4 `request_reset` is denied without a broker-owned
+approval, and a reset commits after the facade's own approval channel
+(`issue_reset_approval` → `submit_approval`) records it. Live Wi-Fi health
+verification landed with `LinuxDriverControl`: the active module, module
+version, and carrier/operstate link state are read from real sysfs, mutations
+are planned (`modprobe ...`) and only executed when the control is explicitly
+opted in — the default stays dry-run so Aios never touches the running kernel
+(safety boundary: real module changes are executed by the user on the
+wired-connected machine). Setting `AIOS_LIVE_DRIVER_CONTROL` at boot switches
+the executor to the live control while keeping all tests hermetic against the
+mock. 239 tests pass.
+
 ### Goal
 
 Build the first real hardware specialist: Wi-Fi. Implement the full
@@ -468,10 +485,11 @@ diagnosis-to-recovery scenario from architecture section 12.
 - [x] Driver staging and rollback for Wi-Fi devices
 - [x] Integration with the System Graph (Wi-Fi device, driver, firmware, bus
    dependencies)
-- [ ] Test suite: Wi-Fi discovery tests, diagnosis tests, staging tests,
+- [x] Test suite: Wi-Fi discovery tests, diagnosis tests, staging tests,
    rollback tests, hardware-in-the-loop tests (if test hardware available) —
-   unit coverage exists; the end-to-end vertical slice test is the remaining
-   gap
+   unit coverage exists; the coordinator-level vertical slice covers stage
+   commit, stage rollback, reset approval denial, and reset approval commit
+   through the broker and boot-wired executor
 
 ### Acceptance criteria
 
@@ -480,11 +498,12 @@ diagnosis-to-recovery scenario from architecture section 12.
 3. [x] The specialist can stage a new driver with module-level checkpoint and rollback.
 4. [x] If the staged driver fails health checks, the system rolls back to the
    previous driver module (filesystem/service level, not boot level).
-5. [ ] A driver reset requires user approval (risk level 4) — broker enforces
-   it; the end-to-end test through the wifi tool is pending.
+5. [x] A driver reset requires user approval (risk level 4) — broker enforces
+   it; the end-to-end test through the wifi tool runs at the coordinator level
+   (denied without approval, commits through the facade approval channel).
 6. [x] The Wi-Fi device's dependencies (PCIe, firmware, networkd) are visible in
    the System Graph.
-7. [x] All tests pass (229).
+7. [x] All tests pass (239).
 
 ### v0.1 scope note
 
@@ -503,9 +522,32 @@ It validates the entire architecture against a real hardware scenario.
 
 ## Milestone 7: Additional Specialists
 
-**Status:** Not started  
-**Estimated effort:** 2–4 weeks per specialist  
+**Status:** In progress (Storage specialist)
+**Estimated effort:** 2–4 weeks per specialist
 **Dependencies:** M6
+
+**Progress note (2026-08-12):** the Storage umbrella specialist is wired
+through the boot path. `aios::storage` discovers block devices and mounted
+filesystems from the live graph and instantiates when either exists
+(`StorageError::NoStorageResources` fails closed otherwise). The umbrella
+owns every discovered block device and mounted filesystem via `owns` edges,
+and declares the read-only tools `storage.observe_storage` and
+`storage.diagnose_fault` (docs/modules/storage.md: observe capacity, health,
+and cross-layer state; diagnose compares observations against invariants
+STORAGE-001/002). Coordinator boot registers the tools with the broker,
+spawns the specialist handlers, grants the session principal read-only
+capabilities on `storage:domain`, and routes `run_tool_as` calls for the
+storage tools to that resource (message-protocol §8.1, capability-model §3.3)
+exactly like the wifi read-only tools. The agent tool instructions
+(`aios::tools`) advertise the storage tools so the planner can discover them.
+Coordinator-level tests drive broker → specialist for observe and diagnose
+(hermetic `wire_storage` helper seeds a block device when the machine has
+none). Verified live: the system panel shows the Storage specialist owning
+the Device and Filesystem subsystems, and a real model chat session called
+`storage.observe_storage` through the broker and reported the live domain
+state. 256 tests pass. Files/Data child and any mutating storage operations
+(partitioning, formatting, reset) are deferred per ADR-0001 (v0.1 is
+filesystem/service-level only).
 
 ### Goal
 
@@ -590,7 +632,9 @@ each specialist is built.
 
 ## Milestone 8: System State Panel and Aios UI
 
-**Status:** Not started  
+**Status:** Panel complete (terminal `panel` command). The full UI (presence,
+screen space, screen vision) remains a separate workstream tracked in
+`docs/ui.md`  
 **Estimated effort:** 2–3 weeks (panel); the full UI (presence, screen space,
 screen vision) is a larger workstream tracked in `docs/ui.md`  
 **Dependencies:** M2 (can run in parallel with M3–M6)
@@ -606,26 +650,31 @@ its own workstream; the panel is the first concrete piece.
 
 ### Deliverables
 
-- [ ] Health and state aggregator
-- [ ] System State panel UI (part of the Aios UI, see `docs/ui.md`)
-- [ ] Overview view (overall status, subsystem health, connectivity, model route)
-- [ ] Subsystem view (detailed metrics, recent events, dependencies, responsible specialist)
-- [ ] System Graph view (affected nodes and edges for warnings or proposed changes)
-- [ ] Recovery view (snapshots, failed operations, available recovery actions)
-- [ ] Audit view (changes, approvals, policy decisions, tool results)
-- [ ] Freshness-aware display (`UNKNOWN`/`STALE` states, never silently healthy)
-- [ ] Test suite: aggregator tests, display tests, freshness tests
+- [x] Health and state aggregator (`src/panel.rs`, snapshot of route,
+  connectivity, graph health, active operations, recovery, audit)
+- [ ] System State panel UI (full graphical UI, see `docs/ui.md`);
+      terminal rendering ships with the `panel` shell command
+- [x] Overview view (overall status, subsystem health, connectivity, model route)
+- [x] Subsystem view (per-subsystem health rollup, attention count,
+      dependency count, responsible specialist; attention-first ordering)
+- [x] System Graph view (affected nodes for warnings or proposed changes)
+- [x] Recovery view (failed actions with rollback hint, retained recovery
+      checkpoint)
+- [x] Audit view (most recent audit entries)
+- [x] Freshness-aware display (`UNKNOWN`/`STALE` states, never silently healthy;
+      ties into `scan` expiring telemetry via `mark_stale`)
+- [x] Test suite: aggregator tests, display tests, freshness tests
 
 ### Acceptance criteria
 
-1. The panel shows real-time health for all discovered subsystems.
-2. Stale telemetry appears as `STALE` or `UNKNOWN`, not healthy.
-3. Active operations are visible with their current state.
-4. The user can see which model provider is active and the connectivity state.
-5. Failed actions are visible in the recovery view.
-6. All controls that change the system use the same broker/staging/rollback
-   path as chat — no privileged bypass.
-7. All tests pass.
+1. ✅ The panel shows real-time health for all discovered subsystems.
+2. ✅ Stale telemetry appears as `STALE` or `UNKNOWN`, not healthy.
+3. ✅ Active operations are visible with their current state.
+4. ✅ The user can see which model provider is active and the connectivity state.
+5. ✅ Failed actions are visible in the recovery view.
+6. ✅ All controls that change the system use the same broker/staging/rollback
+   path as chat — the panel is read-only and introduces no privileged bypass.
+7. ✅ All tests pass (244 tests, including panel suite).
 
 ---
 
@@ -639,9 +688,9 @@ its own workstream; the panel is the first concrete piece.
 | M3: Local Model Runtime | ✅ Complete | 5–7 weeks (parallel) | M1 |
 | M4: Dual-Agent Orchestration | ✅ Complete (offline shell deferred) | 9–13 weeks | M2, M3 |
 | M5: Transactions and Staging | ✅ Complete | 9–13 weeks (parallel with M4) | M2 |
-| M6: First Hardware Specialist | In progress | 13–19 weeks | M4, M5 |
-| M7: Additional Specialists | 2–4 weeks each | +2–4 weeks per specialist | M6 |
-| M8: System State Panel | 2–3 weeks | 15–22 weeks (parallel) | M2 |
+| M6: First Hardware Specialist | ✅ Complete | 13–19 weeks | M4, M5 |
+| M7: Additional Specialists | In progress (Storage specialist) | +2–4 weeks per specialist | M6 |
+| M8: System State Panel | ✅ Terminal panel complete; full UI in `docs/ui.md` | 15–22 weeks (parallel) | M2 |
 
 **Estimated time to working v0.1 with Wi-Fi vertical slice:** 4–5 months  
 **Estimated time to full specialist coverage (8 modules):** 8–12 months
