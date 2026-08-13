@@ -829,7 +829,7 @@ its own workstream; the panel is the first concrete piece.
 | M4: Dual-Agent Orchestration | ✅ Complete (offline shell deferred) | 9–13 weeks | M2, M3 |
 | M5: Transactions and Staging | ✅ Complete | 9–13 weeks (parallel with M4) | M2 |
 | M6: First Hardware Specialist | ✅ Complete | 13–19 weeks | M4, M5 |
-| M7: Additional Specialists | In progress (Storage, Network, Drivers, Graphics, Memory, Power/thermal, Security/identity specialists) | +2–4 weeks per specialist | M6 |
+| M7: Additional Specialists | In progress (Storage, Network, Drivers, Graphics, Memory, Power/thermal, Security/identity, Processes specialists) | +2–4 weeks per specialist | M6 |
 | M8: System State Panel | ✅ Terminal panel complete; full UI in `docs/ui.md` | 15–22 weeks (parallel) | M2 |
 
 **Estimated time to working v0.1 with Wi-Fi vertical slice:** 4–5 months  

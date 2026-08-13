@@ -355,6 +355,7 @@ fn parse_node_type(needle: &str) -> Result<Option<NodeType>, ToolError> {
         "cpu" | "cpus" => Ok(Some(NodeType::Cpu)),
         "kernel" => Ok(Some(NodeType::Kernel)),
         "memory" => Ok(Some(NodeType::Memory)),
+        "process" | "processes" => Ok(Some(NodeType::Process)),
         "bus" | "buses" => Ok(Some(NodeType::Bus)),
         "filesystem" | "filesystems" => Ok(Some(NodeType::Filesystem)),
         "firmware" => Ok(Some(NodeType::Firmware)),
@@ -518,9 +519,10 @@ pub fn tools_context(graph: &SystemGraph) -> String {
     let mut lines = Vec::new();
     let sensors: Vec<crate::graph::NodeMetadata> = graph.get_nodes_by_type(NodeType::Sensor);
     let memory: Vec<crate::graph::NodeMetadata> = graph.get_nodes_by_type(NodeType::Memory);
+    let processes: Vec<crate::graph::NodeMetadata> = graph.get_nodes_by_type(NodeType::Process);
     let devices: Vec<crate::graph::NodeMetadata> = graph.get_nodes_by_type(NodeType::Device);
     let services: Vec<crate::graph::NodeMetadata> = graph.get_nodes_by_type(NodeType::Service);
-    if devices.is_empty() && services.is_empty() && sensors.is_empty() && memory.is_empty() {
+    if devices.is_empty() && services.is_empty() && sensors.is_empty() && memory.is_empty() && processes.is_empty() {
         return String::new();
     }
     if !devices.is_empty() {
@@ -550,6 +552,18 @@ pub fn tools_context(graph: &SystemGraph) -> String {
             for node in nodes {
                 lines.push(format!("  {} {} {:?}", node.node_id, node.label, node.attributes));
             }
+        }
+    }
+    if !processes.is_empty() {
+        lines.push(format!("{} processes:", processes.len()));
+        for node in processes.iter().take(8) {
+            lines.push(format!(
+                "  {} {} {:?}",
+                node.node_id, node.label, node.attributes
+            ));
+        }
+        if processes.len() > 8 {
+            lines.push(format!("  ... and {} more", processes.len() - 8));
         }
     }
     lines.join("\n")
@@ -610,6 +624,11 @@ pub fn resource_index(graph: &SystemGraph) -> String {
         lines.push(format!("{} memory nodes", memory.len()));
     }
 
+    let processes = graph.get_nodes_by_type(NodeType::Process);
+    if !processes.is_empty() {
+        lines.push(format!("{} processes", processes.len()));
+    }
+
     let firmware = graph.get_nodes_by_type(NodeType::Firmware);
     if !firmware.is_empty() {
         lines.push(format!("{} firmware", firmware.len()));
@@ -627,7 +646,7 @@ pub fn resource_index(graph: &SystemGraph) -> String {
 }
 
 pub fn model_tool_instructions() -> &'static str {
-    "Read-only machine tools are available. Never invent command output and never claim to run shell commands. The available tools are: observe, diagnose, query, deps, impact, health, wifi.observe_device, wifi.diagnose_fault, storage.observe_storage, storage.diagnose_fault, network.observe_network, network.diagnose_fault, drivers.observe_device, drivers.diagnose_fault, graphics.observe_graphics, graphics.diagnose_fault, memory.observe_memory, memory.diagnose_fault, power.observe_thermal, power.diagnose_fault, security.observe_security, security.diagnose_fault. To use a tool, emit a native function call: {\"tool_calls\":[{\"function\":{\"name\":\"<tool>\",\"arguments\":\"<args>\"}}]} where <tool> is exactly one of the available tools and <args> is a plain string argument. Use query sensor for sensor readings, query memory for memory data, and query device for hardware. For a Wi-Fi device, use wifi.observe_device to read its state and wifi.diagnose_fault to diagnose it. For storage, use storage.observe_storage to read disk and filesystem state and storage.diagnose_fault to diagnose it. For the network domain, use network.observe_network to read interface and link state and network.diagnose_fault to diagnose it. For generic hardware, use drivers.observe_device to read device, driver, firmware, and module state and drivers.diagnose_fault to diagnose it (target 'all' for the whole domain). For graphics, use graphics.observe_graphics to read GPU, display, and session state and graphics.diagnose_fault to diagnose it (target 'all' for the whole domain). For memory, use memory.observe_memory to read total, used, free, swap, and pressure state and memory.diagnose_fault to diagnose it (target 'all' for the whole domain). For power and thermal, use power.observe_thermal to read temperature, fan, and power state and power.diagnose_fault to diagnose it (target 'all' for the whole domain). For security and identity, use security.observe_security to read identity, trust, and security state and security.diagnose_fault to diagnose it (target 'all' for the whole domain). After receiving tool results, answer only from those results. If a tool cannot establish a fact, say so."
+    "Read-only machine tools are available. Never invent command output and never claim to run shell commands. The available tools are: observe, diagnose, query, deps, impact, health, wifi.observe_device, wifi.diagnose_fault, storage.observe_storage, storage.diagnose_fault, network.observe_network, network.diagnose_fault, drivers.observe_device, drivers.diagnose_fault, graphics.observe_graphics, graphics.diagnose_fault, memory.observe_memory, memory.diagnose_fault, processes.observe_process, processes.diagnose_fault, power.observe_thermal, power.diagnose_fault, security.observe_security, security.diagnose_fault. To use a tool, emit a native function call: {\"tool_calls\":[{\"function\":{\"name\":\"<tool>\",\"arguments\":\"<args>\"}}]} where <tool> is exactly one of the available tools and <args> is a plain string argument. Use query sensor for sensor readings, query memory for memory data, and query device for hardware. For a Wi-Fi device, use wifi.observe_device to read its state and wifi.diagnose_fault to diagnose it. For storage, use storage.observe_storage to read disk and filesystem state and storage.diagnose_fault to diagnose it. For the network domain, use network.observe_network to read interface and link state and network.diagnose_fault to diagnose it. For generic hardware, use drivers.observe_device to read device, driver, firmware, and module state and drivers.diagnose_fault to diagnose it (target 'all' for the whole domain). For graphics, use graphics.observe_graphics to read GPU, display, and session state and graphics.diagnose_fault to diagnose it (target 'all' for the whole domain). For memory, use memory.observe_memory to read total, used, free, swap, and pressure state and memory.diagnose_fault to diagnose it (target 'all' for the whole domain). For processes, use processes.observe_process to read process, namespace, and resource-usage state and processes.diagnose_fault to diagnose it (target 'all' for the whole domain). For power and thermal, use power.observe_thermal to read temperature, fan, and power state and power.diagnose_fault to diagnose it (target 'all' for the whole domain). For security and identity, use security.observe_security to read identity, trust, and security state and security.diagnose_fault to diagnose it (target 'all' for the whole domain). After receiving tool results, answer only from those results. If a tool cannot establish a fact, say so."
 }
 
 #[cfg(test)]

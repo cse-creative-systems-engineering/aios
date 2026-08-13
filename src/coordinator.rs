@@ -28,6 +28,7 @@ use crate::memory::MemorySpecialist;
 use crate::power::PowerSpecialist;
 use crate::security::SecuritySpecialist;
 use crate::network::NetworkSpecialist;
+use crate::processes::ProcessesSpecialist;
 use crate::storage::StorageSpecialist;
 use std::path::{Path, PathBuf};
 use std::sync::{
@@ -61,6 +62,7 @@ pub struct Coordinator {
     graphics_specialist: Option<GraphicsSpecialist>,
     power_specialist: Option<PowerSpecialist>,
     memory_specialist: Option<MemorySpecialist>,
+    processes_specialist: Option<ProcessesSpecialist>,
     security_specialist: Option<SecuritySpecialist>,
 }
 
@@ -203,6 +205,7 @@ impl Coordinator {
             drivers_specialist: None,
             graphics_specialist: None,
             memory_specialist: None,
+            processes_specialist: None,
             power_specialist: None,
             security_specialist: None,
         };
@@ -819,6 +822,77 @@ impl Coordinator {
                 .client(coordinator.session_principal.clone())
                 .capability_tokens(&coordinator.session_principal);
         }
+        // Processes and resources specialist (M7): the umbrella for
+        // the process domain (docs/modules/processes.md). v0.1 is
+        // read-only and owns only resources no peer has claimed
+        // first (one-owner rule). Both observe_process and
+        // diagnose_fault run through the broker against the live
+        // graph; the bounded diagnose reports PROC-001 evidence.
+        let processes_specialist = {
+            let mut graph = coordinator.graph.write().expect("graph lock");
+            match ProcessesSpecialist::instantiate(&mut graph) {
+                Ok(specialist) => Some(specialist),
+                Err(crate::processes::ProcessesError::NoProcessResources) => None,
+                Err(error) => return Err(BootError::Discovery(error.to_string())),
+            }
+        };
+        coordinator.processes_specialist = processes_specialist;
+        if let Some(specialist) = coordinator.processes_specialist.as_ref() {
+            let definitions = specialist.tool_definitions();
+            let principal = PrincipalId::agent(
+                crate::processes::PACKAGE_ID,
+                specialist.specialist.0.clone(),
+            );
+            let capabilities = definitions
+                .iter()
+                .flat_map(|definition| definition.required_capabilities.clone())
+                .collect();
+            let processes_domain = specialist.clone();
+            for definition in definitions {
+                let tool_id = definition.tool_id.clone();
+                coordinator.broker.register_tool(definition);
+                let graph = coordinator.graph.clone();
+                let domain = processes_domain.clone();
+                let handler_tool_id = tool_id.clone();
+                coordinator.broker.spawn_specialist(&tool_id, {
+                    std::sync::Arc::new(move |request| {
+                        let graph = graph.read().expect("graph lock");
+                        let target = tool_arguments(&request.parameters);
+                        if handler_tool_id.ends_with("observe_process") {
+                            domain.observe(&graph, &target)
+                        } else {
+                            domain.diagnose(&graph, &target)
+                        }
+                    })
+                });
+            }
+            coordinator
+                .broker
+                .register_principal(principal, capabilities, Clearance::max());
+            coordinator.broker.set_resource_state(
+                crate::capability::ResourceId("processes:domain".into()),
+                ResourceState::Available,
+            );
+            let processes_capabilities: Vec<Capability> = coordinator
+                .broker
+                .client(crate::capability::PrincipalId::system("policy-broker"))
+                .get_capabilities(&crate::capability::PrincipalId::agent(
+                    crate::processes::PACKAGE_ID,
+                    specialist.specialist.0.clone(),
+                ))
+                .into_iter()
+                .filter(|c| matches!(c.operation, Operation::Observe | Operation::Diagnose))
+                .collect();
+            for processes_capability in processes_capabilities {
+                coordinator
+                    .broker
+                    .grant_capability(&coordinator.session_principal, processes_capability);
+            }
+            coordinator.session_tokens = coordinator
+                .broker
+                .client(coordinator.session_principal.clone())
+                .capability_tokens(&coordinator.session_principal);
+        }
         // request_reset) run through the M5 action state machine instead of
         // failing with "no executor configured" (modules/wifi.md, M6). The
         // default control is a mock that records the intended modprobe
@@ -913,6 +987,10 @@ impl Coordinator {
 
     pub fn memory_specialist(&self) -> Option<&MemorySpecialist> {
         self.memory_specialist.as_ref()
+    }
+
+    pub fn processes_specialist(&self) -> Option<&ProcessesSpecialist> {
+        self.processes_specialist.as_ref()
     }
 
     pub fn power_specialist(&self) -> Option<&PowerSpecialist> {
@@ -1052,11 +1130,15 @@ impl Coordinator {
             call.name.as_str(),
             "graphics.observe_graphics" | "graphics.diagnose_fault"
         );
-        let is_memory_tool = matches!(
-            call.name.as_str(),
-            "memory.observe_memory" | "memory.diagnose_fault"
-        );
-        let is_power_tool = matches!(
+         let is_memory_tool = matches!(
+             call.name.as_str(),
+             "memory.observe_memory" | "memory.diagnose_fault"
+         );
+         let is_processes_tool = matches!(
+             call.name.as_str(),
+             "processes.observe_process" | "processes.diagnose_fault"
+         );
+         let is_power_tool = matches!(
             call.name.as_str(),
             "power.observe_thermal" | "power.diagnose_fault"
         );
@@ -1084,10 +1166,12 @@ impl Coordinator {
             ResourceId("power:domain".into())
         } else if is_graphics_tool {
             ResourceId("graphics:domain".into())
-        } else if is_memory_tool {
-            ResourceId("memory:domain".into())
-        } else if is_security_tool {
-            ResourceId("security:domain".into())
+         } else if is_memory_tool {
+             ResourceId("memory:domain".into())
+         } else if is_processes_tool {
+             ResourceId("processes:domain".into())
+         } else if is_security_tool {
+             ResourceId("security:domain".into())
         } else {
             ResourceId("system:graph".into())
         };
@@ -1460,6 +1544,8 @@ fn operation_for_tool(name: &str) -> Option<Operation> {
         "graphics.diagnose_fault" => Some(Operation::Diagnose),
         "memory.observe_memory" => Some(Operation::Observe),
         "memory.diagnose_fault" => Some(Operation::Diagnose),
+        "processes.observe_process" => Some(Operation::Observe),
+        "processes.diagnose_fault" => Some(Operation::Diagnose),
         "power.observe_thermal" => Some(Operation::Observe),
         "power.diagnose_fault" => Some(Operation::Diagnose),
         "security.observe_security" => Some(Operation::Observe),
@@ -2624,6 +2710,128 @@ mod tests {
         let result = coordinator
             .run_tool_as("planner", &call)
             .expect("memory diagnose through broker");
+        assert!(result.text.contains("findings"), "{}", result.text);
+    }
+
+    // M7: the processes specialist must be reachable through the broker
+    // like the other read-only specialist tools. Boot wires it when the
+    // machine has process resources; this helper seeds process nodes
+    // (exactly what discovery reports) otherwise, then mirrors the boot
+    // wiring.
+    fn wire_processes(coordinator: &mut Coordinator) {
+        if coordinator.processes_specialist.is_some() {
+            return;
+        }
+        {
+            let mut graph = coordinator.graph.write().expect("graph lock");
+            match ProcessesSpecialist::instantiate(&mut graph) {
+                Ok(_) => {}
+                Err(crate::processes::ProcessesError::NoProcessResources) => {
+                    let mut init = crate::graph::NodeMetadata::new(
+                        NodeId("process:1".into()),
+                        NodeType::Process,
+                        crate::graph::ProvenanceSource::Discovered { via: "proc".into() },
+                        crate::graph::TrustLevel::Trusted,
+                        crate::protocol::now(),
+                    );
+                    init.label = "process 1 (init)".into();
+                    init.attributes.insert("pid".into(), "1".into());
+                    init.attributes.insert("comm".into(), "init".into());
+                    init.attributes.insert("rss_kb".into(), "1024".into());
+                    init.health = HealthState::Healthy;
+                    graph.add_node(init).unwrap();
+                    ProcessesSpecialist::instantiate(&mut graph).unwrap();
+                }
+                Err(error) => panic!("processes instantiation failed: {error}"),
+            }
+        }
+        let specialist = coordinator.processes_specialist.as_ref().unwrap().clone();
+        for definition in specialist.tool_definitions() {
+            let tool_id = definition.tool_id.clone();
+            coordinator.broker.register_tool(definition);
+            let graph = coordinator.graph.clone();
+            let domain = specialist.clone();
+            coordinator.broker.spawn_specialist(&tool_id.clone(), {
+                std::sync::Arc::new(move |request| {
+                    let graph = graph.read().expect("graph lock");
+                    let target = tool_arguments(&request.parameters);
+                    if tool_id.ends_with("observe_process") {
+                        domain.observe(&graph, &target)
+                    } else {
+                        domain.diagnose(&graph, &target)
+                    }
+                })
+            });
+        }
+        coordinator.broker.set_resource_state(
+            ResourceId("processes:domain".into()),
+            ResourceState::Available,
+        );
+        let principal = PrincipalId::agent(
+            crate::processes::PACKAGE_ID,
+            specialist.specialist.0.clone(),
+        );
+        coordinator.broker.register_principal(
+            principal.clone(),
+            vec![
+                Capability {
+                    resource: ResourceId("processes:domain".into()),
+                    operation: Operation::Observe,
+                },
+                Capability {
+                    resource: ResourceId("processes:domain".into()),
+                    operation: Operation::Diagnose,
+                },
+            ],
+            Clearance::max(),
+        );
+        coordinator.broker.grant_capability(
+            &coordinator.session_principal,
+            Capability {
+                resource: ResourceId("processes:domain".into()),
+                operation: Operation::Observe,
+            },
+        );
+        coordinator.broker.grant_capability(
+            &coordinator.session_principal,
+            Capability {
+                resource: ResourceId("processes:domain".into()),
+                operation: Operation::Diagnose,
+            },
+        );
+        coordinator.session_tokens = coordinator
+            .broker
+            .client(coordinator.session_principal.clone())
+            .capability_tokens(&coordinator.session_principal);
+    }
+
+    #[test]
+    fn processes_observe_runs_through_broker() {
+        let port = testutil::spawn_json_server(handler);
+        let mut coordinator = stub_coordinator(port);
+        wire_processes(&mut coordinator);
+        let call = ToolCallRequest {
+            name: "processes.observe_process".into(),
+            arguments: "all".into(),
+        };
+        let result = coordinator
+            .run_tool_as("planner", &call)
+            .expect("processes observe through broker");
+        assert!(result.text.contains("process_nodes"), "{}", result.text);
+    }
+
+    #[test]
+    fn processes_diagnose_reports_domain_invariants() {
+        let port = testutil::spawn_json_server(handler);
+        let mut coordinator = stub_coordinator(port);
+        wire_processes(&mut coordinator);
+        let call = ToolCallRequest {
+            name: "processes.diagnose_fault".into(),
+            arguments: "all".into(),
+        };
+        let result = coordinator
+            .run_tool_as("planner", &call)
+            .expect("processes diagnose through broker");
         assert!(result.text.contains("findings"), "{}", result.text);
     }
 

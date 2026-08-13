@@ -22,6 +22,7 @@ pub mod network;
 pub mod panel;
 pub mod planner;
 pub mod power;
+pub mod processes;
 pub mod protocol;
 pub mod security;
 pub mod storage;
