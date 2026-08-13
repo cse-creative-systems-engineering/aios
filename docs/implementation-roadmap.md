@@ -2,7 +2,8 @@
 
 **Status:** Draft — updated for M7 (M0–M6 and the M8 terminal panel
 complete, M7 in progress with the Storage, Network, Drivers, Graphics,
-Memory, Power/thermal, and Security/identity specialists, M8 full UI tracked
+Memory, Power/thermal, Security/identity, Processes, Packages, and
+Boot/Recovery specialists, M8 full UI tracked
 in `docs/ui.md`)  
 **Depends on:** architecture.md, requirements.md, security-model.md, capability-model.md, message-protocol.md, action-state-machine.md, system-graph.md, agent-packages.md, model-routing.md, all ADRs
 
@@ -677,6 +678,47 @@ Coordinator-level tests drive broker → specialist for observe and diagnose
 tests pass. `quarantine` (risk 4, the bounded containment response) and any
 mutating security operations are deferred to the mutation pass.
 
+**Progress note (2026-08-13, packages):** the Packages and updates
+specialist follows the same pattern (`aios::packages`,
+docs/modules/packages.md). It discovers package resources as
+`package:<name>` nodes (NodeType::Package) with `version`,
+`signature`, and `state` attributes. It instantiates when any
+package nodes exist (`PackagesError::NoPackageResources` fails
+closed otherwise). It declares the read-only tools
+`packages.observe_package` and `packages.diagnose_fault` on the
+`packages:domain` resource (invariants PKG-001: packages are
+present, signed, and versioned; PKG-002 belongs to the mutation
+pass). Coordinator boot registers the tools with the broker,
+spawns the specialist handlers, grants the session principal
+read-only capabilities on `packages:domain`, and routes
+`run_tool_as` calls for the packages tools to that resource.
+Coordinator-level tests drive broker → specialist for observe and
+diagnose (hermetic `wire_packages` helper seeds a package node
+when the machine has none). 356 tests pass. `stage_update`
+(risk 2) and `request_rollback` (risk 4) are deferred to the
+mutation pass.
+
+**Progress note (2026-08-13, boot/recovery):** the Boot and
+recovery specialist follows the same pattern (`aios::boot`,
+docs/modules/boot-recovery.md), with one difference: its domain
+is the trust plane — boot images, snapshots, and watchdogs —
+which is seeded by the coordinator rather than sysfs-discovered
+(mirroring how the security specialist seeds enforcement-plane
+nodes). Boot seeds `BootImage`, `Snapshot`, and `Watchdog` nodes
+in the graph (`seed_boot_domain`) so the specialist can own
+them. It declares the read-only tools `boot.observe_boot` and
+`boot.diagnose_fault` on the `boot:domain` resource (invariant
+BOOT-001: a known-good recovery image is available; BOOT-002
+belongs to the mutation pass). Coordinator boot registers the
+tools with the broker, spawns the specialist handlers, grants the
+session principal read-only capabilities on `boot:domain`, and
+routes `run_tool_as` calls for the boot tools to that resource.
+Coordinator-level tests drive broker → specialist for observe and
+diagnose (hermetic `wire_boot_recovery` helper seeds the
+trust-plane nodes). 356 tests pass. Boot-level mutating
+operations (A/B image management, watchdogs) are deferred to
+v0.2+ per ADR-0001.
+
 ### Storage specialist: complete
 
 The per-specialist acceptance criteria (below) are met for Storage: it
@@ -829,7 +871,7 @@ its own workstream; the panel is the first concrete piece.
 | M4: Dual-Agent Orchestration | ✅ Complete (offline shell deferred) | 9–13 weeks | M2, M3 |
 | M5: Transactions and Staging | ✅ Complete | 9–13 weeks (parallel with M4) | M2 |
 | M6: First Hardware Specialist | ✅ Complete | 13–19 weeks | M4, M5 |
-| M7: Additional Specialists | In progress (Storage, Network, Drivers, Graphics, Memory, Power/thermal, Security/identity, Processes specialists) | +2–4 weeks per specialist | M6 |
+| M7: Additional Specialists | In progress (Storage, Network, Drivers, Graphics, Memory, Power/thermal, Security/identity, Processes, Packages, Boot/Recovery specialists) | +2–4 weeks per specialist | M6 |
 | M8: System State Panel | ✅ Terminal panel complete; full UI in `docs/ui.md` | 15–22 weeks (parallel) | M2 |
 
 **Estimated time to working v0.1 with Wi-Fi vertical slice:** 4–5 months  

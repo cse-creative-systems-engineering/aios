@@ -1,5 +1,6 @@
 pub mod action;
 pub mod audit;
+pub mod boot;
 pub mod broker;
 pub mod capability;
 pub mod config;
@@ -24,6 +25,7 @@ pub mod planner;
 pub mod power;
 pub mod processes;
 pub mod protocol;
+pub mod packages;
 pub mod security;
 pub mod storage;
 pub mod tools;
