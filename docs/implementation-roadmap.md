@@ -1,8 +1,8 @@
 # Aios Implementation Roadmap
 
 **Status:** Draft — updated for M7 (M0–M6 and the M8 terminal panel
-complete, M7 in progress with the Storage, Network, Drivers, Graphics, and
-Memory specialists, M8 full UI tracked in `docs/ui.md`)  
+complete, M7 in progress with the Storage, Network, Drivers, Graphics,
+Memory, and Power/thermal specialists, M8 full UI tracked in `docs/ui.md`)  
 **Depends on:** architecture.md, requirements.md, security-model.md, capability-model.md, message-protocol.md, action-state-machine.md, system-graph.md, agent-packages.md, model-routing.md, all ADRs
 
 ## Purpose
@@ -522,7 +522,7 @@ It validates the entire architecture against a real hardware scenario.
 
 ## Milestone 7: Additional Specialists
 
-**Status:** In progress (Storage, Network, Drivers, Graphics, and Memory specialists)
+**Status:** In progress (Storage, Network, Drivers, Graphics, Memory, and Power/thermal specialists)
 **Estimated effort:** 2–4 weeks per specialist
 **Dependencies:** M6
 
@@ -636,6 +636,26 @@ Coordinator-level tests drive broker → specialist for observe and diagnose
 none). 301 tests pass. `stage_policy` and `request_reset`, which will reuse
 the staged-executor path the wifi tools already use, are deferred to the
 mutation pass.
+
+**Progress note (2026-08-12, power/thermal):** the Power and thermal umbrella
+specialist follows the same pattern (`aios::power`,
+docs/modules/power-thermal.md). It owns the power and thermal domain:
+temperature and fan sensors (`sensor:*` nodes from `sys/class/hwmon` whose
+kind is `temp*`/`fan*`) and power sensors (`in*`/`energy*`/`power*`/`curr*`).
+ECC/memory sensors stay with the memory specialist (one-owner rule,
+architecture §5). It instantiates when any of these exist
+(`PowerError::NoPowerResources` fails closed otherwise). It declares the
+read-only tools `power.observe_thermal` and `power.diagnose_fault` on the
+`power:domain` resource (invariant THERMAL-001: temperature sensors are
+present and report within limits; THERMAL-002 belongs to the mutation pass).
+Coordinator boot registers the tools with the broker, spawns the specialist
+handlers, grants the session principal the read-only capabilities, and routes
+`run_tool_as` calls for the power tools to `power:domain` exactly like the
+other specialist read-only tools. Coordinator-level tests drive broker →
+specialist for observe and diagnose (hermetic `wire_power` helper seeds a
+thermal sensor when the machine has none). 312 tests pass. Bounded workload
+changes (throttling, fan curves) and any mutating power operations are
+deferred to the mutation pass.
 
 ### Storage specialist: complete
 
@@ -789,7 +809,7 @@ its own workstream; the panel is the first concrete piece.
 | M4: Dual-Agent Orchestration | ✅ Complete (offline shell deferred) | 9–13 weeks | M2, M3 |
 | M5: Transactions and Staging | ✅ Complete | 9–13 weeks (parallel with M4) | M2 |
 | M6: First Hardware Specialist | ✅ Complete | 13–19 weeks | M4, M5 |
-| M7: Additional Specialists | In progress (Storage, Network, Drivers, Graphics, Memory specialists) | +2–4 weeks per specialist | M6 |
+| M7: Additional Specialists | In progress (Storage, Network, Drivers, Graphics, Memory, Power/thermal specialists) | +2–4 weeks per specialist | M6 |
 | M8: System State Panel | ✅ Terminal panel complete; full UI in `docs/ui.md` | 15–22 weeks (parallel) | M2 |
 
 **Estimated time to working v0.1 with Wi-Fi vertical slice:** 4–5 months  
