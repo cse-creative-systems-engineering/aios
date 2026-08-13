@@ -178,7 +178,7 @@ impl WifiSpecialist {
             ),
             tool(
                 "request_reset",
-                RiskLevel::Critical,
+                RiskLevel::Recovery,
                 Operation::Reset,
                 &resource,
             ),
@@ -382,7 +382,7 @@ mod tests {
             ]
         );
         assert_eq!(tools[2].risk_level, RiskLevel::Staged);
-        assert_eq!(tools[3].risk_level, RiskLevel::Critical);
+        assert_eq!(tools[3].risk_level, RiskLevel::Recovery);
     }
 
     #[test]

@@ -2403,7 +2403,7 @@ mod tests {
             &device,
             "wifi.request_reset",
             Operation::Reset,
-            RiskLevel::Critical,
+            RiskLevel::Recovery,
             Clearance(RiskLevel::Recovery),
         );
         let token = capability_token(&coordinator, &principal, Operation::Reset);
@@ -2431,7 +2431,7 @@ mod tests {
             &device,
             "wifi.request_reset",
             Operation::Reset,
-            RiskLevel::Critical,
+            RiskLevel::Recovery,
             Clearance(RiskLevel::Recovery),
         );
         let action_id = uuid::Uuid::new_v4();
