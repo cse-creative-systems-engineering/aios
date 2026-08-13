@@ -23,6 +23,7 @@ pub mod panel;
 pub mod planner;
 pub mod power;
 pub mod protocol;
+pub mod security;
 pub mod storage;
 pub mod tools;
 pub mod verifier;

@@ -26,6 +26,7 @@ use crate::drivers::DriversSpecialist;
 use crate::graphics::GraphicsSpecialist;
 use crate::memory::MemorySpecialist;
 use crate::power::PowerSpecialist;
+use crate::security::SecuritySpecialist;
 use crate::network::NetworkSpecialist;
 use crate::storage::StorageSpecialist;
 use std::path::{Path, PathBuf};
@@ -60,6 +61,7 @@ pub struct Coordinator {
     graphics_specialist: Option<GraphicsSpecialist>,
     power_specialist: Option<PowerSpecialist>,
     memory_specialist: Option<MemorySpecialist>,
+    security_specialist: Option<SecuritySpecialist>,
 }
 
 impl Coordinator {
@@ -202,6 +204,7 @@ impl Coordinator {
             graphics_specialist: None,
             memory_specialist: None,
             power_specialist: None,
+            security_specialist: None,
         };
         coordinator.configure_read_only_broker();
         coordinator.refresh_connectivity();
@@ -737,6 +740,85 @@ impl Coordinator {
                 .client(coordinator.session_principal.clone())
                 .capability_tokens(&coordinator.session_principal);
         }
+        // Security and identity specialist (M7): the umbrella for the
+        // security domain (docs/modules/security.md). Unlike the hardware
+        // umbrellas, its domain is the enforcement plane — the Guardian,
+        // capabilities, and policies — which always exists rather than being
+        // sysfs-discovered. Boot seeds those nodes in the graph (mirroring
+        // how discovery populates hardware nodes) so the specialist can own
+        // them. v0.1 is read-only plus quarantine; observe_security and
+        // diagnose_fault run through the broker against the live graph, and
+        // the bounded diagnose reports SEC-001 evidence. quarantine (risk 4)
+        // is deferred to the mutation pass.
+        {
+            let mut graph = coordinator.graph.write().expect("graph lock");
+            seed_security_domain(&mut graph);
+        }
+        let security_specialist = {
+            let mut graph = coordinator.graph.write().expect("graph lock");
+            match SecuritySpecialist::instantiate(&mut graph) {
+                Ok(specialist) => Some(specialist),
+                Err(crate::security::SecurityError::NoSecurityResources) => None,
+                Err(error) => return Err(BootError::Discovery(error.to_string())),
+            }
+        };
+        coordinator.security_specialist = security_specialist;
+        if let Some(specialist) = coordinator.security_specialist.as_ref() {
+            let definitions = specialist.tool_definitions();
+            let principal = PrincipalId::agent(
+                crate::security::PACKAGE_ID,
+                specialist.specialist.0.clone(),
+            );
+            let capabilities = definitions
+                .iter()
+                .flat_map(|definition| definition.required_capabilities.clone())
+                .collect();
+            let security_domain = specialist.clone();
+            for definition in definitions {
+                let tool_id = definition.tool_id.clone();
+                coordinator.broker.register_tool(definition);
+                let graph = coordinator.graph.clone();
+                let domain = security_domain.clone();
+                let handler_tool_id = tool_id.clone();
+                coordinator.broker.spawn_specialist(&tool_id, {
+                    std::sync::Arc::new(move |request| {
+                        let graph = graph.read().expect("graph lock");
+                        let target = tool_arguments(&request.parameters);
+                        if handler_tool_id.ends_with("observe_security") {
+                            domain.observe(&graph, &target)
+                        } else {
+                            domain.diagnose(&graph, &target)
+                        }
+                    })
+                });
+            }
+            coordinator
+                .broker
+                .register_principal(principal, capabilities, Clearance::max());
+            coordinator.broker.set_resource_state(
+                crate::capability::ResourceId("security:domain".into()),
+                ResourceState::Available,
+            );
+            let security_capabilities: Vec<Capability> = coordinator
+                .broker
+                .client(crate::capability::PrincipalId::system("policy-broker"))
+                .get_capabilities(&crate::capability::PrincipalId::agent(
+                    crate::security::PACKAGE_ID,
+                    specialist.specialist.0.clone(),
+                ))
+                .into_iter()
+                .filter(|c| matches!(c.operation, Operation::Observe | Operation::Diagnose))
+                .collect();
+            for security_capability in security_capabilities {
+                coordinator
+                    .broker
+                    .grant_capability(&coordinator.session_principal, security_capability);
+            }
+            coordinator.session_tokens = coordinator
+                .broker
+                .client(coordinator.session_principal.clone())
+                .capability_tokens(&coordinator.session_principal);
+        }
         // request_reset) run through the M5 action state machine instead of
         // failing with "no executor configured" (modules/wifi.md, M6). The
         // default control is a mock that records the intended modprobe
@@ -835,6 +917,10 @@ impl Coordinator {
 
     pub fn power_specialist(&self) -> Option<&PowerSpecialist> {
         self.power_specialist.as_ref()
+    }
+
+    pub fn security_specialist(&self) -> Option<&SecuritySpecialist> {
+        self.security_specialist.as_ref()
     }
 
     pub fn current_route(&self) -> Result<RoutingDecision, RoutingError> {
@@ -974,6 +1060,10 @@ impl Coordinator {
             call.name.as_str(),
             "power.observe_thermal" | "power.diagnose_fault"
         );
+        let is_security_tool = matches!(
+            call.name.as_str(),
+            "security.observe_security" | "security.diagnose_fault"
+        );
         let resource = if is_wifi_tool {
             let device = self
                 .wifi_specialist
@@ -996,6 +1086,8 @@ impl Coordinator {
             ResourceId("graphics:domain".into())
         } else if is_memory_tool {
             ResourceId("memory:domain".into())
+        } else if is_security_tool {
+            ResourceId("security:domain".into())
         } else {
             ResourceId("system:graph".into())
         };
@@ -1370,6 +1462,8 @@ fn operation_for_tool(name: &str) -> Option<Operation> {
         "memory.diagnose_fault" => Some(Operation::Diagnose),
         "power.observe_thermal" => Some(Operation::Observe),
         "power.diagnose_fault" => Some(Operation::Diagnose),
+        "security.observe_security" => Some(Operation::Observe),
+        "security.diagnose_fault" => Some(Operation::Diagnose),
         _ => None,
     }
 }
@@ -1400,6 +1494,46 @@ fn tool_arguments(parameters: &crate::protocol::ToolParameters) -> String {
         crate::protocol::ToolParameters::Query { query } => query.clone(),
         _ => panic!("read-only specialist received a mutating parameter"),
     }
+}
+
+/// Seed the enforcement-plane nodes (Guardian, capabilities, policies) in the
+/// graph so the security specialist has a domain to own. Unlike hardware
+/// nodes, these are not sysfs-discovered — they always exist as part of the
+/// Aios enforcement plane (security-model.md). Idempotent: existing nodes are
+/// left untouched.
+fn seed_security_domain(graph: &mut SystemGraph) {
+    let t = now();
+    let seed = |graph: &mut SystemGraph, id: &str, node_type: NodeType, label: &str| {
+        let node_id = crate::graph::NodeId(id.into());
+        if graph.get_node(&node_id).is_some() {
+            return;
+        }
+        let mut node = crate::graph::NodeMetadata::new(
+            node_id,
+            node_type,
+            crate::graph::ProvenanceSource::Declared {
+                package: "aios.enforcement".into(),
+            },
+            crate::graph::TrustLevel::Trusted,
+            t,
+        );
+        node.label = label.into();
+        node.health = HealthState::Healthy;
+        let _ = graph.add_node(node);
+    };
+    seed(graph, "guardian:0", NodeType::Guardian, "Infrastructure Guardian");
+    seed(
+        graph,
+        "capability:session",
+        NodeType::Capability,
+        "session capability",
+    );
+    seed(
+        graph,
+        "policy:broker",
+        NodeType::Policy,
+        "broker policy",
+    );
 }
 
 fn protocol_tool_result(
@@ -2611,6 +2745,113 @@ mod tests {
         let result = coordinator
             .run_tool_as("planner", &call)
             .expect("power diagnose through broker");
+        assert!(result.text.contains("findings"), "{}", result.text);
+    }
+
+    // M7: the security and identity specialist must be reachable through the
+    // broker like the other read-only specialist tools. Boot seeds the
+    // enforcement-plane nodes (guardian/capability/policy) and wires the
+    // specialist; this helper mirrors that wiring so the tests pass without a
+    // full boot.
+    fn wire_security(coordinator: &mut Coordinator) {
+        if coordinator.security_specialist.is_some() {
+            return;
+        }
+        {
+            let mut graph = coordinator.graph.write().expect("graph lock");
+            seed_security_domain(&mut graph);
+            match SecuritySpecialist::instantiate(&mut graph) {
+                Ok(_) => {}
+                Err(error) => panic!("security instantiation failed: {error}"),
+            }
+        }
+        let specialist = coordinator.security_specialist.as_ref().unwrap().clone();
+        for definition in specialist.tool_definitions() {
+            let tool_id = definition.tool_id.clone();
+            coordinator.broker.register_tool(definition);
+            let graph = coordinator.graph.clone();
+            let domain = specialist.clone();
+            coordinator.broker.spawn_specialist(&tool_id.clone(), {
+                std::sync::Arc::new(move |request| {
+                    let graph = graph.read().expect("graph lock");
+                    let target = tool_arguments(&request.parameters);
+                    if tool_id.ends_with("observe_security") {
+                        domain.observe(&graph, &target)
+                    } else {
+                        domain.diagnose(&graph, &target)
+                    }
+                })
+            });
+        }
+        coordinator.broker.set_resource_state(
+            ResourceId("security:domain".into()),
+            ResourceState::Available,
+        );
+        let principal = PrincipalId::agent(
+            crate::security::PACKAGE_ID,
+            specialist.specialist.0.clone(),
+        );
+        coordinator.broker.register_principal(
+            principal.clone(),
+            vec![
+                Capability {
+                    resource: ResourceId("security:domain".into()),
+                    operation: Operation::Observe,
+                },
+                Capability {
+                    resource: ResourceId("security:domain".into()),
+                    operation: Operation::Diagnose,
+                },
+            ],
+            Clearance::max(),
+        );
+        coordinator.broker.grant_capability(
+            &coordinator.session_principal,
+            Capability {
+                resource: ResourceId("security:domain".into()),
+                operation: Operation::Observe,
+            },
+        );
+        coordinator.broker.grant_capability(
+            &coordinator.session_principal,
+            Capability {
+                resource: ResourceId("security:domain".into()),
+                operation: Operation::Diagnose,
+            },
+        );
+        coordinator.session_tokens = coordinator
+            .broker
+            .client(coordinator.session_principal.clone())
+            .capability_tokens(&coordinator.session_principal);
+    }
+
+    #[test]
+    fn security_observe_runs_through_broker() {
+        let port = testutil::spawn_json_server(handler);
+        let mut coordinator = stub_coordinator(port);
+        wire_security(&mut coordinator);
+        let call = ToolCallRequest {
+            name: "security.observe_security".into(),
+            arguments: "all".into(),
+        };
+        let result = coordinator
+            .run_tool_as("planner", &call)
+            .expect("security observe through broker");
+        assert!(result.text.contains("security_nodes"), "{}", result.text);
+    }
+
+    #[test]
+    fn security_diagnose_reports_domain_invariants() {
+        let port = testutil::spawn_json_server(handler);
+        let mut coordinator = stub_coordinator(port);
+        wire_security(&mut coordinator);
+        let call = ToolCallRequest {
+            name: "security.diagnose_fault".into(),
+            arguments: "all".into(),
+        };
+        let result = coordinator
+            .run_tool_as("planner", &call)
+            .expect("security diagnose through broker");
         assert!(result.text.contains("findings"), "{}", result.text);
     }
 
