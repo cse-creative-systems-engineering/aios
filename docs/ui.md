@@ -1,6 +1,6 @@
 # Aios UI
 
-**Status:** Draft — v0.1 module specification
+**Status:** Draft — v0.1 module specification (design session in progress)
 **Depends on:** architecture.md, agent-packages.md, human-interaction.md,
 security-model.md, observability.md
 
@@ -51,6 +51,56 @@ Aios has tools to see the screen — it can perceive what is displayed.
   classified, whether it is ever sent to models, what is redacted, and whether
   the user consents per region.
 
+## Design decisions (2026-08-13)
+
+### v0.1 form
+
+The v0.1 UI is a desktop GUI with two layers:
+
+1. **Sidebar** — a persistent panel on the left side of the screen, default
+   width 15% of the screen, user-configurable. It contains the chat interface
+   and access to Aios settings (providers, API keys, default models, specialist
+   configuration). All other windows resize to accommodate the sidebar when it
+   is visible. The compositor handles the resize behavior.
+
+2. **Canvas overlay** — a separate window that overlays the desktop. The
+   canvas is the display layer for model-generated UI. It renders whatever the
+   model designs using `egui` (immediate mode), which allows dynamic layouts,
+   custom painting, and glassmorphic effects in future iterations. The canvas
+   supports multiple overlapping overlays, each free-floating and dockable
+   (snapping to edges). Each overlay has its own keep-on-top control. Overlays
+   can be minimized to the sidebar as clickable list items.
+
+### Approval flow
+
+The sidebar has a consolidated approval queue. The model's UI generation is
+unhindered — it renders data that has already passed through the broker and
+security workflows. But when the user initiates a mutating action, the
+approval flow applies. The sidebar shows a single queue of pending approvals
+(not individual popups), and the user can approve/deny in batch or set
+auto-approve preferences for low-risk tool categories. Read-only operations
+(observe/diagnose) never trigger approval.
+
+### UI generation
+
+UI generation runs as a separate flow, unhindered by the broker or any
+restrictions on layout and design. The data returned to the UI has already
+gone through all Aios security and broker workflows. The model determines
+the best way to present that data — the "how" is up to the model and the
+GUI framework. The canvas must present true and correct data, but the layout,
+styling, and interaction design are the model's responsibility.
+
+### Visual style (v0.1)
+
+Opaque panels for v0.1. Panels with slight background transparency are
+acceptable if the compositor supports it. Glassmorphic design is planned for
+a later iteration.
+
+### Screen viewing tools
+
+Deferred to a later design session. The canvas will eventually support
+screenshots and GPU frame capture, but this is not part of v0.1.
+
 ## Relationship to existing docs
 
 - **System State panel (architecture §6, roadmap M8):** the panel is one *part*
@@ -67,7 +117,6 @@ Aios has tools to see the screen — it can perceive what is displayed.
 These are deliberately not answered here; they need a dedicated UI design
 session before being implemented:
 
-- What is the v0.1 UI form — terminal/TUI, desktop GUI, or both?
 - How does Aios reserve screen space and reflow other windows (compositor
   integration)?
 - How is screen vision classified and consented (per region), and is any
@@ -79,6 +128,7 @@ session before being implemented:
 
 ## Status
 
-This is a scoping placeholder, not a finished design. It records the gap so
-the UI is not silently treated as merely a dashboard. The full design is its
-own workstream (roadmap M8 extends to cover the whole UI, not just the panel).
+This is a scoping document with design decisions recorded as they are
+resolved. The full design is its own workstream (roadmap M8 extends to cover
+the whole UI, not just the panel). The canvas overlay and sidebar are the
+v0.1 target; screen vision and glassmorphic design are deferred.
