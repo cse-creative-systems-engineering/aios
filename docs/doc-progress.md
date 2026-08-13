@@ -59,10 +59,10 @@ Module specs: 19 of 19 drafted              (100%)
 
 Implementation status is tracked in `implementation-roadmap.md`. Current:
 M0–M6 and the M8 terminal panel are **complete**; M7 (Additional
-Specialists) is **in progress** with the Storage, Network, Drivers, and
-Graphics umbrella specialists wired through the broker. The full test suite
-passes (290 passed, 1 ignored — the real-model test). Remaining M7
-specialists: Memory, Power/thermal, Security/identity, Processes/resources,
+Specialists) is **in progress** with the Storage, Network, Drivers, Graphics,
+and Memory umbrella specialists wired through the broker. The full test suite
+passes (301 passed, 1 ignored — the real-model test). Remaining M7
+specialists: Power/thermal, Security/identity, Processes/resources,
 Packages/updates, Boot/recovery. The full Aios UI (presence, screen space,
 screen vision) is a separate workstream tracked in `docs/ui.md`.
 
