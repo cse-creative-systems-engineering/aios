@@ -15,6 +15,7 @@ pub mod hub;
 pub mod local;
 pub mod mocks;
 pub mod model;
+pub mod network;
 pub mod panel;
 pub mod planner;
 pub mod protocol;

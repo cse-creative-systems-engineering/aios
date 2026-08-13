@@ -22,6 +22,7 @@ use crate::protocol::{DataClassification, HealthState, now};
 use crate::tools::{ToolError, ToolRegistry, model_tool_instructions, resource_index};
 use crate::verifier::Verifier;
 use crate::wifi::WifiSpecialist;
+use crate::network::NetworkSpecialist;
 use crate::storage::StorageSpecialist;
 use std::path::{Path, PathBuf};
 use std::sync::{
@@ -50,6 +51,7 @@ pub struct Coordinator {
     local_model_path: Option<PathBuf>,
     wifi_specialist: Option<WifiSpecialist>,
     storage_specialist: Option<StorageSpecialist>,
+    network_specialist: Option<NetworkSpecialist>,
 }
 
 impl Coordinator {
@@ -187,6 +189,7 @@ impl Coordinator {
             local_model_path,
             wifi_specialist: None,
             storage_specialist: None,
+            network_specialist: None,
         };
         coordinator.configure_read_only_broker();
         coordinator.refresh_connectivity();
@@ -369,6 +372,76 @@ impl Coordinator {
                 .client(coordinator.session_principal.clone())
                 .capability_tokens(&coordinator.session_principal);
         }
+        // Network specialist (M7): the umbrella owns the network domain —
+        // wired/LAN interfaces and bluetooth controllers. Wireless interfaces
+        // stay owned by the Wi-Fi specialist (one-owner rule, architecture
+        // §5); the umbrella never steals a claimed resource. v0.1 is
+        // read-only (docs/modules/network.md) — observe_network and
+        // diagnose_fault run through the broker against the live graph
+        // exactly like the wifi and storage read-only tools.
+        let network_specialist = {
+            let mut graph = coordinator.graph.write().expect("graph lock");
+            match NetworkSpecialist::instantiate(&mut graph) {
+                Ok(specialist) => Some(specialist),
+                Err(crate::network::NetworkError::NoNetworkResources) => None,
+                Err(error) => return Err(BootError::Discovery(error.to_string())),
+            }
+        };
+        coordinator.network_specialist = network_specialist;
+        if let Some(specialist) = coordinator.network_specialist.as_ref() {
+            let definitions = specialist.tool_definitions();
+            let principal =
+                PrincipalId::agent(crate::network::PACKAGE_ID, specialist.specialist.0.clone());
+            let capabilities = definitions
+                .iter()
+                .flat_map(|definition| definition.required_capabilities.clone())
+                .collect();
+            let network_domain = specialist.clone();
+            for definition in definitions {
+                let tool_id = definition.tool_id.clone();
+                coordinator.broker.register_tool(definition);
+                let graph = coordinator.graph.clone();
+                let domain = network_domain.clone();
+                let handler_tool_id = tool_id.clone();
+                coordinator.broker.spawn_specialist(&tool_id, {
+                    std::sync::Arc::new(move |request| {
+                        let graph = graph.read().expect("graph lock");
+                        let target = tool_arguments(&request.parameters);
+                        if handler_tool_id.ends_with("observe_network") {
+                            domain.observe(&graph, &target)
+                        } else {
+                            domain.diagnose(&graph, &target)
+                        }
+                    })
+                });
+            }
+            coordinator
+                .broker
+                .register_principal(principal, capabilities, Clearance::max());
+            coordinator.broker.set_resource_state(
+                crate::capability::ResourceId("network:domain".into()),
+                ResourceState::Available,
+            );
+            let network_capabilities: Vec<Capability> = coordinator
+                .broker
+                .client(crate::capability::PrincipalId::system("policy-broker"))
+                .get_capabilities(&crate::capability::PrincipalId::agent(
+                    crate::network::PACKAGE_ID,
+                    specialist.specialist.0.clone(),
+                ))
+                .into_iter()
+                .filter(|c| matches!(c.operation, Operation::Observe | Operation::Diagnose))
+                .collect();
+            for network_capability in network_capabilities {
+                coordinator
+                    .broker
+                    .grant_capability(&coordinator.session_principal, network_capability);
+            }
+            coordinator.session_tokens = coordinator
+                .broker
+                .client(coordinator.session_principal.clone())
+                .capability_tokens(&coordinator.session_principal);
+        }
         // Wire the staged executor so risk-2/risk-4 wifi tools (stage_driver,
         // request_reset) run through the M5 action state machine instead of
         // failing with "no executor configured" (modules/wifi.md, M6). The
@@ -448,6 +521,10 @@ impl Coordinator {
 
     pub fn storage_specialist(&self) -> Option<&StorageSpecialist> {
         self.storage_specialist.as_ref()
+    }
+
+    pub fn network_specialist(&self) -> Option<&NetworkSpecialist> {
+        self.network_specialist.as_ref()
     }
 
     pub fn current_route(&self) -> Result<RoutingDecision, RoutingError> {
@@ -567,6 +644,10 @@ impl Coordinator {
             call.name.as_str(),
             "storage.observe_storage" | "storage.diagnose_fault"
         );
+        let is_network_tool = matches!(
+            call.name.as_str(),
+            "network.observe_network" | "network.diagnose_fault"
+        );
         let resource = if is_wifi_tool {
             let device = self
                 .wifi_specialist
@@ -579,6 +660,8 @@ impl Coordinator {
             ResourceId(device.0)
         } else if is_storage_tool {
             ResourceId("storage:domain".into())
+        } else if is_network_tool {
+            ResourceId("network:domain".into())
         } else {
             ResourceId("system:graph".into())
         };
@@ -943,6 +1026,8 @@ fn operation_for_tool(name: &str) -> Option<Operation> {
         "wifi.request_reset" => Some(Operation::Reset),
         "storage.observe_storage" => Some(Operation::Observe),
         "storage.diagnose_fault" => Some(Operation::Diagnose),
+        "network.observe_network" => Some(Operation::Observe),
+        "network.diagnose_fault" => Some(Operation::Diagnose),
         _ => None,
     }
 }
@@ -1583,6 +1668,128 @@ mod tests {
         let result = coordinator
             .run_tool_as("planner", &call)
             .expect("storage diagnose through broker");
+        assert!(result.text.contains("findings"), "{}", result.text);
+    }
+
+    // M7: the network umbrella must be reachable through the broker like the
+    // wifi and storage read-only tools. Boot wires it when the machine has
+    // wired interfaces or bluetooth controllers; this helper seeds wired and
+    // bluetooth nodes otherwise, then mirrors the boot wiring.
+    fn wire_network(coordinator: &mut Coordinator) {
+        if coordinator.network_specialist.is_some() {
+            return;
+        }
+        {
+            let mut graph = coordinator.graph.write().expect("graph lock");
+            let has_network = graph
+                .nodes()
+                .values()
+                .any(|node| node.node_id.0.starts_with("device:net-"));
+            if !has_network {
+                let mut eth = crate::graph::NodeMetadata::new(
+                    NodeId("device:net-enx00deadbeef".into()),
+                    NodeType::Device,
+                    crate::graph::ProvenanceSource::Discovered { via: "sysfs".into() },
+                    crate::graph::TrustLevel::Trusted,
+                    crate::protocol::now(),
+                );
+                eth.label = "network interface enx00deadbeef".into();
+                eth.attributes.insert("operstate".into(), "up".into());
+                graph.add_node(eth).unwrap();
+            }
+            crate::network::NetworkSpecialist::instantiate(&mut graph).unwrap();
+        }
+        let specialist = coordinator.network_specialist.as_ref().unwrap().clone();
+        for definition in specialist.tool_definitions() {
+            let tool_id = definition.tool_id.clone();
+            coordinator.broker.register_tool(definition);
+            let graph = coordinator.graph.clone();
+            let domain = specialist.clone();
+            coordinator.broker.spawn_specialist(&tool_id.clone(), {
+                std::sync::Arc::new(move |request| {
+                    let graph = graph.read().expect("graph lock");
+                    let target = tool_arguments(&request.parameters);
+                    if tool_id.ends_with("observe_network") {
+                        domain.observe(&graph, &target)
+                    } else {
+                        domain.diagnose(&graph, &target)
+                    }
+                })
+            });
+        }
+        coordinator.broker.set_resource_state(
+            ResourceId("network:domain".into()),
+            ResourceState::Available,
+        );
+        let principal = PrincipalId::agent(
+            crate::network::PACKAGE_ID,
+            specialist.specialist.0.clone(),
+        );
+        coordinator.broker.register_principal(
+            principal.clone(),
+            vec![
+                Capability {
+                    resource: ResourceId("network:domain".into()),
+                    operation: Operation::Observe,
+                },
+                Capability {
+                    resource: ResourceId("network:domain".into()),
+                    operation: Operation::Diagnose,
+                },
+            ],
+            Clearance::max(),
+        );
+        coordinator.broker.grant_capability(
+            &coordinator.session_principal,
+            Capability {
+                resource: ResourceId("network:domain".into()),
+                operation: Operation::Observe,
+            },
+        );
+        coordinator.broker.grant_capability(
+            &coordinator.session_principal,
+            Capability {
+                resource: ResourceId("network:domain".into()),
+                operation: Operation::Diagnose,
+            },
+        );
+        coordinator.session_tokens = coordinator
+            .broker
+            .client(coordinator.session_principal.clone())
+            .capability_tokens(&coordinator.session_principal);
+    }
+
+    #[test]
+    fn network_observe_runs_through_broker() {
+        let port = testutil::spawn_json_server(handler);
+        let mut coordinator = stub_coordinator(port);
+        wire_network(&mut coordinator);
+        let call = ToolCallRequest {
+            name: "network.observe_network".into(),
+            arguments: "all".into(),
+        };
+        let result = coordinator
+            .run_tool_as("planner", &call)
+            .expect("network observe through broker");
+        assert!(
+            result.text.contains("wired_interfaces"),
+            "{}",
+            result.text
+        );
+    }
+
+    #[test]
+    fn network_diagnose_reports_domain_invariants() {
+        let port = testutil::spawn_json_server(handler);
+        let mut coordinator = stub_coordinator(port);
+        wire_network(&mut coordinator);
+        let call = ToolCallRequest {
+            name: "network.diagnose_fault".into(),
+            arguments: "all".into(),
+        };
+        let result = coordinator
+            .run_tool_as("planner", &call)
+            .expect("network diagnose through broker");
         assert!(result.text.contains("findings"), "{}", result.text);
     }
 

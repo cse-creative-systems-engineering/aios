@@ -59,7 +59,7 @@ The graph has five layers, each with specific node types:
 |---|---|---|
 | `PlannerAgent` | `agent:planner` | Core package instantiation |
 | `VerificationAgent` | `agent:verifier` | Core package instantiation |
-| `Specialist` | `agent:wifi0-specialist`, `agent:storage-specialist` | Specialist package instantiation |
+| `Specialist` | `agent:wifi0-specialist`, `agent:storage-specialist`, `agent:network-specialist` | Specialist package instantiation |
 | `Guardian` | `agent:guardian` | Guardian package instantiation |
 | `Coordinator` | `agent:coordinator` | Coordinator package instantiation |
 
@@ -360,6 +360,30 @@ Exactly one `owns` edge per resource (§2.3) — the storage specialist is the
 single owner of block devices and filesystems; the generic Driver and Bus
 specialists own their own inventory, and observed relationships never
 substitute for broker capability checks (docs/modules/storage.md).
+
+### 6.5 Ownership map: Network specialist (M7)
+
+The network umbrella owns the network domain as a whole. Per-resource
+ownership follows the transport hierarchy (architecture §6, docs/modules/
+network.md): wired/LAN interfaces (`device:net-*`, excluding wireless) and
+bluetooth controllers are owned by the umbrella through `owns` edges, and
+the `network:domain` resource carries the specialist's read-only
+capabilities (`observe_network`, `diagnose_fault`). Wireless interfaces stay
+owned by the Wi-Fi specialist — the umbrella never claims a resource a
+transport child already owns (one-owner rule, §2.3). The umbrella is linked
+to each owned interface, and each interface retains `depends_on` edges to
+its bus, driver, and network service when discovery can verify them:
+
+```text
+Subgraph rooted at device:net-enx00051b2bfd34 (2 hops):
+
+device:net-enx00051b2bfd34
+  ├── owns ← agent:network-specialist
+  └── depends_on → driver:r8169
+
+device:net-wlp1s0
+  └── owns ← agent:wifi0-specialist   (wireless, never re-owned)
+```
 
 ---
 

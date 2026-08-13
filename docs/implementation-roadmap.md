@@ -522,7 +522,7 @@ It validates the entire architecture against a real hardware scenario.
 
 ## Milestone 7: Additional Specialists
 
-**Status:** In progress (Storage specialist)
+**Status:** In progress (Storage and Network specialists)
 **Estimated effort:** 2–4 weeks per specialist
 **Dependencies:** M6
 
@@ -548,6 +548,43 @@ the Device and Filesystem subsystems, and a real model chat session called
 state. 256 tests pass. Files/Data child and any mutating storage operations
 (partitioning, formatting, reset) are deferred per ADR-0001 (v0.1 is
 filesystem/service-level only).
+
+**Progress note (2026-08-12, network):** the Network umbrella specialist
+follows the same pattern (`aios::network`, docs/modules/network.md). It
+discovers the wired/LAN interfaces (`device:net-*` excluding wireless) and
+bluetooth controllers left unclaimed by transport children, and instantiates
+when either exists (`NetworkError::NoNetworkResources` fails closed
+otherwise). Wireless interfaces stay owned by the Wi-Fi specialist — the
+umbrella skips any resource that already has an owner (one-owner rule,
+architecture §5). It declares the read-only tools `network.observe_network`
+and `network.diagnose_fault` on the `network:domain` resource (invariants
+NETWORK-001: the domain is present and reports connectivity; NETWORK-002:
+transport link state after a staged change, deferred with mutations).
+Coordinator boot registers the tools with the broker, spawns the specialist
+handlers, grants the session principal the read-only capabilities, and
+routes `run_tool_as` calls for the network tools to `network:domain`
+exactly like the wifi and storage read-only tools. Coordinator-level tests
+drive broker → specialist for observe and diagnose (hermetic `wire_network`
+helper seeds wired and bluetooth nodes when the machine has none). Verified
+live: the system panel shows the Network specialist owning the Device
+subsystem alongside Wi-Fi and Storage, and a real model chat session called
+`network.observe_network` through the broker and reported the live link
+state (3 wired interfaces: docker0 unknown, enx00051b2bfd34 healthy,
+lo unknown). 267 tests pass. Wired-LAN and Bluetooth as first-class
+transport child specialists, and any mutating network operations, are
+deferred to later iterations.
+
+### Storage specialist: complete
+
+The per-specialist acceptance criteria (below) are met for Storage: it
+discovers its domain (recorded boot instantiation plus seeded-graph tests),
+exposes bounded read-only tools with risk level 0, its capabilities are
+validated by the broker (observe and diagnose run through `run_tool_as` →
+broker → specialist and are denied without a session token), its
+dependencies are represented in the System Graph (`owns` on every block
+device and filesystem, `depends_on` stack edges from filesystem to device
+to bus/driver). The mutating-operations criterion is deferred to a later
+iteration per ADR-0001 (v0.1 is read-only for storage).
 
 ### Goal
 
@@ -689,7 +726,7 @@ its own workstream; the panel is the first concrete piece.
 | M4: Dual-Agent Orchestration | ✅ Complete (offline shell deferred) | 9–13 weeks | M2, M3 |
 | M5: Transactions and Staging | ✅ Complete | 9–13 weeks (parallel with M4) | M2 |
 | M6: First Hardware Specialist | ✅ Complete | 13–19 weeks | M4, M5 |
-| M7: Additional Specialists | In progress (Storage specialist) | +2–4 weeks per specialist | M6 |
+| M7: Additional Specialists | In progress (Storage, Network specialists) | +2–4 weeks per specialist | M6 |
 | M8: System State Panel | ✅ Terminal panel complete; full UI in `docs/ui.md` | 15–22 weeks (parallel) | M2 |
 
 **Estimated time to working v0.1 with Wi-Fi vertical slice:** 4–5 months  
