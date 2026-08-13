@@ -15,6 +15,7 @@ pub mod harness;
 pub mod http;
 pub mod hub;
 pub mod local;
+pub mod memory;
 pub mod mocks;
 pub mod model;
 pub mod network;

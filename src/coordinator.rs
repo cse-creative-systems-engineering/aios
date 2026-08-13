@@ -24,6 +24,7 @@ use crate::verifier::Verifier;
 use crate::wifi::WifiSpecialist;
 use crate::drivers::DriversSpecialist;
 use crate::graphics::GraphicsSpecialist;
+use crate::memory::MemorySpecialist;
 use crate::network::NetworkSpecialist;
 use crate::storage::StorageSpecialist;
 use std::path::{Path, PathBuf};
@@ -56,6 +57,7 @@ pub struct Coordinator {
     network_specialist: Option<NetworkSpecialist>,
     drivers_specialist: Option<DriversSpecialist>,
     graphics_specialist: Option<GraphicsSpecialist>,
+    memory_specialist: Option<MemorySpecialist>,
 }
 
 impl Coordinator {
@@ -196,6 +198,7 @@ impl Coordinator {
             network_specialist: None,
             drivers_specialist: None,
             graphics_specialist: None,
+            memory_specialist: None,
         };
         coordinator.configure_read_only_broker();
         coordinator.refresh_connectivity();
@@ -590,6 +593,76 @@ impl Coordinator {
                 .client(coordinator.session_principal.clone())
                 .capability_tokens(&coordinator.session_principal);
         }
+        // Memory specialist (M7): the umbrella for the memory domain
+        // (docs/modules/memory.md). v0.1 is read-only and owns only resources
+        // no peer has claimed first (one-owner rule). Both observe_memory and
+        // diagnose_fault run through the broker against the live graph; the
+        // bounded diagnose reports MEMORY-001 evidence.
+        let memory_specialist = {
+            let mut graph = coordinator.graph.write().expect("graph lock");
+            match MemorySpecialist::instantiate(&mut graph) {
+                Ok(specialist) => Some(specialist),
+                Err(crate::memory::MemoryError::NoMemoryResources) => None,
+                Err(error) => return Err(BootError::Discovery(error.to_string())),
+            }
+        };
+        coordinator.memory_specialist = memory_specialist;
+        if let Some(specialist) = coordinator.memory_specialist.as_ref() {
+            let definitions = specialist.tool_definitions();
+            let principal = PrincipalId::agent(
+                crate::memory::PACKAGE_ID,
+                specialist.specialist.0.clone(),
+            );
+            let capabilities = definitions
+                .iter()
+                .flat_map(|definition| definition.required_capabilities.clone())
+                .collect();
+            let memory_domain = specialist.clone();
+            for definition in definitions {
+                let tool_id = definition.tool_id.clone();
+                coordinator.broker.register_tool(definition);
+                let graph = coordinator.graph.clone();
+                let domain = memory_domain.clone();
+                let handler_tool_id = tool_id.clone();
+                coordinator.broker.spawn_specialist(&tool_id, {
+                    std::sync::Arc::new(move |request| {
+                        let graph = graph.read().expect("graph lock");
+                        let target = tool_arguments(&request.parameters);
+                        if handler_tool_id.ends_with("observe_memory") {
+                            domain.observe(&graph, &target)
+                        } else {
+                            domain.diagnose(&graph, &target)
+                        }
+                    })
+                });
+            }
+            coordinator
+                .broker
+                .register_principal(principal, capabilities, Clearance::max());
+            coordinator.broker.set_resource_state(
+                crate::capability::ResourceId("memory:domain".into()),
+                ResourceState::Available,
+            );
+            let memory_capabilities: Vec<Capability> = coordinator
+                .broker
+                .client(crate::capability::PrincipalId::system("policy-broker"))
+                .get_capabilities(&crate::capability::PrincipalId::agent(
+                    crate::memory::PACKAGE_ID,
+                    specialist.specialist.0.clone(),
+                ))
+                .into_iter()
+                .filter(|c| matches!(c.operation, Operation::Observe | Operation::Diagnose))
+                .collect();
+            for memory_capability in memory_capabilities {
+                coordinator
+                    .broker
+                    .grant_capability(&coordinator.session_principal, memory_capability);
+            }
+            coordinator.session_tokens = coordinator
+                .broker
+                .client(coordinator.session_principal.clone())
+                .capability_tokens(&coordinator.session_principal);
+        }
         // request_reset) run through the M5 action state machine instead of
         // failing with "no executor configured" (modules/wifi.md, M6). The
         // default control is a mock that records the intended modprobe
@@ -680,6 +753,10 @@ impl Coordinator {
 
     pub fn graphics_specialist(&self) -> Option<&GraphicsSpecialist> {
         self.graphics_specialist.as_ref()
+    }
+
+    pub fn memory_specialist(&self) -> Option<&MemorySpecialist> {
+        self.memory_specialist.as_ref()
     }
 
     pub fn current_route(&self) -> Result<RoutingDecision, RoutingError> {
@@ -811,6 +888,10 @@ impl Coordinator {
             call.name.as_str(),
             "graphics.observe_graphics" | "graphics.diagnose_fault"
         );
+        let is_memory_tool = matches!(
+            call.name.as_str(),
+            "memory.observe_memory" | "memory.diagnose_fault"
+        );
         let resource = if is_wifi_tool {
             let device = self
                 .wifi_specialist
@@ -829,6 +910,8 @@ impl Coordinator {
             ResourceId("drivers:domain".into())
         } else if is_graphics_tool {
             ResourceId("graphics:domain".into())
+        } else if is_memory_tool {
+            ResourceId("memory:domain".into())
         } else {
             ResourceId("system:graph".into())
         };
@@ -1199,6 +1282,8 @@ fn operation_for_tool(name: &str) -> Option<Operation> {
         "drivers.diagnose_fault" => Some(Operation::Diagnose),
         "graphics.observe_graphics" => Some(Operation::Observe),
         "graphics.diagnose_fault" => Some(Operation::Diagnose),
+        "memory.observe_memory" => Some(Operation::Observe),
+        "memory.diagnose_fault" => Some(Operation::Diagnose),
         _ => None,
     }
 }
@@ -2200,6 +2285,125 @@ mod tests {
         let result = coordinator
             .run_tool_as("planner", &call)
             .expect("graphics diagnose through broker");
+        assert!(result.text.contains("findings"), "{}", result.text);
+    }
+
+    // M7: the memory specialist must be reachable through the broker like the
+    // other read-only specialist tools. Boot wires it when the machine has
+    // memory resources; this helper seeds memory nodes (exactly what
+    // discovery reports) otherwise, then mirrors the boot wiring.
+    fn wire_memory(coordinator: &mut Coordinator) {
+        if coordinator.memory_specialist.is_some() {
+            return;
+        }
+        {
+            let mut graph = coordinator.graph.write().expect("graph lock");
+            match MemorySpecialist::instantiate(&mut graph) {
+                Ok(_) => {}
+                Err(crate::memory::MemoryError::NoMemoryResources) => {
+                    let mut total = crate::graph::NodeMetadata::new(
+                        NodeId("memory:total".into()),
+                        NodeType::Memory,
+                        crate::graph::ProvenanceSource::Discovered { via: "sysfs".into() },
+                        crate::graph::TrustLevel::Trusted,
+                        crate::protocol::now(),
+                    );
+                    total.label = "total memory (16384000 kB)".into();
+                    total.attributes.insert("size_kb".into(), "16384000".into());
+                    total.health = HealthState::Healthy;
+                    graph.add_node(total).unwrap();
+                    MemorySpecialist::instantiate(&mut graph).unwrap();
+                }
+                Err(error) => panic!("memory instantiation failed: {error}"),
+            }
+        }
+        let specialist = coordinator.memory_specialist.as_ref().unwrap().clone();
+        for definition in specialist.tool_definitions() {
+            let tool_id = definition.tool_id.clone();
+            coordinator.broker.register_tool(definition);
+            let graph = coordinator.graph.clone();
+            let domain = specialist.clone();
+            coordinator.broker.spawn_specialist(&tool_id.clone(), {
+                std::sync::Arc::new(move |request| {
+                    let graph = graph.read().expect("graph lock");
+                    let target = tool_arguments(&request.parameters);
+                    if tool_id.ends_with("observe_memory") {
+                        domain.observe(&graph, &target)
+                    } else {
+                        domain.diagnose(&graph, &target)
+                    }
+                })
+            });
+        }
+        coordinator.broker.set_resource_state(
+            ResourceId("memory:domain".into()),
+            ResourceState::Available,
+        );
+        let principal = PrincipalId::agent(
+            crate::memory::PACKAGE_ID,
+            specialist.specialist.0.clone(),
+        );
+        coordinator.broker.register_principal(
+            principal.clone(),
+            vec![
+                Capability {
+                    resource: ResourceId("memory:domain".into()),
+                    operation: Operation::Observe,
+                },
+                Capability {
+                    resource: ResourceId("memory:domain".into()),
+                    operation: Operation::Diagnose,
+                },
+            ],
+            Clearance::max(),
+        );
+        coordinator.broker.grant_capability(
+            &coordinator.session_principal,
+            Capability {
+                resource: ResourceId("memory:domain".into()),
+                operation: Operation::Observe,
+            },
+        );
+        coordinator.broker.grant_capability(
+            &coordinator.session_principal,
+            Capability {
+                resource: ResourceId("memory:domain".into()),
+                operation: Operation::Diagnose,
+            },
+        );
+        coordinator.session_tokens = coordinator
+            .broker
+            .client(coordinator.session_principal.clone())
+            .capability_tokens(&coordinator.session_principal);
+    }
+
+    #[test]
+    fn memory_observe_runs_through_broker() {
+        let port = testutil::spawn_json_server(handler);
+        let mut coordinator = stub_coordinator(port);
+        wire_memory(&mut coordinator);
+        let call = ToolCallRequest {
+            name: "memory.observe_memory".into(),
+            arguments: "all".into(),
+        };
+        let result = coordinator
+            .run_tool_as("planner", &call)
+            .expect("memory observe through broker");
+        assert!(result.text.contains("memory_nodes"), "{}", result.text);
+    }
+
+    #[test]
+    fn memory_diagnose_reports_domain_invariants() {
+        let port = testutil::spawn_json_server(handler);
+        let mut coordinator = stub_coordinator(port);
+        wire_memory(&mut coordinator);
+        let call = ToolCallRequest {
+            name: "memory.diagnose_fault".into(),
+            arguments: "all".into(),
+        };
+        let result = coordinator
+            .run_tool_as("planner", &call)
+            .expect("memory diagnose through broker");
         assert!(result.text.contains("findings"), "{}", result.text);
     }
 
