@@ -2,7 +2,8 @@
 
 **Status:** Draft — updated for M7 (M0–M6 and the M8 terminal panel
 complete, M7 in progress with the Storage, Network, Drivers, Graphics,
-Memory, and Power/thermal specialists, M8 full UI tracked in `docs/ui.md`)  
+Memory, Power/thermal, and Security/identity specialists, M8 full UI tracked
+in `docs/ui.md`)  
 **Depends on:** architecture.md, requirements.md, security-model.md, capability-model.md, message-protocol.md, action-state-machine.md, system-graph.md, agent-packages.md, model-routing.md, all ADRs
 
 ## Purpose
@@ -522,7 +523,7 @@ It validates the entire architecture against a real hardware scenario.
 
 ## Milestone 7: Additional Specialists
 
-**Status:** In progress (Storage, Network, Drivers, Graphics, Memory, and Power/thermal specialists)
+**Status:** In progress (Storage, Network, Drivers, Graphics, Memory, Power/thermal, and Security/identity specialists)
 **Estimated effort:** 2–4 weeks per specialist
 **Dependencies:** M6
 
@@ -656,6 +657,25 @@ specialist for observe and diagnose (hermetic `wire_power` helper seeds a
 thermal sensor when the machine has none). 312 tests pass. Bounded workload
 changes (throttling, fan curves) and any mutating power operations are
 deferred to the mutation pass.
+
+**Progress note (2026-08-12, security/identity):** the Security and identity
+umbrella specialist follows the same pattern (`aios::security`,
+docs/modules/security.md), with one difference: its domain is the enforcement
+plane — the Guardian, capabilities, and policies — which always exists rather
+than being sysfs-discovered. Boot seeds those nodes in the graph
+(`seed_security_domain`: `guardian:0`, `capability:session`, `policy:broker`,
+mirroring how discovery populates hardware nodes) so the specialist can own
+them. It declares the read-only tools `security.observe_security` and
+`security.diagnose_fault` on the `security:domain` resource (invariant
+SEC-001: identity and trust boundaries are present and verified; SEC-002
+belongs to the mutation pass). Coordinator boot registers the tools with the
+broker, spawns the specialist handlers, grants the session principal the
+read-only capabilities, and routes `run_tool_as` calls for the security tools
+to `security:domain` exactly like the other specialist read-only tools.
+Coordinator-level tests drive broker → specialist for observe and diagnose
+(hermetic `wire_security` helper seeds the enforcement-plane nodes). 323
+tests pass. `quarantine` (risk 4, the bounded containment response) and any
+mutating security operations are deferred to the mutation pass.
 
 ### Storage specialist: complete
 
@@ -809,7 +829,7 @@ its own workstream; the panel is the first concrete piece.
 | M4: Dual-Agent Orchestration | ✅ Complete (offline shell deferred) | 9–13 weeks | M2, M3 |
 | M5: Transactions and Staging | ✅ Complete | 9–13 weeks (parallel with M4) | M2 |
 | M6: First Hardware Specialist | ✅ Complete | 13–19 weeks | M4, M5 |
-| M7: Additional Specialists | In progress (Storage, Network, Drivers, Graphics, Memory, Power/thermal specialists) | +2–4 weeks per specialist | M6 |
+| M7: Additional Specialists | In progress (Storage, Network, Drivers, Graphics, Memory, Power/thermal, Security/identity specialists) | +2–4 weeks per specialist | M6 |
 | M8: System State Panel | ✅ Terminal panel complete; full UI in `docs/ui.md` | 15–22 weeks (parallel) | M2 |
 
 **Estimated time to working v0.1 with Wi-Fi vertical slice:** 4–5 months  
