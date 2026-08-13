@@ -112,6 +112,7 @@ impl SysfsDiscovery {
         self.discover_block(root, &mut graph, t, expires)?;
         self.discover_filesystems(root, &mut graph, t, expires)?;
         self.discover_sensors(root, &mut graph, t, expires)?;
+        self.discover_processes(root, &mut graph, t, expires)?;
         // After physical devices exist, link each network interface to its
         // underlying PCI/USB device so the interface inherits the device's
         // driver/firmware/bus dependencies (M6 acceptance criterion #6).
@@ -864,6 +865,76 @@ impl SysfsDiscovery {
                     attrs,
                 );
             }
+        }
+        Ok(())
+    }
+
+    /// Discover running processes from `/proc`. Each numeric directory is a
+    /// process; `comm` gives the name, `stat` the state, and `status` the
+    /// memory usage. The processes specialist owns the `process:*` nodes.
+    fn discover_processes(
+        &self,
+        root: &Path,
+        graph: &mut SystemGraph,
+        t: Timestamp,
+        expires: Option<Timestamp>,
+    ) -> Result<(), DiscoveryError> {
+        for entry in self.list_dir(root, "proc") {
+            let Ok(pid) = entry.parse::<u32>() else {
+                continue;
+            };
+            let base = format!("proc/{pid}");
+            let Some(comm) = self.read_optional(root, &format!("{base}/comm")) else {
+                continue;
+            };
+            let comm = comm.trim().to_string();
+            if comm.is_empty() {
+                continue;
+            }
+            let mut attrs = HashMap::new();
+            attrs.insert("pid".into(), pid.to_string());
+            attrs.insert("comm".into(), comm.clone());
+            if let Some(stat) = self.read_optional(root, &format!("{base}/stat")) {
+                // stat field 3 (after pid and comm in parens) is the state.
+                if let Some(open) = stat.rfind(')') {
+                    let rest = &stat[open + 1..];
+                    let state = rest.split_whitespace().next().unwrap_or_default();
+                    if !state.is_empty() {
+                        attrs.insert("state".into(), state.to_string());
+                    }
+                }
+            }
+            if let Some(status) = self.read_optional(root, &format!("{base}/status")) {
+                for line in status.lines() {
+                    let Some((key, value)) = line.split_once(':') else {
+                        continue;
+                    };
+                    let value = value.trim();
+                    match key.trim() {
+                        "VmRSS" => {
+                            let kb = value.trim_end_matches("kB").trim();
+                            attrs.insert("rss_kb".into(), kb.to_string());
+                        }
+                        "State" => {
+                            if !attrs.contains_key("state") {
+                                attrs.insert("state".into(), value.to_string());
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            let id = NodeId(format!("process:{pid}"));
+            self.add_node(
+                graph,
+                id,
+                NodeType::Process,
+                format!("process {pid} ({comm})"),
+                None,
+                t,
+                expires,
+                attrs,
+            );
         }
         Ok(())
     }
