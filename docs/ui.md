@@ -25,18 +25,23 @@ has different safety and engineering implications:
 Aios is always present on the screen rather than summoned on demand. It is a
 resident part of the desktop, not a tool you open for a question.
 
-- **Engineering:** a persistent process with a stable presence.
+- **Engineering:** a persistent Tauri window with a stable presence.
 - **Safety:** low. A resident agent is mostly a long-running process.
 
 ### 2. Screen space
 
-Aios occupies a sidebar of the desktop, and the other windows resize to the
-new screen space when it is visible.
+Aios occupies a single Tauri window that the user can position and resize.
+The window contains a sidebar (left, default 15% width) and a canvas area
+(remaining space). The sidebar is persistent; the canvas is the dynamic
+display surface. Aios does not resize or reflow other applications' windows
+— the Tauri window is self-contained.
 
-- **Engineering:** window/compositor integration (Wayland/X11) so Aios can
-  reserve a region and other windows reflow around it.
-- **Safety:** moderate. Reserving and managing screen space touches the window
-  manager and compositor.
+- **Engineering:** Tauri v2 window management (native Ubuntu windowing,
+  system-tray access). The window is borderless or frameless per the
+  visual style. The sidebar and canvas are layout regions within the
+  single window, not separate OS-level windows.
+- **Safety:** moderate. The window occupies screen space and can obscure
+  other applications. The user controls its position and size.
 
 ### 3. Screen vision
 
@@ -55,46 +60,295 @@ Aios has tools to see the screen — it can perceive what is displayed.
 
 ### v0.1 form
 
-The v0.1 UI is a desktop GUI with two layers:
+The v0.1 UI is a single Tauri window with two layout regions:
 
-1. **Sidebar** — a persistent panel on the left side of the screen, default
-   width 15% of the screen, user-configurable. It contains the chat interface
-   and access to Aios settings (providers, API keys, default models, specialist
-   configuration). All other windows resize to accommodate the sidebar when it
-   is visible. The compositor handles the resize behavior.
+1. **Sidebar** — a persistent left panel, default width 15% of the window,
+   user-configurable (min 10%, max 30%). It contains the chat interface and
+   a settings panel trigger. The sidebar does not scroll independently; the
+   chat and settings share the sidebar's scroll space.
 
-2. **Canvas overlay** — a separate window that overlays the desktop. The
-   canvas is the display layer for model-generated UI. It renders whatever the
-   model designs using `egui` (immediate mode), which allows dynamic layouts,
-   custom painting, and glassmorphic effects in future iterations. The canvas
-   supports multiple overlapping overlays, each free-floating and dockable
-   (snapping to edges). Each overlay has its own keep-on-top control. Overlays
-   can be minimized to the sidebar as clickable list items.
+2. **Canvas panel** — the main content area that fills the remaining space.
+   The canvas is the display layer for model-generated UI. It uses Tauri v2
+   for native Ubuntu windowing and Dioxus or Leptos for component-driven
+   rendering. The canvas supports multiple panels within the main window.
+   Each panel is a self-contained widget region that can be minimized to the
+   sidebar as a clickable list item. Panels can be freely positioned and
+   resized within the canvas area by the user. Keep-on-top behavior is per-panel
+   within the canvas.
+
+### Chat interface
+
+The sidebar contains the chat interface. It is the primary user interaction
+surface.
+
+- **Layout:** A scrollable message area occupies the upper 70% of the sidebar.
+  A text input field with a send button occupies the bottom 30%.
+- **Messages:** Each message is rendered as a chat bubble. User messages are
+  right-aligned with a primary color background. AI responses are left-aligned
+  with a surface color background. Tool results are rendered as collapsible
+  sections within the AI response bubble.
+- **Streaming:** AI responses stream token-by-token from the LLM. The chat
+  area auto-scrolls to the latest message.
+- **Approval queue:** A dedicated section at the top of the sidebar shows
+  pending approvals. Each approval item shows the tool name, risk level,
+  and a brief summary. The user can approve/deny from this queue.
+- **Input:** The user types a prompt in the input field and presses Enter
+  or clicks the send button. The prompt is sent to the planner, which
+  routes it through the broker and specialist tools.
+
+### Generative UI stack
+
+The canvas uses a structured JSON schema approach — the LLM never streams raw
+UI code. Instead, it outputs JSON matching a predefined widget enum, which the
+Rust frontend maps to compiled Dioxus/Leptos components.
+
+**Stack:**
+- **Tauri v2** — desktop shell (native Ubuntu windowing, system-tray, IPC)
+- **Dioxus** — reactive Rust frontend framework (rsx! macros, component-based,
+  dynamic instantiation from JSON state). Chosen over Leptos for better
+  dynamic component support required by generative UI.
+- **Rig or Kalasm** — Rust-native LLM orchestration (tool-calling pipelines,
+  structured JSON output, local models via Ollama)
+- **Ollama** — local model runtime for zero-latency inference
+- **Tailwind CSS** — utility-first styling for rapid iteration and consistent
+  design system
+
+**Data flow:**
+```
+[User prompt in sidebar chat]
+       │
+       ▼
+[Planner routes to specialist tools via broker]
+       │
+       ▼ (Tool results pass through broker authorization)
+[Result data passed to LLM for UI generation]
+       │
+       ▼ (LLM streams structured JSON schema matching widget enum)
+[Tauri Backend (Rust / Rig) validates JSON against enum]
+       │
+       ▼ (IPC Bridge / Window Events)
+[Tauri Frontend (Dioxus or Leptos)]
+       │
+       ▼ (Matches JSON to Compiled RSX Component)
+[Rendered Generative UI in canvas panel]
+```
+
+### Widget enum
+
+The canvas renders widgets from a defined enum of component types. The model
+chooses which widgets to instantiate and what data to pass to them, but cannot
+create new widget types or override component templates. This constrains the
+model to a safe, testable set of rendering primitives while leaving it free
+to compose them in any arrangement.
+
+Each widget variant derives `Deserialize` so it can be built directly from the
+LLM's JSON stream. The frontend matches the JSON `type` tag to the corresponding
+component and renders it with the provided props.
+
+**v0.1 widget enum:**
+
+```rust
+#[derive(Deserialize, Clone, PartialEq)]
+#[serde(tag = "type", content = "props")]
+pub enum GenerativeWidget {
+    MetricCard {
+        label: String,
+        value: String,
+        unit: Option<String>,
+        status: Option<WidgetStatus>,
+    },
+    SensorGauge {
+        label: String,
+        value: f64,
+        min: Option<f64>,
+        max: Option<f64>,
+        unit: Option<String>,
+    },
+    StatusList {
+        title: String,
+        items: Vec<StatusItem>,
+    },
+    Chart {
+        title: String,
+        data: Vec<ChartDataPoint>,
+        chart_type: ChartType,
+    },
+    ActionForm {
+        action_name: String,
+        description: String,
+        fields: Vec<FormField>,
+        risk_level: RiskLevel,
+    },
+}
+
+#[derive(Deserialize, Clone, PartialEq)]
+pub enum WidgetStatus {
+    Healthy,
+    Degraded,
+    Unknown,
+}
+
+#[derive(Deserialize, Clone, PartialEq)]
+pub struct StatusItem {
+    pub label: String,
+    pub status: WidgetStatus,
+    pub detail: Option<String>,
+}
+
+#[derive(Deserialize, Clone, PartialEq)]
+pub struct ChartDataPoint {
+    pub label: String,
+    pub value: f64,
+}
+
+#[derive(Deserialize, Clone, PartialEq)]
+pub enum ChartType {
+    Line,
+    Bar,
+    Area,
+}
+
+#[derive(Deserialize, Clone, PartialEq)]
+pub struct FormField {
+    pub name: String,
+    pub field_type: FormFieldType,
+    pub placeholder: Option<String>,
+    pub required: bool,
+}
+
+#[derive(Deserialize, Clone, PartialEq)]
+pub enum FormFieldType {
+    Text,
+    Number,
+    Select { options: Vec<String> },
+    Boolean,
+}
+```
+
+The full widget enum is a first-class design artifact. New widget types are
+added through the spec, not by the model at runtime.
 
 ### Approval flow
 
 The sidebar has a consolidated approval queue. The model's UI generation is
-unhindered — it renders data that has already passed through the broker and
-security workflows. But when the user initiates a mutating action, the
-approval flow applies. The sidebar shows a single queue of pending approvals
-(not individual popups), and the user can approve/deny in batch or set
-auto-approve preferences for low-risk tool categories. Read-only operations
-(observe/diagnose) never trigger approval.
+unhindered within the widget enum — it can compose any combination of widgets
+and pass any broker-authorized data to them. But when a widget triggers a
+mutating action (e.g., an `ActionForm` submission), the approval flow applies.
 
-### UI generation
+The sidebar shows a single queue of pending approvals at the top (not
+individual popups), and the user can approve/deny in batch or set auto-approve
+preferences for low-risk tool categories. Read-only operations (observe/diagnose)
+never trigger approval. Canvas rendering of read-only data never requires approval.
 
-UI generation runs as a separate flow, unhindered by the broker or any
-restrictions on layout and design. The data returned to the UI has already
-gone through all Aios security and broker workflows. The model determines
-the best way to present that data — the "how" is up to the model and the
-GUI framework. The canvas must present true and correct data, but the layout,
-styling, and interaction design are the model's responsibility.
+The approval queue displays: tool name, risk level, affected resources, and a
+brief summary. The user can approve or deny each item. When approved, the
+action is submitted through the broker and the result is streamed back to the
+canvas.
+
+### Error handling
+
+The canvas handles errors at three levels:
+
+1. **LLM output errors** — if the LLM returns invalid JSON or output that
+   doesn't match the widget enum, the Tauri backend catches the deserialization
+   failure and displays a generic error widget in the canvas: "Could not
+   generate UI. The model returned an unexpected format."
+
+2. **Missing data errors** — if a widget's expected data is unavailable (e.g.,
+   no GPU when a `SensorGauge` for GPU temp is requested), the widget renders
+   with a placeholder state: the label is shown but the value displays "N/A"
+   with a muted style. The widget does not crash or hide.
+
+3. **Broker/LLM unavailability** — if the broker or LLM is unavailable, the
+   sidebar chat displays a system message: "Aios is temporarily unavailable.
+   The broker or model service is not responding." The canvas does not render
+   new content.
+
+### Canvas panel lifecycle
+
+- **Creation:** Panels are created when the LLM generates a widget that
+  requires its own panel (e.g., a `Chart` or `ActionForm`). The panel is
+  added to the canvas area automatically.
+- **Minimization:** A panel can be minimized to the sidebar as a clickable
+  list item. Clicking the list item restores the panel to the canvas.
+- **Closing:** The user can close a panel by clicking a close button on the
+  panel header. Closed panels are removed from the canvas.
+- **Positioning:** Panels are free-positioned within the canvas area. The
+  user can drag panels to rearrange them. The canvas uses a simple stacking
+  order (last added panel is on top).
+- **Default layout:** When the app starts, the canvas is empty. Panels are
+  created on demand as the LLM generates widgets.
+
+### Tauri window configuration
+
+- **Window size:** 1200x800 pixels default, user-resizable
+- **Min size:** 800x600
+- **Position:** Center of the primary display on first launch, remembers
+  position and size across sessions
+- **Title:** "Aios"
+- **Decorations:** Frameless window with custom title bar (sidebar-style)
+- **Transparency:** Opaque background for v0.1. Slight background transparency
+  supported if the compositor allows it.
+- **Always on top:** Not enabled by default. Each canvas panel can have its
+  own keep-on-top toggle.
+
+### IPC protocol
+
+Messages between the Tauri backend and frontend use JSON over Tauri's
+built-in IPC. The following message types are defined:
+
+- **Frontend → Backend:**
+  - `chat:submit` — user sends a prompt
+  - `approval:respond` — user approves or denies an item in the queue
+  - `settings:update` — user changes a setting
+  - `panel:close` — user closes a canvas panel
+  - `panel:toggle-pin` — user toggles keep-on-top for a panel
+
+- **Backend → Frontend:**
+  - `chat:message` — a new chat message (user or AI)
+  - `chat:stream` — a streaming token from the LLM
+  - `approval:request` — a new approval request from the broker
+  - `approval:resolved` — an approval was approved or denied
+  - `widget:render` — the LLM generated a widget, render it in the canvas
+  - `widget:error` — an error occurred during widget generation
+  - `settings:changed` — a setting was updated
+  - `system:status` — system status update (connectivity, health)
+
+### "Most important" reasoning
+
+When the user asks for "the most important" system data, the model uses
+the specialist tool results to determine relevance. The model considers:
+- Which subsystems are in a degraded or unknown state
+- Which subsystems have the most impact on system health
+- Which data points the user has asked about in the past (if available)
+
+The model is not required to explain its reasoning. It must present the
+data accurately and let the widget enum determine the visual representation.
+
+### Settings panel
+
+A settings panel is accessible from the sidebar. It provides access to:
+- Provider configuration (which LLM providers are active)
+- API key management (keys for each provider)
+- Default model selection (which model is used for different task types)
+- Specialist configuration (which specialists are active, their risk thresholds)
+
+The settings panel is a dedicated canvas panel that opens from the sidebar.
+It uses standard Dioxus form components, not generative widgets.
+For v0.1, placeholder data is used until a full codebase scan is complete
+to inventory all user-facing settings.
 
 ### Visual style (v0.1)
 
 Opaque panels for v0.1. Panels with slight background transparency are
 acceptable if the compositor supports it. Glassmorphic design is planned for
-a later iteration.
+a later iteration. Styling is handled by the component templates (CSS classes
+in Dioxus/Leptos rsx! macros), not by the model. The model controls widget
+composition and data, not visual appearance.
+
+The visual language uses a dark theme by default with a surface-based color
+system. Components use consistent spacing (8px grid), rounded corners (8px),
+and a subtle border system for panel separation.
 
 ### Screen viewing tools
 
@@ -105,9 +359,11 @@ screenshots and GPU frame capture, but this is not part of v0.1.
 
 - **System State panel (architecture §6, roadmap M8):** the panel is one *part*
   of the UI, not the whole. The full UI is presence + screen space + screen
-  vision.
+  vision. The System State panel is replaced by the canvas in v0.1.
 - **Conversational facade (human-interaction.md):** the facade remains a
   display/render layer; it does not authorize. This holds for the whole UI.
+  The sidebar chat is the conversational facade; the canvas is the display
+  layer for generative UI.
 - **Interface Package (agent-packages.md):** the UI is an interface-layer
   concern. It is separate from the Graphics hardware specialist (docs/modules/
   graphics.md), which owns GPU/display/session *hardware*.
@@ -125,10 +381,19 @@ session before being implemented:
   boundaries in security-model.md?
 - Which operations require approval when they touch the desktop (resizing,
   screen capture)?
+- What is the complete widget enum for v0.1? (The examples above are a
+  starting point; the full set needs to be defined.)
+- How does the canvas handle partial or missing data when a widget's
+  expected data is unavailable?
+- What are all the user-facing settings that need to be exposed in the
+  settings panel? (Requires a codebase scan; placeholder data used for v0.1.)
 
 ## Status
 
 This is a scoping document with design decisions recorded as they are
 resolved. The full design is its own workstream (roadmap M8 extends to cover
-the whole UI, not just the panel). The canvas overlay and sidebar are the
-v0.1 target; screen vision and glassmorphic design are deferred.
+the whole UI, not just the panel). The canvas panel and sidebar are the
+v0.1 target within a single Tauri window; separate overlapping windows and
+docking are deferred. Screen vision and glassmorphic design are deferred.
+The widget enum is defined for v0.1 but may grow. The settings panel
+requires a codebase scan to inventory all user-facing options.
