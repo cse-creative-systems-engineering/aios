@@ -59,7 +59,7 @@ The graph has five layers, each with specific node types:
 |---|---|---|
 | `PlannerAgent` | `agent:planner` | Core package instantiation |
 | `VerificationAgent` | `agent:verifier` | Core package instantiation |
-| `Specialist` | `agent:wifi0-specialist`, `agent:storage-specialist`, `agent:network-specialist` | Specialist package instantiation |
+| `Specialist` | `agent:wifi0-specialist`, `agent:storage-specialist`, `agent:network-specialist`, `agent:drivers-specialist` | Specialist package instantiation |
 | `Guardian` | `agent:guardian` | Guardian package instantiation |
 | `Coordinator` | `agent:coordinator` | Coordinator package instantiation |
 
@@ -383,6 +383,31 @@ device:net-enx00051b2bfd34
 
 device:net-wlp1s0
   └── owns ← agent:wifi0-specialist   (wireless, never re-owned)
+```
+
+### 6.6 Ownership map: Drivers and hardware specialist (M7)
+
+The drivers and hardware specialist is a peer of the domain specialists
+(architecture §5), not their parent. It owns the generic PCI/USB hardware
+inventory, firmware state, and loaded kernel modules that no domain
+specialist owns, through `owns` edges, and the `drivers:domain` resource
+carries its read-only capabilities (`observe_device`, `diagnose_fault`).
+Anything a domain specialist claimed first is skipped (one-owner rule,
+§2.3) — block devices stay with Storage, wireless controllers with the
+Wi-Fi specialist, wired interfaces with the Network umbrella. Each owned
+device retains `depends_on` edges to its bus, driver, and firmware when
+discovery can verify them:
+
+```text
+Subgraph rooted at device:pci-0000:01:00.0 (2 hops):
+
+device:pci-0000:01:00.0
+  ├── owns ← agent:drivers-specialist
+  ├── depends_on → bus:pci0000:00
+  └── depends_on → driver:nvidia
+
+firmware:iwlwifi-ucode
+  └── owns ← agent:drivers-specialist   (unclaimed by any domain)
 ```
 
 ---

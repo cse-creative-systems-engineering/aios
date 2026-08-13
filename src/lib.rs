@@ -5,6 +5,7 @@ pub mod capability;
 pub mod config;
 pub mod coordinator;
 pub mod discovery;
+pub mod drivers;
 pub mod executor;
 pub mod facade;
 pub mod graph;

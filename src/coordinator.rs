@@ -22,6 +22,7 @@ use crate::protocol::{DataClassification, HealthState, now};
 use crate::tools::{ToolError, ToolRegistry, model_tool_instructions, resource_index};
 use crate::verifier::Verifier;
 use crate::wifi::WifiSpecialist;
+use crate::drivers::DriversSpecialist;
 use crate::network::NetworkSpecialist;
 use crate::storage::StorageSpecialist;
 use std::path::{Path, PathBuf};
@@ -52,6 +53,7 @@ pub struct Coordinator {
     wifi_specialist: Option<WifiSpecialist>,
     storage_specialist: Option<StorageSpecialist>,
     network_specialist: Option<NetworkSpecialist>,
+    drivers_specialist: Option<DriversSpecialist>,
 }
 
 impl Coordinator {
@@ -190,6 +192,7 @@ impl Coordinator {
             wifi_specialist: None,
             storage_specialist: None,
             network_specialist: None,
+            drivers_specialist: None,
         };
         coordinator.configure_read_only_broker();
         coordinator.refresh_connectivity();
@@ -442,6 +445,78 @@ impl Coordinator {
                 .client(coordinator.session_principal.clone())
                 .capability_tokens(&coordinator.session_principal);
         }
+        // Drivers and hardware specialist (M7): a peer of the domain
+        // specialists (architecture §5). It owns the generic PCI/USB
+        // inventory, firmware state, and loaded kernel modules that no domain
+        // specialist owns; resources already claimed by another specialist
+        // are skipped (one-owner rule). v0.1 is read-only
+        // (docs/modules/drivers.md) — observe_device and diagnose_fault run
+        // through the broker against the live graph exactly like the other
+        // specialist read-only tools. stage_driver and request_reset belong
+        // to the mutation pass (they will reuse the staged executor path).
+        let drivers_specialist = {
+            let mut graph = coordinator.graph.write().expect("graph lock");
+            match DriversSpecialist::instantiate(&mut graph) {
+                Ok(specialist) => Some(specialist),
+                Err(crate::drivers::DriversError::NoHardwareResources) => None,
+                Err(error) => return Err(BootError::Discovery(error.to_string())),
+            }
+        };
+        coordinator.drivers_specialist = drivers_specialist;
+        if let Some(specialist) = coordinator.drivers_specialist.as_ref() {
+            let definitions = specialist.tool_definitions();
+            let principal =
+                PrincipalId::agent(crate::drivers::PACKAGE_ID, specialist.specialist.0.clone());
+            let capabilities = definitions
+                .iter()
+                .flat_map(|definition| definition.required_capabilities.clone())
+                .collect();
+            let drivers_domain = specialist.clone();
+            for definition in definitions {
+                let tool_id = definition.tool_id.clone();
+                coordinator.broker.register_tool(definition);
+                let graph = coordinator.graph.clone();
+                let domain = drivers_domain.clone();
+                let handler_tool_id = tool_id.clone();
+                coordinator.broker.spawn_specialist(&tool_id, {
+                    std::sync::Arc::new(move |request| {
+                        let graph = graph.read().expect("graph lock");
+                        let target = tool_arguments(&request.parameters);
+                        if handler_tool_id.ends_with("observe_device") {
+                            domain.observe(&graph, &target)
+                        } else {
+                            domain.diagnose(&graph, &target)
+                        }
+                    })
+                });
+            }
+            coordinator
+                .broker
+                .register_principal(principal, capabilities, Clearance::max());
+            coordinator.broker.set_resource_state(
+                crate::capability::ResourceId("drivers:domain".into()),
+                ResourceState::Available,
+            );
+            let drivers_capabilities: Vec<Capability> = coordinator
+                .broker
+                .client(crate::capability::PrincipalId::system("policy-broker"))
+                .get_capabilities(&crate::capability::PrincipalId::agent(
+                    crate::drivers::PACKAGE_ID,
+                    specialist.specialist.0.clone(),
+                ))
+                .into_iter()
+                .filter(|c| matches!(c.operation, Operation::Observe | Operation::Diagnose))
+                .collect();
+            for drivers_capability in drivers_capabilities {
+                coordinator
+                    .broker
+                    .grant_capability(&coordinator.session_principal, drivers_capability);
+            }
+            coordinator.session_tokens = coordinator
+                .broker
+                .client(coordinator.session_principal.clone())
+                .capability_tokens(&coordinator.session_principal);
+        }
         // Wire the staged executor so risk-2/risk-4 wifi tools (stage_driver,
         // request_reset) run through the M5 action state machine instead of
         // failing with "no executor configured" (modules/wifi.md, M6). The
@@ -525,6 +600,10 @@ impl Coordinator {
 
     pub fn network_specialist(&self) -> Option<&NetworkSpecialist> {
         self.network_specialist.as_ref()
+    }
+
+    pub fn drivers_specialist(&self) -> Option<&DriversSpecialist> {
+        self.drivers_specialist.as_ref()
     }
 
     pub fn current_route(&self) -> Result<RoutingDecision, RoutingError> {
@@ -648,6 +727,10 @@ impl Coordinator {
             call.name.as_str(),
             "network.observe_network" | "network.diagnose_fault"
         );
+        let is_drivers_tool = matches!(
+            call.name.as_str(),
+            "drivers.observe_device" | "drivers.diagnose_fault"
+        );
         let resource = if is_wifi_tool {
             let device = self
                 .wifi_specialist
@@ -662,6 +745,8 @@ impl Coordinator {
             ResourceId("storage:domain".into())
         } else if is_network_tool {
             ResourceId("network:domain".into())
+        } else if is_drivers_tool {
+            ResourceId("drivers:domain".into())
         } else {
             ResourceId("system:graph".into())
         };
@@ -1028,6 +1113,8 @@ fn operation_for_tool(name: &str) -> Option<Operation> {
         "storage.diagnose_fault" => Some(Operation::Diagnose),
         "network.observe_network" => Some(Operation::Observe),
         "network.diagnose_fault" => Some(Operation::Diagnose),
+        "drivers.observe_device" => Some(Operation::Observe),
+        "drivers.diagnose_fault" => Some(Operation::Diagnose),
         _ => None,
     }
 }
@@ -1790,6 +1877,125 @@ mod tests {
         let result = coordinator
             .run_tool_as("planner", &call)
             .expect("network diagnose through broker");
+        assert!(result.text.contains("findings"), "{}", result.text);
+    }
+
+    // M7: the drivers and hardware specialist must be reachable through the
+    // broker like the other read-only specialist tools. Boot wires it when
+    // the machine has unclaimed hardware; this helper seeds a PCI device,
+    // firmware, and driver node otherwise, then mirrors the boot wiring.
+    fn wire_drivers(coordinator: &mut Coordinator) {
+        if coordinator.drivers_specialist.is_some() {
+            return;
+        }
+        {
+            let mut graph = coordinator.graph.write().expect("graph lock");
+            let has_hardware = graph
+                .nodes()
+                .values()
+                .any(|node| node.node_type == NodeType::Driver
+                    || node.node_type == NodeType::Firmware
+                    || node.node_id.0.starts_with("device:pci-"));
+            if !has_hardware {
+                let mut gpu = crate::graph::NodeMetadata::new(
+                    NodeId("device:pci-0000:01:00.0".into()),
+                    NodeType::Device,
+                    crate::graph::ProvenanceSource::Discovered { via: "sysfs".into() },
+                    crate::graph::TrustLevel::Trusted,
+                    crate::protocol::now(),
+                );
+                gpu.label = "VGA compatible controller".into();
+                graph.add_node(gpu).unwrap();
+            }
+            crate::drivers::DriversSpecialist::instantiate(&mut graph).unwrap();
+        }
+        let specialist = coordinator.drivers_specialist.as_ref().unwrap().clone();
+        for definition in specialist.tool_definitions() {
+            let tool_id = definition.tool_id.clone();
+            coordinator.broker.register_tool(definition);
+            let graph = coordinator.graph.clone();
+            let domain = specialist.clone();
+            coordinator.broker.spawn_specialist(&tool_id.clone(), {
+                std::sync::Arc::new(move |request| {
+                    let graph = graph.read().expect("graph lock");
+                    let target = tool_arguments(&request.parameters);
+                    if tool_id.ends_with("observe_device") {
+                        domain.observe(&graph, &target)
+                    } else {
+                        domain.diagnose(&graph, &target)
+                    }
+                })
+            });
+        }
+        coordinator.broker.set_resource_state(
+            ResourceId("drivers:domain".into()),
+            ResourceState::Available,
+        );
+        let principal = PrincipalId::agent(
+            crate::drivers::PACKAGE_ID,
+            specialist.specialist.0.clone(),
+        );
+        coordinator.broker.register_principal(
+            principal.clone(),
+            vec![
+                Capability {
+                    resource: ResourceId("drivers:domain".into()),
+                    operation: Operation::Observe,
+                },
+                Capability {
+                    resource: ResourceId("drivers:domain".into()),
+                    operation: Operation::Diagnose,
+                },
+            ],
+            Clearance::max(),
+        );
+        coordinator.broker.grant_capability(
+            &coordinator.session_principal,
+            Capability {
+                resource: ResourceId("drivers:domain".into()),
+                operation: Operation::Observe,
+            },
+        );
+        coordinator.broker.grant_capability(
+            &coordinator.session_principal,
+            Capability {
+                resource: ResourceId("drivers:domain".into()),
+                operation: Operation::Diagnose,
+            },
+        );
+        coordinator.session_tokens = coordinator
+            .broker
+            .client(coordinator.session_principal.clone())
+            .capability_tokens(&coordinator.session_principal);
+    }
+
+    #[test]
+    fn drivers_observe_runs_through_broker() {
+        let port = testutil::spawn_json_server(handler);
+        let mut coordinator = stub_coordinator(port);
+        wire_drivers(&mut coordinator);
+        let call = ToolCallRequest {
+            name: "drivers.observe_device".into(),
+            arguments: "all".into(),
+        };
+        let result = coordinator
+            .run_tool_as("planner", &call)
+            .expect("drivers observe through broker");
+        assert!(result.text.contains("devices"), "{}", result.text);
+    }
+
+    #[test]
+    fn drivers_diagnose_reports_domain_invariants() {
+        let port = testutil::spawn_json_server(handler);
+        let mut coordinator = stub_coordinator(port);
+        wire_drivers(&mut coordinator);
+        let call = ToolCallRequest {
+            name: "drivers.diagnose_fault".into(),
+            arguments: "all".into(),
+        };
+        let result = coordinator
+            .run_tool_as("planner", &call)
+            .expect("drivers diagnose through broker");
         assert!(result.text.contains("findings"), "{}", result.text);
     }
 

@@ -522,7 +522,7 @@ It validates the entire architecture against a real hardware scenario.
 
 ## Milestone 7: Additional Specialists
 
-**Status:** In progress (Storage and Network specialists)
+**Status:** In progress (Storage, Network, and Drivers specialists)
 **Estimated effort:** 2–4 weeks per specialist
 **Dependencies:** M6
 
@@ -573,6 +573,30 @@ state (3 wired interfaces: docker0 unknown, enx00051b2bfd34 healthy,
 lo unknown). 267 tests pass. Wired-LAN and Bluetooth as first-class
 transport child specialists, and any mutating network operations, are
 deferred to later iterations.
+
+**Progress note (2026-08-12, drivers):** the Drivers and hardware specialist
+follows the same pattern (`aios::drivers`, docs/modules/drivers.md) as a
+peer of the domain specialists. It discovers the unclaimed PCI/USB hardware
+inventory, firmware nodes, and loaded kernel modules — block devices stay
+with Storage, wireless controllers with the Wi-Fi specialist, wired
+interfaces with the Network umbrella; anything already owned is skipped
+(one-owner rule, architecture §5). It declares the read-only tools
+`drivers.observe_device` and `drivers.diagnose_fault` on the
+`drivers:domain` resource (invariant DRIVER-001: the active driver is
+present and attached to the discovered device; DEVICE-002 belongs to the
+mutation pass). Coordinator boot registers the tools with the broker,
+spawns the specialist handlers, grants the session principal the read-only
+capabilities, and routes `run_tool_as` calls for the drivers tools to
+`drivers:domain` exactly like the other specialist read-only tools.
+Coordinator-level tests drive broker → specialist for observe and diagnose
+(hermetic `wire_drivers` helper seeds a PCI device, firmware, and driver
+when the machine has none). Verified live: the system panel shows the
+Drivers specialist owning generic hardware alongside the domain
+specialists, and a real model chat session called `drivers.observe_device`
+through the broker and reported the live hardware state (31 unclaimed
+devices, 17 with attached drivers, no firmware). 278 tests pass.
+`stage_driver` and `request_reset`, which will reuse the staged-executor
+path the wifi tools already use, are deferred to the mutation pass.
 
 ### Storage specialist: complete
 
@@ -726,7 +750,7 @@ its own workstream; the panel is the first concrete piece.
 | M4: Dual-Agent Orchestration | ✅ Complete (offline shell deferred) | 9–13 weeks | M2, M3 |
 | M5: Transactions and Staging | ✅ Complete | 9–13 weeks (parallel with M4) | M2 |
 | M6: First Hardware Specialist | ✅ Complete | 13–19 weeks | M4, M5 |
-| M7: Additional Specialists | In progress (Storage, Network specialists) | +2–4 weeks per specialist | M6 |
+| M7: Additional Specialists | In progress (Storage, Network, Drivers specialists) | +2–4 weeks per specialist | M6 |
 | M8: System State Panel | ✅ Terminal panel complete; full UI in `docs/ui.md` | 15–22 weeks (parallel) | M2 |
 
 **Estimated time to working v0.1 with Wi-Fi vertical slice:** 4–5 months  
