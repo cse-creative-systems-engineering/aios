@@ -25,6 +25,7 @@ use crate::wifi::WifiSpecialist;
 use crate::drivers::DriversSpecialist;
 use crate::graphics::GraphicsSpecialist;
 use crate::memory::MemorySpecialist;
+use crate::power::PowerSpecialist;
 use crate::network::NetworkSpecialist;
 use crate::storage::StorageSpecialist;
 use std::path::{Path, PathBuf};
@@ -57,6 +58,7 @@ pub struct Coordinator {
     network_specialist: Option<NetworkSpecialist>,
     drivers_specialist: Option<DriversSpecialist>,
     graphics_specialist: Option<GraphicsSpecialist>,
+    power_specialist: Option<PowerSpecialist>,
     memory_specialist: Option<MemorySpecialist>,
 }
 
@@ -199,6 +201,7 @@ impl Coordinator {
             drivers_specialist: None,
             graphics_specialist: None,
             memory_specialist: None,
+            power_specialist: None,
         };
         coordinator.configure_read_only_broker();
         coordinator.refresh_connectivity();
@@ -663,6 +666,77 @@ impl Coordinator {
                 .client(coordinator.session_principal.clone())
                 .capability_tokens(&coordinator.session_principal);
         }
+        // Power and thermal specialist (M7): the umbrella for the power and
+        // thermal domain (docs/modules/power-thermal.md). v0.1 is read-only
+        // and owns only resources no peer has claimed first (one-owner rule).
+        // Both observe_thermal and diagnose_fault run through the broker
+        // against the live graph; the bounded diagnose reports THERMAL-001
+        // evidence.
+        let power_specialist = {
+            let mut graph = coordinator.graph.write().expect("graph lock");
+            match PowerSpecialist::instantiate(&mut graph) {
+                Ok(specialist) => Some(specialist),
+                Err(crate::power::PowerError::NoPowerResources) => None,
+                Err(error) => return Err(BootError::Discovery(error.to_string())),
+            }
+        };
+        coordinator.power_specialist = power_specialist;
+        if let Some(specialist) = coordinator.power_specialist.as_ref() {
+            let definitions = specialist.tool_definitions();
+            let principal = PrincipalId::agent(
+                crate::power::PACKAGE_ID,
+                specialist.specialist.0.clone(),
+            );
+            let capabilities = definitions
+                .iter()
+                .flat_map(|definition| definition.required_capabilities.clone())
+                .collect();
+            let power_domain = specialist.clone();
+            for definition in definitions {
+                let tool_id = definition.tool_id.clone();
+                coordinator.broker.register_tool(definition);
+                let graph = coordinator.graph.clone();
+                let domain = power_domain.clone();
+                let handler_tool_id = tool_id.clone();
+                coordinator.broker.spawn_specialist(&tool_id, {
+                    std::sync::Arc::new(move |request| {
+                        let graph = graph.read().expect("graph lock");
+                        let target = tool_arguments(&request.parameters);
+                        if handler_tool_id.ends_with("observe_thermal") {
+                            domain.observe(&graph, &target)
+                        } else {
+                            domain.diagnose(&graph, &target)
+                        }
+                    })
+                });
+            }
+            coordinator
+                .broker
+                .register_principal(principal, capabilities, Clearance::max());
+            coordinator.broker.set_resource_state(
+                crate::capability::ResourceId("power:domain".into()),
+                ResourceState::Available,
+            );
+            let power_capabilities: Vec<Capability> = coordinator
+                .broker
+                .client(crate::capability::PrincipalId::system("policy-broker"))
+                .get_capabilities(&crate::capability::PrincipalId::agent(
+                    crate::power::PACKAGE_ID,
+                    specialist.specialist.0.clone(),
+                ))
+                .into_iter()
+                .filter(|c| matches!(c.operation, Operation::Observe | Operation::Diagnose))
+                .collect();
+            for power_capability in power_capabilities {
+                coordinator
+                    .broker
+                    .grant_capability(&coordinator.session_principal, power_capability);
+            }
+            coordinator.session_tokens = coordinator
+                .broker
+                .client(coordinator.session_principal.clone())
+                .capability_tokens(&coordinator.session_principal);
+        }
         // request_reset) run through the M5 action state machine instead of
         // failing with "no executor configured" (modules/wifi.md, M6). The
         // default control is a mock that records the intended modprobe
@@ -757,6 +831,10 @@ impl Coordinator {
 
     pub fn memory_specialist(&self) -> Option<&MemorySpecialist> {
         self.memory_specialist.as_ref()
+    }
+
+    pub fn power_specialist(&self) -> Option<&PowerSpecialist> {
+        self.power_specialist.as_ref()
     }
 
     pub fn current_route(&self) -> Result<RoutingDecision, RoutingError> {
@@ -892,6 +970,10 @@ impl Coordinator {
             call.name.as_str(),
             "memory.observe_memory" | "memory.diagnose_fault"
         );
+        let is_power_tool = matches!(
+            call.name.as_str(),
+            "power.observe_thermal" | "power.diagnose_fault"
+        );
         let resource = if is_wifi_tool {
             let device = self
                 .wifi_specialist
@@ -908,6 +990,8 @@ impl Coordinator {
             ResourceId("network:domain".into())
         } else if is_drivers_tool {
             ResourceId("drivers:domain".into())
+        } else if is_power_tool {
+            ResourceId("power:domain".into())
         } else if is_graphics_tool {
             ResourceId("graphics:domain".into())
         } else if is_memory_tool {
@@ -1284,6 +1368,8 @@ fn operation_for_tool(name: &str) -> Option<Operation> {
         "graphics.diagnose_fault" => Some(Operation::Diagnose),
         "memory.observe_memory" => Some(Operation::Observe),
         "memory.diagnose_fault" => Some(Operation::Diagnose),
+        "power.observe_thermal" => Some(Operation::Observe),
+        "power.diagnose_fault" => Some(Operation::Diagnose),
         _ => None,
     }
 }
@@ -2404,6 +2490,127 @@ mod tests {
         let result = coordinator
             .run_tool_as("planner", &call)
             .expect("memory diagnose through broker");
+        assert!(result.text.contains("findings"), "{}", result.text);
+    }
+
+    // M7: the power and thermal specialist must be reachable through the
+    // broker like the other read-only specialist tools. Boot wires it when
+    // the machine has power/thermal resources; this helper seeds thermal and
+    // power sensor nodes (exactly what discovery reports) otherwise, then
+    // mirrors the boot wiring.
+    fn wire_power(coordinator: &mut Coordinator) {
+        if coordinator.power_specialist.is_some() {
+            return;
+        }
+        {
+            let mut graph = coordinator.graph.write().expect("graph lock");
+            match PowerSpecialist::instantiate(&mut graph) {
+                Ok(_) => {}
+                Err(crate::power::PowerError::NoPowerResources) => {
+                    let mut temp = crate::graph::NodeMetadata::new(
+                        NodeId("sensor:hwmon0-temp1".into()),
+                        NodeType::Sensor,
+                        crate::graph::ProvenanceSource::Discovered { via: "sysfs".into() },
+                        crate::graph::TrustLevel::Trusted,
+                        crate::protocol::now(),
+                    );
+                    temp.label = "coretemp temp1".into();
+                    temp.attributes.insert("value".into(), "52000".into());
+                    temp.attributes.insert("unit".into(), "millidegree_c".into());
+                    temp.health = HealthState::Healthy;
+                    graph.add_node(temp).unwrap();
+                    PowerSpecialist::instantiate(&mut graph).unwrap();
+                }
+                Err(error) => panic!("power instantiation failed: {error}"),
+            }
+        }
+        let specialist = coordinator.power_specialist.as_ref().unwrap().clone();
+        for definition in specialist.tool_definitions() {
+            let tool_id = definition.tool_id.clone();
+            coordinator.broker.register_tool(definition);
+            let graph = coordinator.graph.clone();
+            let domain = specialist.clone();
+            coordinator.broker.spawn_specialist(&tool_id.clone(), {
+                std::sync::Arc::new(move |request| {
+                    let graph = graph.read().expect("graph lock");
+                    let target = tool_arguments(&request.parameters);
+                    if tool_id.ends_with("observe_thermal") {
+                        domain.observe(&graph, &target)
+                    } else {
+                        domain.diagnose(&graph, &target)
+                    }
+                })
+            });
+        }
+        coordinator.broker.set_resource_state(
+            ResourceId("power:domain".into()),
+            ResourceState::Available,
+        );
+        let principal = PrincipalId::agent(
+            crate::power::PACKAGE_ID,
+            specialist.specialist.0.clone(),
+        );
+        coordinator.broker.register_principal(
+            principal.clone(),
+            vec![
+                Capability {
+                    resource: ResourceId("power:domain".into()),
+                    operation: Operation::Observe,
+                },
+                Capability {
+                    resource: ResourceId("power:domain".into()),
+                    operation: Operation::Diagnose,
+                },
+            ],
+            Clearance::max(),
+        );
+        coordinator.broker.grant_capability(
+            &coordinator.session_principal,
+            Capability {
+                resource: ResourceId("power:domain".into()),
+                operation: Operation::Observe,
+            },
+        );
+        coordinator.broker.grant_capability(
+            &coordinator.session_principal,
+            Capability {
+                resource: ResourceId("power:domain".into()),
+                operation: Operation::Diagnose,
+            },
+        );
+        coordinator.session_tokens = coordinator
+            .broker
+            .client(coordinator.session_principal.clone())
+            .capability_tokens(&coordinator.session_principal);
+    }
+
+    #[test]
+    fn power_observe_runs_through_broker() {
+        let port = testutil::spawn_json_server(handler);
+        let mut coordinator = stub_coordinator(port);
+        wire_power(&mut coordinator);
+        let call = ToolCallRequest {
+            name: "power.observe_thermal".into(),
+            arguments: "all".into(),
+        };
+        let result = coordinator
+            .run_tool_as("planner", &call)
+            .expect("power observe through broker");
+        assert!(result.text.contains("thermal_sensors"), "{}", result.text);
+    }
+
+    #[test]
+    fn power_diagnose_reports_domain_invariants() {
+        let port = testutil::spawn_json_server(handler);
+        let mut coordinator = stub_coordinator(port);
+        wire_power(&mut coordinator);
+        let call = ToolCallRequest {
+            name: "power.diagnose_fault".into(),
+            arguments: "all".into(),
+        };
+        let result = coordinator
+            .run_tool_as("planner", &call)
+            .expect("power diagnose through broker");
         assert!(result.text.contains("findings"), "{}", result.text);
     }
 
