@@ -80,6 +80,20 @@ fn is_unclaimed_hardware(node: &NodeMetadata) -> bool {
             || node.node_id.0.starts_with("device:usb-"))
         && !node.label.starts_with("block device ")
         && !is_wireless(node)
+        && !is_gpu(node)
+}
+
+/// GPUs belong to the Graphics domain (docs/modules/graphics.md), never to
+/// the drivers peer. Structural classification: PCI class `0x03` (display
+/// controller: VGA, 3D) or a device that calls itself a GPU/VGA.
+fn is_gpu(node: &NodeMetadata) -> bool {
+    let gpu_class = node
+        .attributes
+        .get("class")
+        .map(|value| value.to_lowercase().starts_with("0x03"))
+        .unwrap_or(false);
+    let text = format!("{} {}", node.node_id, node.label).to_lowercase();
+    gpu_class || text.contains("vga") || text.contains("gpu") || text.contains("3d controller")
 }
 
 fn is_wireless(node: &NodeMetadata) -> bool {
@@ -419,8 +433,13 @@ mod tests {
 
     fn hardware_graph() -> SystemGraph {
         let mut graph = SystemGraph::new();
-        let mut gpu = node("device:pci-0000:01:00.0", NodeType::Device);
-        gpu.label = "VGA compatible controller".into();
+        let mut sata = node("device:pci-0000:01:00.0", NodeType::Device);
+        sata.label = "SATA controller".into();
+        sata.attributes.insert("class".into(), "0x010601".into());
+        graph.add_node(sata).unwrap();
+        let mut gpu = node("device:pci-0000:00:02.0", NodeType::Device);
+        gpu.label = "PCI device 0000:00:02.0".into();
+        gpu.attributes.insert("class".into(), "0x030000".into());
         graph.add_node(gpu).unwrap();
         let mut nvme = node("device:pci-0000:02:00.0", NodeType::Device);
         nvme.label = "block device nvme0n1".into();
@@ -431,15 +450,15 @@ mod tests {
         let mut fw = node("firmware:iwlwifi-ucode", NodeType::Firmware);
         fw.label = "iwlwifi firmware".into();
         graph.add_node(fw).unwrap();
-        let mut drv = node("driver:nvidia", NodeType::Driver);
-        drv.label = "nvidia kernel module".into();
+        let mut drv = node("driver:ahci", NodeType::Driver);
+        drv.label = "ahci kernel module".into();
         graph.add_node(drv).unwrap();
         graph
             .add_edge(EdgeMetadata {
                 edge_id: EdgeId::new(),
                 edge_type: EdgeType::DependsOn,
                 source_node: NodeId("device:pci-0000:01:00.0".into()),
-                target_node: NodeId("driver:nvidia".into()),
+                target_node: NodeId("driver:ahci".into()),
                 provenance: EdgeProvenance::Observed {
                     observed_by: PrincipalId::system("discovery"),
                     event_type: crate::protocol::EventType::DeviceAdded,
@@ -457,8 +476,8 @@ mod tests {
     fn discovers_unclaimed_hardware_only() {
         let graph = hardware_graph();
         let specialist = DriversSpecialist::discover(&graph).unwrap();
-        // The GPU is unclaimed; the block device and the wireless controller
-        // belong to domain specialists.
+        // The SATA controller is unclaimed; the GPU, the block device, and
+        // the wireless controller belong to domain specialists.
         assert_eq!(
             specialist.devices,
             vec![NodeId("device:pci-0000:01:00.0".into())]
@@ -467,7 +486,26 @@ mod tests {
             specialist.firmware,
             vec![NodeId("firmware:iwlwifi-ucode".into())]
         );
-        assert_eq!(specialist.drivers, vec![NodeId("driver:nvidia".into())]);
+        assert_eq!(specialist.drivers, vec![NodeId("driver:ahci".into())]);
+    }
+
+    #[test]
+    fn gpu_class_devices_are_not_claimed() {
+        let graph = hardware_graph();
+        let specialist = DriversSpecialist::discover(&graph).unwrap();
+        assert!(
+            !specialist
+                .devices
+                .contains(&NodeId("device:pci-0000:00:02.0".into())),
+            "GPU-class devices stay unclaimed for the Graphics domain"
+        );
+        let mut graph = hardware_graph();
+        let _specialist = DriversSpecialist::instantiate(&mut graph).unwrap();
+        assert_eq!(
+            graph.get_owner(&NodeId("device:pci-0000:00:02.0".into())),
+            None,
+            "the GPU has no owner until Graphics instantiates"
+        );
     }
 
     #[test]
@@ -561,10 +599,10 @@ mod tests {
         // Rename the attached driver out of the driver:* namespace: the
         // depends_on edge no longer points at a driver node, so DRIVER-001
         // evidence disappears.
-        let mut drv = node("driver:nvidia", NodeType::Driver);
-        drv.label = "nvidia kernel module".into();
-        drv.node_id = NodeId("module:nvidia-unloaded".into());
-        graph.remove_node(&NodeId("driver:nvidia".into())).unwrap();
+        let mut drv = node("driver:ahci", NodeType::Driver);
+        drv.label = "ahci kernel module".into();
+        drv.node_id = NodeId("module:ahci-unloaded".into());
+        graph.remove_node(&NodeId("driver:ahci".into())).unwrap();
         graph.add_node(drv).unwrap();
         let specialist = DriversSpecialist::instantiate(&mut graph).unwrap();
         let result = specialist.diagnose(&graph, "all");
@@ -587,7 +625,7 @@ mod tests {
         let specialist = DriversSpecialist::instantiate(&mut graph).unwrap();
         assert_eq!(
             specialist.resolve_target("driver:"),
-            vec![NodeId("driver:nvidia".into())]
+            vec![NodeId("driver:ahci".into())]
         );
         assert_eq!(specialist.resolve_target("all").len(), 3);
     }

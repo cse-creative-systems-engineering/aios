@@ -23,6 +23,7 @@ use crate::tools::{ToolError, ToolRegistry, model_tool_instructions, resource_in
 use crate::verifier::Verifier;
 use crate::wifi::WifiSpecialist;
 use crate::drivers::DriversSpecialist;
+use crate::graphics::GraphicsSpecialist;
 use crate::network::NetworkSpecialist;
 use crate::storage::StorageSpecialist;
 use std::path::{Path, PathBuf};
@@ -54,6 +55,7 @@ pub struct Coordinator {
     storage_specialist: Option<StorageSpecialist>,
     network_specialist: Option<NetworkSpecialist>,
     drivers_specialist: Option<DriversSpecialist>,
+    graphics_specialist: Option<GraphicsSpecialist>,
 }
 
 impl Coordinator {
@@ -193,6 +195,7 @@ impl Coordinator {
             storage_specialist: None,
             network_specialist: None,
             drivers_specialist: None,
+            graphics_specialist: None,
         };
         coordinator.configure_read_only_broker();
         coordinator.refresh_connectivity();
@@ -517,7 +520,76 @@ impl Coordinator {
                 .client(coordinator.session_principal.clone())
                 .capability_tokens(&coordinator.session_principal);
         }
-        // Wire the staged executor so risk-2/risk-4 wifi tools (stage_driver,
+        // Graphics specialist (M7): the umbrella for GPU, display, and session
+        // resources (docs/modules/graphics.md). v0.1 is read-only and owns
+        // only resources no peer has claimed first (one-owner rule). Both
+        // observe_graphics and diagnose_fault run through the broker against
+        // the live graph; the bounded diagnose reports GFX-001 evidence.
+        let graphics_specialist = {
+            let mut graph = coordinator.graph.write().expect("graph lock");
+            match GraphicsSpecialist::instantiate(&mut graph) {
+                Ok(specialist) => Some(specialist),
+                Err(crate::graphics::GraphicsError::NoGraphicsResources) => None,
+                Err(error) => return Err(BootError::Discovery(error.to_string())),
+            }
+        };
+        coordinator.graphics_specialist = graphics_specialist;
+        if let Some(specialist) = coordinator.graphics_specialist.as_ref() {
+            let definitions = specialist.tool_definitions();
+            let principal = PrincipalId::agent(
+                crate::graphics::PACKAGE_ID,
+                specialist.specialist.0.clone(),
+            );
+            let capabilities = definitions
+                .iter()
+                .flat_map(|definition| definition.required_capabilities.clone())
+                .collect();
+            let graphics_domain = specialist.clone();
+            for definition in definitions {
+                let tool_id = definition.tool_id.clone();
+                coordinator.broker.register_tool(definition);
+                let graph = coordinator.graph.clone();
+                let domain = graphics_domain.clone();
+                let handler_tool_id = tool_id.clone();
+                coordinator.broker.spawn_specialist(&tool_id, {
+                    std::sync::Arc::new(move |request| {
+                        let graph = graph.read().expect("graph lock");
+                        let target = tool_arguments(&request.parameters);
+                        if handler_tool_id.ends_with("observe_graphics") {
+                            domain.observe(&graph, &target)
+                        } else {
+                            domain.diagnose(&graph, &target)
+                        }
+                    })
+                });
+            }
+            coordinator
+                .broker
+                .register_principal(principal, capabilities, Clearance::max());
+            coordinator.broker.set_resource_state(
+                crate::capability::ResourceId("graphics:domain".into()),
+                ResourceState::Available,
+            );
+            let graphics_capabilities: Vec<Capability> = coordinator
+                .broker
+                .client(crate::capability::PrincipalId::system("policy-broker"))
+                .get_capabilities(&crate::capability::PrincipalId::agent(
+                    crate::graphics::PACKAGE_ID,
+                    specialist.specialist.0.clone(),
+                ))
+                .into_iter()
+                .filter(|c| matches!(c.operation, Operation::Observe | Operation::Diagnose))
+                .collect();
+            for graphics_capability in graphics_capabilities {
+                coordinator
+                    .broker
+                    .grant_capability(&coordinator.session_principal, graphics_capability);
+            }
+            coordinator.session_tokens = coordinator
+                .broker
+                .client(coordinator.session_principal.clone())
+                .capability_tokens(&coordinator.session_principal);
+        }
         // request_reset) run through the M5 action state machine instead of
         // failing with "no executor configured" (modules/wifi.md, M6). The
         // default control is a mock that records the intended modprobe
@@ -604,6 +676,10 @@ impl Coordinator {
 
     pub fn drivers_specialist(&self) -> Option<&DriversSpecialist> {
         self.drivers_specialist.as_ref()
+    }
+
+    pub fn graphics_specialist(&self) -> Option<&GraphicsSpecialist> {
+        self.graphics_specialist.as_ref()
     }
 
     pub fn current_route(&self) -> Result<RoutingDecision, RoutingError> {
@@ -731,6 +807,10 @@ impl Coordinator {
             call.name.as_str(),
             "drivers.observe_device" | "drivers.diagnose_fault"
         );
+        let is_graphics_tool = matches!(
+            call.name.as_str(),
+            "graphics.observe_graphics" | "graphics.diagnose_fault"
+        );
         let resource = if is_wifi_tool {
             let device = self
                 .wifi_specialist
@@ -747,6 +827,8 @@ impl Coordinator {
             ResourceId("network:domain".into())
         } else if is_drivers_tool {
             ResourceId("drivers:domain".into())
+        } else if is_graphics_tool {
+            ResourceId("graphics:domain".into())
         } else {
             ResourceId("system:graph".into())
         };
@@ -1115,6 +1197,8 @@ fn operation_for_tool(name: &str) -> Option<Operation> {
         "network.diagnose_fault" => Some(Operation::Diagnose),
         "drivers.observe_device" => Some(Operation::Observe),
         "drivers.diagnose_fault" => Some(Operation::Diagnose),
+        "graphics.observe_graphics" => Some(Operation::Observe),
+        "graphics.diagnose_fault" => Some(Operation::Diagnose),
         _ => None,
     }
 }
@@ -1996,6 +2080,126 @@ mod tests {
         let result = coordinator
             .run_tool_as("planner", &call)
             .expect("drivers diagnose through broker");
+        assert!(result.text.contains("findings"), "{}", result.text);
+    }
+
+    // M7: the graphics specialist must be reachable through the broker like
+    // the other read-only specialist tools. Boot wires it when the machine
+    // has GPU, display, or session resources; this helper seeds a GPU
+    // (structural PCI class 0x03 node, exactly what discovery reports)
+    // otherwise, then mirrors the boot wiring.
+    fn wire_graphics(coordinator: &mut Coordinator) {
+        if coordinator.graphics_specialist.is_some() {
+            return;
+        }
+        {
+            let mut graph = coordinator.graph.write().expect("graph lock");
+            match GraphicsSpecialist::instantiate(&mut graph) {
+                Ok(_) => {}
+                Err(crate::graphics::GraphicsError::NoGraphicsResources) => {
+                    let mut gpu = crate::graph::NodeMetadata::new(
+                        NodeId("device:pci-0000:00:02.0".into()),
+                        NodeType::Device,
+                        crate::graph::ProvenanceSource::Discovered { via: "sysfs".into() },
+                        crate::graph::TrustLevel::Trusted,
+                        crate::protocol::now(),
+                    );
+                    gpu.label = "PCI device 0000:00:02.0".into();
+                    gpu.attributes.insert("class".into(), "0x030000".into());
+                    gpu.health = HealthState::Healthy;
+                    graph.add_node(gpu).unwrap();
+                    GraphicsSpecialist::instantiate(&mut graph).unwrap();
+                }
+                Err(error) => panic!("graphics instantiation failed: {error}"),
+            }
+        }
+        let specialist = coordinator.graphics_specialist.as_ref().unwrap().clone();
+        for definition in specialist.tool_definitions() {
+            let tool_id = definition.tool_id.clone();
+            coordinator.broker.register_tool(definition);
+            let graph = coordinator.graph.clone();
+            let domain = specialist.clone();
+            coordinator.broker.spawn_specialist(&tool_id.clone(), {
+                std::sync::Arc::new(move |request| {
+                    let graph = graph.read().expect("graph lock");
+                    let target = tool_arguments(&request.parameters);
+                    if tool_id.ends_with("observe_graphics") {
+                        domain.observe(&graph, &target)
+                    } else {
+                        domain.diagnose(&graph, &target)
+                    }
+                })
+            });
+        }
+        coordinator.broker.set_resource_state(
+            ResourceId("graphics:domain".into()),
+            ResourceState::Available,
+        );
+        let principal = PrincipalId::agent(
+            crate::graphics::PACKAGE_ID,
+            specialist.specialist.0.clone(),
+        );
+        coordinator.broker.register_principal(
+            principal.clone(),
+            vec![
+                Capability {
+                    resource: ResourceId("graphics:domain".into()),
+                    operation: Operation::Observe,
+                },
+                Capability {
+                    resource: ResourceId("graphics:domain".into()),
+                    operation: Operation::Diagnose,
+                },
+            ],
+            Clearance::max(),
+        );
+        coordinator.broker.grant_capability(
+            &coordinator.session_principal,
+            Capability {
+                resource: ResourceId("graphics:domain".into()),
+                operation: Operation::Observe,
+            },
+        );
+        coordinator.broker.grant_capability(
+            &coordinator.session_principal,
+            Capability {
+                resource: ResourceId("graphics:domain".into()),
+                operation: Operation::Diagnose,
+            },
+        );
+        coordinator.session_tokens = coordinator
+            .broker
+            .client(coordinator.session_principal.clone())
+            .capability_tokens(&coordinator.session_principal);
+    }
+
+    #[test]
+    fn graphics_observe_runs_through_broker() {
+        let port = testutil::spawn_json_server(handler);
+        let mut coordinator = stub_coordinator(port);
+        wire_graphics(&mut coordinator);
+        let call = ToolCallRequest {
+            name: "graphics.observe_graphics".into(),
+            arguments: "all".into(),
+        };
+        let result = coordinator
+            .run_tool_as("planner", &call)
+            .expect("graphics observe through broker");
+        assert!(result.text.contains("gpus"), "{}", result.text);
+    }
+
+    #[test]
+    fn graphics_diagnose_reports_domain_invariants() {
+        let port = testutil::spawn_json_server(handler);
+        let mut coordinator = stub_coordinator(port);
+        wire_graphics(&mut coordinator);
+        let call = ToolCallRequest {
+            name: "graphics.diagnose_fault".into(),
+            arguments: "all".into(),
+        };
+        let result = coordinator
+            .run_tool_as("planner", &call)
+            .expect("graphics diagnose through broker");
         assert!(result.text.contains("findings"), "{}", result.text);
     }
 

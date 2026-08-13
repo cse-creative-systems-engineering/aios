@@ -9,6 +9,7 @@ pub mod drivers;
 pub mod executor;
 pub mod facade;
 pub mod graph;
+pub mod graphics;
 pub mod guardian;
 pub mod harness;
 pub mod http;
