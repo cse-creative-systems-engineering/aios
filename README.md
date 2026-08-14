@@ -3,6 +3,12 @@
 Aios is my attempt at an operating system layer an AI can actually run, without
 giving the AI root and hoping for the best.
 
+> **Before working in this repository:** read
+> [`PROJECT_GROUNDING.md`](PROJECT_GROUNDING.md), then follow its link to the
+> latest dated project snapshot. It is the quickest way to recover the current
+> architecture, code layout, implementation status, test conditions, and open
+> work without rereading the entire repository.
+
 The pitch, compressed: you tell your machine something is broken, and an agent
 figures out what's wrong and fixes it — with a plan, a second opinion, a
 checkpoint, and a way to undo the whole thing if it makes things worse.

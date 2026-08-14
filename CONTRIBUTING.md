@@ -3,6 +3,14 @@
 Thanks for your interest in Aios. The project is in an early phase: the
 design doc set is frozen for M1, and the codebase is a minimal scaffold.
 
+## Start Here
+
+Read [`PROJECT_GROUNDING.md`](PROJECT_GROUNDING.md) before making changes. It
+links to the latest dated context snapshot and gives the shortest reliable path
+through the current documentation, source layout, test setup, and known gaps.
+Do not assume the older milestone wording in this file is the complete current
+status.
+
 ## Project status and what to work on
 
 - **The doc set is frozen.** Design docs change only when M1 surfaces a
