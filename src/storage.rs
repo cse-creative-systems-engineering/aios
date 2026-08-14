@@ -33,7 +33,7 @@ pub struct StorageSpecialist {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StorageHealth {
     /// Block devices that report a `size_bytes` attribute (STORAGE-001 evidence).
-    pub devices_with_capacity: usize,
+    pub devices_reporting_capacity: usize,
     pub block_devices: usize,
     /// Filesystems with a backing block device in the graph (device attribute
     /// or a `depends_on` edge to a block device).
@@ -172,7 +172,7 @@ impl StorageSpecialist {
     }
 
     pub fn health(&self, graph: &SystemGraph) -> StorageHealth {
-        let devices_with_capacity = self
+        let devices_reporting_capacity = self
             .block_devices
             .iter()
             .filter(|id| {
@@ -205,7 +205,7 @@ impl StorageSpecialist {
             })
             .count();
         StorageHealth {
-            devices_with_capacity,
+            devices_reporting_capacity,
             block_devices: self.block_devices.len(),
             filesystems_with_backing,
             filesystems: self.filesystems.len(),
@@ -249,8 +249,8 @@ impl StorageSpecialist {
         let mut metrics = HashMap::new();
         metrics.insert("block_devices".into(), health.block_devices.to_string());
         metrics.insert(
-            "devices_with_capacity".into(),
-            health.devices_with_capacity.to_string(),
+            "devices_reporting_capacity".into(),
+            health.devices_reporting_capacity.to_string(),
         );
         metrics.insert("filesystems".into(), health.filesystems.to_string());
         metrics.insert(
@@ -258,15 +258,61 @@ impl StorageSpecialist {
             health.filesystems_with_backing.to_string(),
         );
         metrics.insert("degraded".into(), health.degraded.to_string());
-        metrics.insert("resources".into(), resources.iter().map(|id| id.0.clone()).collect::<Vec<_>>().join(","));
-        for id in resources.iter().take(8) {
+
+        const ROW_KEYS: &[&str] = &[
+            "size_bytes",
+            "read_only",
+            "removable",
+            "reads",
+            "read_sectors",
+            "writes",
+            "write_sectors",
+            "in_flight",
+            "io_ticks",
+            "time_in_queue",
+            "rotational",
+            "scheduler",
+            "logical_block_size",
+            "physical_block_size",
+        ];
+        for (i, id) in self.block_devices.iter().take(12).enumerate() {
             if let Some(node) = graph.get_node(id) {
-                metrics.insert(format!("state:{id}"), format!("{:?}", node.health));
-                if let Some(size) = node.attributes.get("size_bytes") {
-                    metrics.insert(format!("size_bytes:{id}"), size.clone());
+                let mut fields: Vec<String> = Vec::new();
+                if let Some(name) = id.0.strip_prefix("device:") {
+                    fields.push(format!("device={name}"));
                 }
+                for key in ROW_KEYS {
+                    if let Some(value) = node.attributes.get(*key) {
+                        fields.push(format!("{key}={value}"));
+                    }
+                }
+                metrics.insert(format!("disk_{i}"), fields.join(" "));
             }
         }
+
+        const FS_ROW_KEYS: &[&str] = &[
+            "fstype",
+            "mount",
+            "device",
+            "options",
+            "read_only",
+            "usage_total_kb",
+            "usage_used_kb",
+            "usage_available_kb",
+            "usage_used_percent",
+        ];
+        for (i, id) in self.filesystems.iter().take(12).enumerate() {
+            if let Some(node) = graph.get_node(id) {
+                let mut fields: Vec<String> = Vec::new();
+                for key in FS_ROW_KEYS {
+                    if let Some(value) = node.attributes.get(*key) {
+                        fields.push(format!("{key}={value}"));
+                    }
+                }
+                metrics.insert(format!("fs_{i}"), fields.join(" "));
+            }
+        }
+
         ok(
             crate::protocol::ToolData::DeviceState {
                 state: crate::capability::ResourceState::Available,
@@ -287,10 +333,10 @@ impl StorageSpecialist {
         let health = self.health(graph);
         let mut findings: Vec<String> = Vec::new();
         let mut confidence: f64 = 0.5;
-        if health.devices_with_capacity < health.block_devices {
+        if health.devices_reporting_capacity < health.block_devices {
             findings.push(format!(
                 "STORAGE-001: {} of {} block devices lack capacity evidence (present but not confirmed readable)",
-                health.block_devices - health.devices_with_capacity,
+                health.block_devices - health.devices_reporting_capacity,
                 health.block_devices
             ));
             confidence = 0.7;
@@ -393,6 +439,16 @@ mod tests {
         let mut nvme = node("device:nvme0n1", NodeType::Device);
         nvme.label = "block device nvme0n1".into();
         nvme.attributes.insert("size_bytes".into(), "500107862016".into());
+        nvme.attributes.insert("reads".into(), "1284416".into());
+        nvme.attributes.insert("writes".into(), "1717812".into());
+        nvme.attributes.insert("read_sectors".into(), "22558160".into());
+        nvme.attributes.insert("write_sectors".into(), "85627488".into());
+        nvme.attributes.insert("io_ticks".into(), "284136".into());
+        nvme.attributes.insert("rotational".into(), "0".into());
+        nvme.attributes.insert("scheduler".into(), "[mq-deadline] none".into());
+        nvme.attributes.insert("logical_block_size".into(), "512".into());
+        nvme.attributes.insert("physical_block_size".into(), "4096".into());
+        nvme.attributes.insert("read_only".into(), "false".into());
         graph.add_node(nvme).unwrap();
         let mut sda = node("device:sda", NodeType::Device);
         sda.label = "block device sda".into();
@@ -400,9 +456,19 @@ mod tests {
         let mut fs = node("fs:ext4-", NodeType::Filesystem);
         fs.label = "ext4 mounted at /".into();
         fs.attributes.insert("device".into(), "/dev/nvme0n1p2".into());
+        fs.attributes.insert("fstype".into(), "ext4".into());
+        fs.attributes.insert("mount".into(), "/".into());
+        fs.attributes.insert("options".into(), "rw,relatime".into());
+        fs.attributes.insert("read_only".into(), "false".into());
+        fs.attributes.insert("usage_total_kb".into(), "488386496".into());
+        fs.attributes.insert("usage_used_kb".into(), "205122328".into());
+        fs.attributes.insert("usage_available_kb".into(), "258537064".into());
+        fs.attributes.insert("usage_used_percent".into(), "42".into());
         graph.add_node(fs).unwrap();
         let mut tmp = node("fs:tmpfs-devmapper", NodeType::Filesystem);
         tmp.label = "xfs mounted at /var".into();
+        tmp.attributes.insert("fstype".into(), "xfs".into());
+        tmp.attributes.insert("mount".into(), "/var".into());
         graph.add_node(tmp).unwrap();
         graph
     }
@@ -496,7 +562,7 @@ mod tests {
         let specialist = StorageSpecialist::instantiate(&mut graph).unwrap();
         let health = specialist.health(&graph);
         assert_eq!(health.block_devices, 2);
-        assert_eq!(health.devices_with_capacity, 1);
+        assert_eq!(health.devices_reporting_capacity, 1);
         assert_eq!(health.filesystems, 2);
         assert_eq!(health.filesystems_with_backing, 1);
     }
@@ -515,9 +581,64 @@ mod tests {
                 );
                 assert_eq!(metrics.get("filesystems").map(|v| v.as_str()), Some("2"));
                 assert_eq!(metrics.get("degraded").map(|v| v.as_str()), Some("0"));
+                assert_eq!(
+                    metrics.get("devices_reporting_capacity").map(|v| v.as_str()),
+                    Some("1")
+                );
+                let disk0 = metrics.get("disk_0").expect("disk_0 row");
+                assert!(disk0.contains("device=nvme0n1"), "{disk0}");
+                assert!(disk0.contains("reads=1284416"), "{disk0}");
+                assert!(disk0.contains("writes=1717812"), "{disk0}");
+                assert!(disk0.contains("rotational=0"), "{disk0}");
+                let fs0 = metrics.get("fs_0").expect("fs_0 row");
+                assert!(fs0.contains("fstype=ext4"), "{fs0}");
+                assert!(fs0.contains("mount=/"), "{fs0}");
+                assert!(fs0.contains("usage_used_percent=42"), "{fs0}");
+                assert!(metrics.contains_key("fs_1"));
+                assert!(!metrics.iter().any(|(k, _)| k.starts_with("state:") || k.starts_with("resources")),
+                    "observe must not emit the old resources blob or state:<id> rows");
             }
             other => panic!("expected DeviceState, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn observe_implements_the_storage_tool_claim() {
+        let mut graph = storage_graph();
+        let specialist = StorageSpecialist::instantiate(&mut graph).unwrap();
+        let result = specialist.observe(&graph, "all");
+        let metrics = match result.data.as_ref().unwrap() {
+            crate::protocol::ToolData::DeviceState { metrics, .. } => metrics,
+            _ => panic!("expected device state"),
+        };
+        let disk0 = metrics.get("disk_0").cloned().unwrap_or_default();
+        let fs0 = metrics.get("fs_0").cloned().unwrap_or_default();
+        let claim = crate::tools::STORAGE_TOOL_CLAIM;
+        for (capability, needle) in [
+            ("reads", "reads="),
+            ("writes", "writes="),
+            ("sector", "read_sectors="),
+            ("latency", "io_ticks="),
+            ("rotational", "rotational="),
+            ("scheduler", "scheduler="),
+            ("block size", "logical_block_size="),
+            ("usage", "usage_used_percent="),
+            ("read-only", "read_only="),
+            ("options", "options="),
+        ] {
+            assert!(
+                claim.contains(capability),
+                "tool claim must mention {capability}: {claim}"
+            );
+            assert!(
+                disk0.contains(needle) || fs0.contains(needle),
+                "claim advertises {capability} but observe emits no {needle} row field"
+            );
+        }
+        assert!(
+            disk0.contains("device=nvme0n1") && fs0.contains("fstype=ext4"),
+            "disk_0/fs_0 rows must name their resource"
+        );
     }
 
     #[test]

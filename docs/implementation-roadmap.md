@@ -550,6 +550,22 @@ state. 256 tests pass. Files/Data child and any mutating storage operations
 (partitioning, formatting, reset) are deferred per ADR-0001 (v0.1 is
 filesystem/service-level only).
 
+**Progress note (2026-08-14, storage depth):** storage `observe_storage`
+follows the specialist depth plan (docs/specialist-depth-plan.md). `aios::discovery`
+now reads `/sys/block/<n>/stat` (reads, read_sectors, write_sectors, writes,
+io_ticks, in_flight, time_in_queue) and `queue/*` (rotational, scheduler,
+logical/physical block size) into device attributes, and parses the options
+field of `/proc/mounts` — a `ro` mount degrades its filesystem, an error
+filesystem degrades too. Per-filesystem usage (total, used, available, used
+percent) comes from a bounded `statvfs` collector, gated on the live root so
+hermetic discovery tests stay stable. `observe` replaces the `resources` blob
+and `state:<id>` Debug strings with typed `disk_N` and `fs_N` rows; the
+`devices_with_capacity` counter is renamed `devices_reporting_capacity` to
+match the other domains. The storage tool claim advertises the new evidence
+and a claims-vs-implementation test pins each claim to an emitted row field.
+366 tests pass. I/O rate deltas wait on the shared window-sampling util
+(Phase 0.4), which lands with the network pass.
+
 **Progress note (2026-08-12, network):** the Network umbrella specialist
 follows the same pattern (`aios::network`, docs/modules/network.md). It
 discovers the wired/LAN interfaces (`device:net-*` excluding wireless) and

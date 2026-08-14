@@ -38,6 +38,18 @@ a privileged specialist.
 | `observe_storage` | 0 | Read capacity, health, and cross-layer state |
 | `diagnose_fault` | 0 | Compare observations with storage invariants |
 
+`observe_storage` (target `all` for the whole domain) reports `disk_N` rows
+per block device — reads/writes, sector and latency counters from
+`/sys/block/<n>/stat`, plus rotational, scheduler, and logical/physical block
+size from `queue/*` — and `fs_N` rows per mounted filesystem: fstype, mount,
+backing device, mount options, read-only state, and statvfs usage (total,
+used, available, used percent). A `ro` mount or an error filesystem is
+reported as Degraded and counts against `degraded`. Per-filesystem usage is
+gated on the live root, so hermetic discovery tests never touch real mounts.
+I/O rate deltas (reads/sec, writes/sec) are deferred to the shared
+window-sampling util that lands with the network pass; observe emits
+cumulative counters only.
+
 v0.1 is read-only. Mutating operations (partitioning, formatting, device
 reset) are deferred to a later iteration and will require a specific
 operation with a defined risk level, passing through the action state machine

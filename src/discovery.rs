@@ -798,6 +798,21 @@ impl SysfsDiscovery {
                     attrs.insert(key.into(), v.trim().to_string());
                 }
             }
+            if let Some(stat) = self.read_optional(root, &format!("{base}/stat")) {
+                for (key, value) in parse_diskstat(&stat) {
+                    attrs.insert(key, value.to_string());
+                }
+            }
+            for (key, file) in [
+                ("rotational", "queue/rotational"),
+                ("scheduler", "queue/scheduler"),
+                ("logical_block_size", "queue/logical_block_size"),
+                ("physical_block_size", "queue/physical_block_size"),
+            ] {
+                if let Some(v) = self.read_optional(root, &format!("{base}/{file}")) {
+                    attrs.insert(key.into(), v.trim().to_string());
+                }
+            }
             let id = NodeId(format!("device:{name}"));
             self.add_node(
                 graph,
@@ -850,6 +865,25 @@ impl SysfsDiscovery {
             if !device.is_empty() {
                 attrs.insert("device".into(), device.to_string());
             }
+            attrs.insert("fstype".into(), fstype.to_string());
+            attrs.insert("mount".into(), mountpoint.to_string());
+            let options = fields.next().unwrap_or("").to_string();
+            if !options.is_empty() {
+                attrs.insert("options".into(), options.clone());
+                attrs.insert(
+                    "read_only".into(),
+                    options.split(',').any(|opt| opt == "ro").to_string(),
+                );
+            }
+            if root == Path::new("/")
+                && let Some((total, used, available, used_percent)) =
+                    filesystem_usage(Path::new(mountpoint))
+            {
+                attrs.insert("usage_total_kb".into(), format!("{}", total / 1024));
+                attrs.insert("usage_used_kb".into(), format!("{}", used / 1024));
+                attrs.insert("usage_available_kb".into(), format!("{}", available / 1024));
+                attrs.insert("usage_used_percent".into(), format!("{used_percent}"));
+            }
             let id = NodeId(format!("fs:{fstype}-{slug}"));
             self.add_node(
                 graph,
@@ -861,7 +895,12 @@ impl SysfsDiscovery {
                 expires,
                 attrs,
             );
-            graph.update_health(&id, HealthState::Healthy);
+            let health = if options.split(',').any(|opt| opt == "ro") {
+                HealthState::Degraded
+            } else {
+                HealthState::Healthy
+            };
+            graph.update_health(&id, health);
         }
         Ok(())
     }
@@ -1095,8 +1134,64 @@ fn parse_vmstat(data: &str) -> HashMap<String, String> {
         };
         if VMSTAT_KEYS.contains(&key) && let Some(value) = fields.next() {
             out.insert(key.to_string(), value.to_string());
-        }    }
+        }
+    }
     out
+}
+
+/// The `/sys/block/<n>/stat` counters we keep. The file is eleven
+/// space-separated counters: reads, read_sectors, read_ticks, writes,
+/// write_sectors, write_ticks, in_flight, io_ticks, time_in_queue, then
+/// discard counters that are mostly zero on desktop hardware.
+const DISKSTAT_KEYS: [&str; 9] = [
+    "reads",
+    "read_sectors",
+    "read_ticks",
+    "writes",
+    "write_sectors",
+    "write_ticks",
+    "in_flight",
+    "io_ticks",
+    "time_in_queue",
+];
+
+fn parse_diskstat(data: &str) -> HashMap<String, u64> {
+    let fields: Vec<u64> = data
+        .split_whitespace()
+        .filter_map(|f| f.parse().ok())
+        .collect();
+    let mut out = HashMap::new();
+    for (i, key) in DISKSTAT_KEYS.iter().enumerate() {
+        if let Some(value) = fields.get(i) {
+            out.insert((*key).to_string(), *value);
+        }
+    }
+    out
+}
+
+/// Bounded statvfs collector: total, used, and available bytes for a mounted
+/// filesystem, plus the used fraction as a whole percent. Returns `None` when
+/// the path cannot be statvfs'd (unavailable mounts, permission issues).
+fn filesystem_usage(path: &Path) -> Option<(u64, u64, u64, u64)> {
+    use std::os::raw::c_char;
+    let mut buf: libc::statvfs = unsafe { std::mem::zeroed() };
+    let cpath = std::ffi::CString::new(path.to_str()?).ok()?;
+    if unsafe { libc::statvfs(cpath.as_ptr() as *const c_char, &mut buf) } != 0 {
+        return None;
+    }
+    let block = buf.f_bsize as u64;
+    let total = buf.f_blocks.saturating_mul(block);
+    let available = buf.f_bavail.saturating_mul(block);
+    let used = total.saturating_sub(buf.f_bfree.saturating_mul(block));
+    let used_percent = if total == 0 {
+        0
+    } else {
+        used
+            .saturating_mul(100)
+            .checked_div(total)
+            .unwrap_or(100)
+    };
+    Some((total, used, available, used_percent))
 }
 
 pub struct ServiceDiscovery {
@@ -1283,7 +1378,7 @@ mod tests {
         );
         write(
             &root.join("proc/mounts"),
-            "/dev/nvme0n1p2 / ext4 rw,relatime 0 0\n/dev/nvme0n1p1 /boot vfat rw 0 0\n",
+            "/dev/nvme0n1p2 / ext4 rw,relatime 0 0\n/dev/nvme0n1p1 /boot vfat rw 0 0\n/dev/nvme0n1p3 /media/backup btrfs ro,relatime 0 0\n",
         );
         write(&root.join("sys/class/net/wlan0/address"), "aa:bb:cc:dd:ee:ff\n");
         write(&root.join("sys/class/net/wlan0/mtu"), "1500\n");
@@ -1297,6 +1392,21 @@ mod tests {
         write(&root.join("sys/class/block/nvme0/size"), "1000215216\n");
         write(&root.join("sys/class/block/nvme0/ro"), "0\n");
         write(&root.join("sys/class/block/nvme0/removable"), "0\n");
+        write(
+            &root.join("sys/class/block/nvme0/stat"),
+            "1284416 152332 22558160 39320 1717812 1324031 85627488 284136 0 171912 323456\n",
+        );
+        fs::create_dir_all(root.join("sys/class/block/nvme0/queue")).unwrap();
+        write(&root.join("sys/class/block/nvme0/queue/rotational"), "0\n");
+        write(
+            &root.join("sys/class/block/nvme0/queue/scheduler"),
+            "[mq-deadline] none\n",
+        );
+        write(&root.join("sys/class/block/nvme0/queue/logical_block_size"), "512\n");
+        write(
+            &root.join("sys/class/block/nvme0/queue/physical_block_size"),
+            "4096\n",
+        );
         fs::create_dir_all(root.join("sys/devices/pci-drivers/nvme")).unwrap();
         fs::create_dir_all(root.join("sys/class/block/nvme0/device")).unwrap();
         std::os::unix::fs::symlink(
