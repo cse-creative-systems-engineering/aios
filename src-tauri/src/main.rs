@@ -9,11 +9,15 @@ use gtk_layer_shell::{Edge, Layer, LayerShell};
 use serde::Serialize;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
+#[cfg(target_os = "linux")]
+use tauri::AppHandle;
 use tauri::{LogicalPosition, Manager, Position};
+#[cfg(target_os = "linux")]
+use x11rb::CURRENT_TIME;
 #[cfg(target_os = "linux")]
 use x11rb::connection::Connection;
 #[cfg(target_os = "linux")]
-use x11rb::protocol::xproto::{ConnectionExt, PropMode, Window};
+use x11rb::protocol::xproto::{AtomEnum, ConnectionExt, InputFocus, PropMode, Window};
 #[cfg(target_os = "linux")]
 use x11rb::wrapper::ConnectionExt as WrapperConnectionExt;
 
@@ -70,6 +74,39 @@ enum UiWidget {
         title: String,
         body: String,
     },
+}
+
+#[tauri::command]
+fn focus_sidebar(app: AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window("sidebar")
+        .ok_or_else(|| "sidebar window is unavailable".to_string())?;
+    let _ = window.set_focus();
+
+    #[cfg(target_os = "linux")]
+    {
+        let gtk_window = window
+            .gtk_window()
+            .map_err(|_| "native sidebar window is unavailable".to_string())?;
+        let gdk_window = gtk_window
+            .window()
+            .ok_or_else(|| "sidebar has no native surface".to_string())?;
+        let x11_window = gdk_window
+            .downcast_ref::<gdkx11::X11Window>()
+            .ok_or_else(|| "sidebar is not using X11".to_string())?;
+        let (connection, _) =
+            x11rb::connect(None).map_err(|error| format!("cannot connect to X11: {error}"))?;
+        connection
+            .set_input_focus(InputFocus::PARENT, x11_window.xid() as Window, CURRENT_TIME)
+            .map_err(|error| format!("cannot focus sidebar: {error}"))?
+            .check()
+            .map_err(|error| format!("X11 rejected sidebar focus: {error}"))?;
+        connection
+            .flush()
+            .map_err(|error| format!("cannot flush sidebar focus: {error}"))?;
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -224,7 +261,11 @@ fn main() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![backend_status, submit_prompt])
+        .invoke_handler(tauri::generate_handler![
+            backend_status,
+            focus_sidebar,
+            submit_prompt
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri app");
 }
@@ -245,9 +286,7 @@ fn compile_widgets(evidence: &[ToolResult]) -> Vec<UiWidget> {
 #[cfg(target_os = "linux")]
 fn prepare_x11_dock_window(window: &tauri::WebviewWindow) {
     if let Ok(gtk_window) = window.gtk_window() {
-        // Keep the sidebar interactive. The reserved strut below provides
-        // dock semantics without using the X11 Dock type, which some window
-        // managers intentionally exclude from keyboard focus.
+        gtk_window.set_type_hint(gdk::WindowTypeHint::Dock);
         gtk_window.set_skip_taskbar_hint(true);
         gtk_window.set_accept_focus(true);
         gtk_window.set_focus_on_map(true);
@@ -286,6 +325,22 @@ fn configure_x11_dock(window: &tauri::WebviewWindow) {
     };
     let xid: Window = x11_window.xid() as Window;
 
+    let Ok(dock_cookie) = connection.intern_atom(false, b"_NET_WM_WINDOW_TYPE_DOCK") else {
+        eprintln!("Aios sidebar: cannot resolve _NET_WM_WINDOW_TYPE_DOCK");
+        return;
+    };
+    let Ok(dock_atom) = dock_cookie.reply() else {
+        eprintln!("Aios sidebar: cannot read _NET_WM_WINDOW_TYPE_DOCK");
+        return;
+    };
+    let Ok(window_type_cookie) = connection.intern_atom(false, b"_NET_WM_WINDOW_TYPE") else {
+        eprintln!("Aios sidebar: cannot resolve _NET_WM_WINDOW_TYPE");
+        return;
+    };
+    let Ok(window_type_atom) = window_type_cookie.reply() else {
+        eprintln!("Aios sidebar: cannot read _NET_WM_WINDOW_TYPE");
+        return;
+    };
     let Ok(strut_cookie) = connection.intern_atom(false, b"_NET_WM_STRUT_PARTIAL") else {
         eprintln!("Aios sidebar: cannot resolve _NET_WM_STRUT_PARTIAL");
         return;
@@ -316,6 +371,13 @@ fn configure_x11_dock(window: &tauri::WebviewWindow) {
     let end_y = start_y.saturating_add(height).saturating_sub(1);
     let strut = [420_u32, 0, 0, 0, start_y, end_y, 0, 0, 0, 0, 0, 0];
 
+    let _ = connection.change_property32(
+        PropMode::REPLACE,
+        xid,
+        window_type_atom.atom,
+        AtomEnum::ATOM,
+        &[dock_atom.atom],
+    );
     let _ = connection.change_property32(
         PropMode::REPLACE,
         xid,
