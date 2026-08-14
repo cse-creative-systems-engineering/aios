@@ -26,6 +26,9 @@ function render(): void {
   root.innerHTML = isCanvasWindow ? renderCanvas() : renderSidebar();
   if (!isCanvasWindow) {
     document.querySelector<HTMLFormElement>('#prompt-form')?.addEventListener('submit', submitPrompt);
+    document.querySelector<HTMLTextAreaElement>('#prompt')?.addEventListener('pointerdown', () => {
+      void currentWindow.setFocus();
+    });
   } else {
     document.querySelectorAll<HTMLButtonElement>('[data-dock]').forEach((button) => {
       button.addEventListener('click', () => void dockPanel(button.dataset.dock as DockEdge));

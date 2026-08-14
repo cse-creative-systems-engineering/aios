@@ -13,7 +13,7 @@ use tauri::{LogicalPosition, Manager, Position};
 #[cfg(target_os = "linux")]
 use x11rb::connection::Connection;
 #[cfg(target_os = "linux")]
-use x11rb::protocol::xproto::{AtomEnum, ConnectionExt, PropMode, Window};
+use x11rb::protocol::xproto::{ConnectionExt, PropMode, Window};
 #[cfg(target_os = "linux")]
 use x11rb::wrapper::ConnectionExt as WrapperConnectionExt;
 
@@ -245,7 +245,9 @@ fn compile_widgets(evidence: &[ToolResult]) -> Vec<UiWidget> {
 #[cfg(target_os = "linux")]
 fn prepare_x11_dock_window(window: &tauri::WebviewWindow) {
     if let Ok(gtk_window) = window.gtk_window() {
-        gtk_window.set_type_hint(gdk::WindowTypeHint::Dock);
+        // Keep the sidebar interactive. The reserved strut below provides
+        // dock semantics without using the X11 Dock type, which some window
+        // managers intentionally exclude from keyboard focus.
         gtk_window.set_skip_taskbar_hint(true);
         gtk_window.set_accept_focus(true);
         gtk_window.set_focus_on_map(true);
@@ -284,22 +286,6 @@ fn configure_x11_dock(window: &tauri::WebviewWindow) {
     };
     let xid: Window = x11_window.xid() as Window;
 
-    let Ok(dock_cookie) = connection.intern_atom(false, b"_NET_WM_WINDOW_TYPE_DOCK") else {
-        eprintln!("Aios sidebar: cannot resolve _NET_WM_WINDOW_TYPE_DOCK");
-        return;
-    };
-    let Ok(dock_atom) = dock_cookie.reply() else {
-        eprintln!("Aios sidebar: cannot read _NET_WM_WINDOW_TYPE_DOCK");
-        return;
-    };
-    let Ok(window_type_cookie) = connection.intern_atom(false, b"_NET_WM_WINDOW_TYPE") else {
-        eprintln!("Aios sidebar: cannot resolve _NET_WM_WINDOW_TYPE");
-        return;
-    };
-    let Ok(window_type_atom) = window_type_cookie.reply() else {
-        eprintln!("Aios sidebar: cannot read _NET_WM_WINDOW_TYPE");
-        return;
-    };
     let Ok(strut_cookie) = connection.intern_atom(false, b"_NET_WM_STRUT_PARTIAL") else {
         eprintln!("Aios sidebar: cannot resolve _NET_WM_STRUT_PARTIAL");
         return;
@@ -330,13 +316,6 @@ fn configure_x11_dock(window: &tauri::WebviewWindow) {
     let end_y = start_y.saturating_add(height).saturating_sub(1);
     let strut = [420_u32, 0, 0, 0, start_y, end_y, 0, 0, 0, 0, 0, 0];
 
-    let _ = connection.change_property32(
-        PropMode::REPLACE,
-        xid,
-        window_type_atom.atom,
-        AtomEnum::ATOM,
-        &[dock_atom.atom],
-    );
     let _ = connection.change_property32(
         PropMode::REPLACE,
         xid,

@@ -24,6 +24,8 @@
         "decorations": false,
         "skipTaskbar": true,
         "alwaysOnTop": true,
+        "focus": true,
+        "focusable": true,
         "visible": false
       },
       {
