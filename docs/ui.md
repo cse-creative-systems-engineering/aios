@@ -105,9 +105,11 @@ The v0.1 UI consists of a persistent sidebar plus on-demand floating panels:
    floating result panels are open.
 
 2. **Floating result panels** — separate desktop windows created when Aios
-   has a response and validated evidence to display. A panel is a
-   self-contained generative-UI composition, disconnected from the sidebar.
-   It can float freely or dock to the left, right, top, or bottom desktop edge;
+   has a response and validated evidence to display. A panel is a dynamic
+   generative surface, not a fixed dashboard: its widget types, arrangement,
+   density, and visual emphasis change according to the user's request and the
+   evidence returned by specialists. It is disconnected from the sidebar. It
+   can float freely or dock to the left, right, top, or bottom desktop edge;
    docking never changes the sidebar's chat-only role. Panels can be resized,
    minimized, and closed by the user. No panel can execute tools or create
    authority; all input continues through the conversational/backend path.
@@ -134,11 +136,28 @@ surface.
   or clicks the send button. The prompt is sent to the planner, which
   routes it through the broker and specialist tools.
 
-### Generative UI stack
+### Dynamic generative surface
+
+A request such as “show me the important system specs” is an example intent,
+not a request for a permanent dashboard product. Aios first gathers the
+relevant current evidence through the conversational planner, broker, and
+specialists. The returned evidence then determines the surface composition.
+
+A storage investigation may produce charts and capacity cards; a thermal
+investigation may produce sensor gauges and stale-data notices; a process
+investigation may produce ranked status lists and utilization metrics. There is
+no universal fixed panel layout and no requirement that every surface contain
+the same widgets.
+
+The model chooses a composition from the closed widget vocabulary after
+specialist evidence exists. It may choose arrangement and presentation, but it
+cannot invent measurements, create widget types, execute actions, or emit raw
+frontend code. The compiled surface must visibly represent missing, stale, or
+unavailable evidence.
 
 The canvas uses a structured JSON schema approach — the LLM never streams raw
 UI code. Instead, it outputs JSON matching a predefined widget enum, which the
-Rust frontend maps to compiled Dioxus/Leptos components.
+Rust frontend maps to compiled components.
 
 **Stack:**
 - **Tauri v2** — desktop shell (native Ubuntu windowing, system-tray, IPC)
