@@ -870,8 +870,10 @@ impl SysfsDiscovery {
     }
 
     /// Discover running processes from `/proc`. Each numeric directory is a
-    /// process; `comm` gives the name, `stat` the state, and `status` the
-    /// memory usage. The processes specialist owns the `process:*` nodes.
+    /// process; `comm` gives the name, `stat` the state plus the utime/stime
+    /// tick counters, `status` the memory usage, and `cmdline` the full
+    /// command line. The state char drives the node health. The processes
+    /// specialist owns the `process:*` nodes.
     fn discover_processes(
         &self,
         root: &Path,
@@ -894,14 +896,32 @@ impl SysfsDiscovery {
             let mut attrs = HashMap::new();
             attrs.insert("pid".into(), pid.to_string());
             attrs.insert("comm".into(), comm.clone());
+            let mut stat_state: Option<char> = None;
             if let Some(stat) = self.read_optional(root, &format!("{base}/stat")) {
-                // stat field 3 (after pid and comm in parens) is the state.
+                // stat field 3 (after pid and comm in parens) is the state;
+                // utime/stime are the 12th and 13th fields after the paren.
                 if let Some(open) = stat.rfind(')') {
-                    let rest = &stat[open + 1..];
-                    let state = rest.split_whitespace().next().unwrap_or_default();
-                    if !state.is_empty() {
-                        attrs.insert("state".into(), state.to_string());
+                    let rest: Vec<&str> = stat[open + 1..].split_whitespace().collect();
+                    if let Some(state) = rest.first().filter(|s| !s.is_empty()) {
+                        attrs.insert("state".into(), (*state).to_string());
+                        stat_state = state.chars().next();
                     }
+                    if rest.len() >= 13 {
+                        attrs.insert("cpu_utime_ticks".into(), rest[11].to_string());
+                        attrs.insert("cpu_stime_ticks".into(), rest[12].to_string());
+                    }
+                }
+            }
+            if let Some(cmdline) = self.read_optional(root, &format!("{base}/cmdline")) {
+                let joined = cmdline
+                    .split('\0')
+                    .filter(|part| !part.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if !joined.is_empty() {
+                    let mut truncated = joined;
+                    truncated.truncate(256);
+                    attrs.insert("cmdline".into(), truncated);
                 }
             }
             if let Some(status) = self.read_optional(root, &format!("{base}/status")) {
@@ -927,7 +947,7 @@ impl SysfsDiscovery {
             let id = NodeId(format!("process:{pid}"));
             self.add_node(
                 graph,
-                id,
+                id.clone(),
                 NodeType::Process,
                 format!("process {pid} ({comm})"),
                 None,
@@ -935,8 +955,27 @@ impl SysfsDiscovery {
                 expires,
                 attrs,
             );
+            let Some(state) = stat_state else {
+                continue;
+            };
+            let Some(mut node) = graph.get_node(&id) else {
+                continue;
+            };
+            node.health = process_health(state);
+            graph.upsert_node(node);
         }
         Ok(())
+    }
+}
+
+/// Map a `/proc` process state char to a node health: running, sleeping, and
+/// idle are healthy; disk-wait, zombie, and stopped are degraded; anything
+/// else stays unknown because discovery cannot confirm it.
+fn process_health(state: char) -> HealthState {
+    match state {
+        'R' | 'S' | 'I' => HealthState::Healthy,
+        'D' | 'Z' | 'T' | 't' | 'X' | 'x' => HealthState::Degraded,
+        _ => HealthState::Unknown,
     }
 }
 
@@ -1343,6 +1382,44 @@ mod tests {
                 .count(),
             0
         );
+    }
+
+    #[test]
+    fn process_nodes_parse_ticks_cmdline_and_health() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        write(&root.join("proc/123/comm"), "aios\n");
+        write(
+            &root.join("proc/123/stat"),
+            "123 (aios worker) S 1 2 3 4 5 6 7 8 9 10 111 222 333 444\n",
+        );
+        write(
+            &root.join("proc/123/status"),
+            "Name:\taios\nState:\tS (sleeping)\nVmRSS:\t    123456 kB\n",
+        );
+        write(&root.join("proc/123/cmdline"), "aios\0serve\0--debug\0");
+        // A zombie process must report degraded health.
+        write(&root.join("proc/9/comm"), "kworker\n");
+        write(
+            &root.join("proc/9/stat"),
+            "9 (kworker) Z 1 2 3 4 5 6 7 8 9 10 0 0 0 0\n",
+        );
+
+        let graph = discovery(root).scan().unwrap();
+
+        let aios = graph.get_node(&NodeId("process:123".into())).unwrap();
+        assert_eq!(aios.attributes.get("cpu_utime_ticks").unwrap(), "111");
+        assert_eq!(aios.attributes.get("cpu_stime_ticks").unwrap(), "222");
+        assert_eq!(
+            aios.attributes.get("cmdline").unwrap(),
+            "aios serve --debug"
+        );
+        assert_eq!(aios.attributes.get("rss_kb").unwrap(), "123456");
+        assert_eq!(aios.attributes.get("state").unwrap(), "S");
+        assert_eq!(aios.health, HealthState::Healthy);
+
+        let zombie = graph.get_node(&NodeId("process:9".into())).unwrap();
+        assert_eq!(zombie.health, HealthState::Degraded);
     }
 
     #[test]

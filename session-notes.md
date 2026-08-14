@@ -202,8 +202,8 @@ an invented privileged package.
 - **M4** Dual-Agent Orchestration — ✅ (config + HttpBackend, shell, read-only tools)
 - **M5** Transactions and Staging — ✅ (checkpoints, approval, crash recovery)
 - **M6** First Hardware Specialist (Wi-Fi) — ✅ (vertical slice, driver control)
-- **M7** Additional Specialists — **In progress** (Storage, Network, Drivers, Graphics, Memory, Power/thermal, Security/identity, Processes, Packages, Boot/Recovery specialists)
-- **M8** System State Panel — ✅ terminal panel; full UI tracked in docs/ui.md
+- **M7** Additional Specialists — ✅ (Storage, Network, Drivers, Graphics, Memory, Power/thermal, Security/identity, Processes, Packages, Boot/Recovery, all wired read-only through the broker)
+- **M8** System State Panel — ✅ terminal panel + resident docked UI (sidebar/canvas, layer-shell dock); dynamic generative surface pending (docs/m8-ui-repair-plan.md)
 
 ---
 

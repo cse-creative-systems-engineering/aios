@@ -8,7 +8,8 @@
 //! isolation.
 //!
 //! Discovery represents the process domain as `process:<pid>` nodes
-//! (NodeType::Process) with `pid`, `comm`, `state`, and `rss_kb` attributes
+//! (NodeType::Process) with `pid`, `comm`, `state`, `rss_kb`,
+//! `cpu_utime_ticks`, `cpu_stime_ticks`, and `cmdline` attributes
 //! (src/discovery.rs `discover_processes`). The specialist owns those nodes
 //! via `owns` edges. Invariants PROC-001 (processes are present and report
 //! resource usage) is evaluated from graph evidence; missing evidence is
@@ -38,17 +39,135 @@ fn cpu_sample() -> Option<(u64, u64)> {
     Some((total, idle))
 }
 
-fn cpu_utilization() -> Option<f64> {
-    let first = cpu_sample()?;
-    std::thread::sleep(std::time::Duration::from_millis(100));
-    let second = cpu_sample()?;
-    let total_delta = second.0.checked_sub(first.0)?;
-    let idle_delta = second.1.checked_sub(first.1)?;
-    if total_delta == 0 || idle_delta > total_delta {
+fn cpu_cores() -> Option<usize> {
+    let contents = std::fs::read_to_string("/proc/stat").ok()?;
+    Some(
+        contents
+            .lines()
+            .filter(|line| line.starts_with("cpu") && !line.starts_with("cpu "))
+            .count(),
+    )
+}
+
+/// Parse the utime/stime tick counters from a `/proc/<pid>/stat` line. Fields
+/// after the `)` that closes the comm field: state ppid pgrp session tty_nr
+/// tpgid flags minflt cminflt majflt cmajflt utime stime.
+fn parse_ticks(stat: &str) -> Option<(u64, u64)> {
+    let open = stat.rfind(')')?;
+    let rest: Vec<&str> = stat[open + 1..].split_whitespace().collect();
+    if rest.len() < 13 {
         return None;
     }
-    Some((total_delta - idle_delta) as f64 * 100.0 / total_delta as f64)
+    Some((rest[11].parse().ok()?, rest[12].parse().ok()?))
 }
+
+fn process_cpu_sample(pid: u32) -> Option<(u64, u64)> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    parse_ticks(&stat)
+}
+
+/// A windowed view of system and per-process CPU ticks.
+struct TickSnapshot {
+    system_total: u64,
+    system_idle: u64,
+    cores: usize,
+    processes: HashMap<String, (u32, u64)>,
+}
+
+fn tick_snapshot(resources: &[NodeId]) -> Option<TickSnapshot> {
+    let (system_total, system_idle) = cpu_sample()?;
+    let cores = cpu_cores().unwrap_or(1);
+    let mut processes = HashMap::new();
+    for id in resources {
+        let Some(pid) = id.0.strip_prefix("process:").and_then(|s| s.parse().ok()) else {
+            continue;
+        };
+        if let Some((utime, stime)) = process_cpu_sample(pid) {
+            processes.insert(id.0.clone(), (pid, utime + stime));
+        }
+    }
+    Some(TickSnapshot {
+        system_total,
+        system_idle,
+        cores,
+        processes,
+    })
+}
+
+/// A windowed CPU sample: system utilization, core count, and per-process
+/// CPU percentages keyed by node id as `(pid, cpu_percent)`.
+struct CpuStats {
+    utilization_percent: Option<f64>,
+    cores: Option<usize>,
+    per_process: HashMap<String, (u32, f64)>,
+}
+
+/// Sample system and per-process CPU ticks twice across a short window. A
+/// process percent is its share of the windowed tick delta scaled to the
+/// core count, so a process pegging one core reads ~100.
+fn cpu_stats(resources: &[NodeId]) -> CpuStats {
+    let first = tick_snapshot(resources);
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    let second = tick_snapshot(resources);
+    let (Some(first), Some(second)) = (first, second) else {
+        return CpuStats {
+            utilization_percent: None,
+            cores: None,
+            per_process: HashMap::new(),
+        };
+    };
+    let Some(total_delta) = second.system_total.checked_sub(first.system_total) else {
+        return CpuStats {
+            utilization_percent: None,
+            cores: None,
+            per_process: HashMap::new(),
+        };
+    };
+    let idle_delta = second.system_idle.saturating_sub(first.system_idle);
+    let utilization_percent = if total_delta == 0 || idle_delta > total_delta {
+        None
+    } else {
+        Some((total_delta - idle_delta) as f64 * 100.0 / total_delta as f64)
+    };
+    let cores = first.cores;
+    let mut per_process = HashMap::new();
+    if total_delta > 0 {
+        for (node_id, (pid, start)) in first.processes {
+            let Some((_, end)) = second.processes.get(&node_id) else {
+                continue;
+            };
+            let Some(delta) = end.checked_sub(start) else {
+                continue;
+            };
+            if delta == 0 {
+                continue;
+            }
+            let percent = delta as f64 * cores as f64 * 100.0 / total_delta as f64;
+            per_process.insert(node_id, (pid, percent));
+        }
+    }
+    CpuStats {
+        utilization_percent,
+        cores: Some(cores),
+        per_process,
+    }
+}
+
+fn format_process_row(node: &NodeMetadata, cpu_percent: f64) -> String {
+    let get = |key: &str| node.attributes.get(key).cloned().unwrap_or_default();
+    format!(
+        "pid={} comm={} cpu_percent={cpu_percent:.1} rss_kb={} state={} cmdline={}",
+        get("pid"),
+        get("comm"),
+        get("rss_kb"),
+        get("state"),
+        get("cmdline")
+    )
+}
+
+/// The domain processes specialist `observe` reports at most this many rows
+/// when the target covers the whole domain.
+const TOP_PROCESSES: usize = 8;
 
 /// The process domain: the umbrella specialist and the resources it owns.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -234,43 +353,58 @@ impl ProcessesSpecialist {
 
     /// Bounded observe tool: process, namespace, and resource-usage state for
     /// the target resources (docs/modules/processes.md). Domain-wide when the
-    /// target is empty or `all`.
+    /// target is empty or `all`, reported as the top processes by CPU.
     pub fn observe(&self, graph: &SystemGraph, target: &str) -> crate::protocol::ToolResult {
         let resources = self.resolve_target(target);
         if resources.is_empty() {
             return not_found(target);
         }
         let health = self.health(graph);
+        let stats = cpu_stats(&resources);
         let mut metrics = HashMap::new();
         metrics.insert("process_nodes".into(), health.process_nodes.to_string());
         metrics.insert(
-            "nodes_with_usage".into(),
+            "processes_reporting_rss".into(),
             health.nodes_with_usage.to_string(),
         );
         metrics.insert("degraded".into(), health.degraded.to_string());
-        if let Some(utilization) = cpu_utilization() {
+        if let Some(cores) = stats.cores {
+            metrics.insert("cpu_cores".into(), cores.to_string());
+        }
+        if let Some(utilization) = stats.utilization_percent {
             metrics.insert(
                 "cpu_utilization_percent".into(),
                 format!("{utilization:.1}"),
             );
         }
-        metrics.insert(
-            "resources".into(),
-            resources
-                .iter()
-                .map(|id| id.0.clone())
-                .collect::<Vec<_>>()
-                .join(","),
-        );
-        for id in resources.iter().take(8) {
-            if let Some(node) = graph.get_node(id) {
-                metrics.insert(format!("state:{id}"), format!("{:?}", node.health));
-                if let Some(comm) = node.attributes.get("comm") {
-                    metrics.insert(format!("comm:{id}"), comm.clone());
-                }
-                if let Some(rss) = node.attributes.get("rss_kb") {
-                    metrics.insert(format!("rss_kb:{id}"), rss.clone());
-                }
+        let is_domain = target.trim().is_empty() || target.trim() == "all";
+        if is_domain {
+            let mut rows: Vec<(String, f64)> = Vec::new();
+            for id in resources.iter() {
+                let Some((_, percent)) = stats.per_process.get(&id.0) else {
+                    continue;
+                };
+                let Some(node) = graph.get_node(id) else {
+                    continue;
+                };
+                rows.push((format_process_row(&node, *percent), *percent));
+            }
+            rows.sort_by(|a, b| b.1.total_cmp(&a.1));
+            for (i, (row, _)) in rows.iter().take(TOP_PROCESSES).enumerate() {
+                metrics.insert(format!("top_cpu_{i}"), row.clone());
+            }
+        } else {
+            for id in resources.iter() {
+                let Some((_, percent)) = stats.per_process.get(&id.0) else {
+                    continue;
+                };
+                let Some(node) = graph.get_node(id) else {
+                    continue;
+                };
+                metrics.insert(
+                    id.0.clone(),
+                    format_process_row(&node, *percent),
+                );
             }
         }
         ok(
@@ -486,8 +620,32 @@ mod tests {
             _ => panic!("expected device state"),
         };
         assert_eq!(metrics.get("process_nodes").unwrap(), "2");
-        assert_eq!(metrics.get("nodes_with_usage").unwrap(), "2");
+        assert_eq!(metrics.get("processes_reporting_rss").unwrap(), "2");
         assert_eq!(metrics.get("degraded").unwrap(), "0");
+    }
+
+    #[test]
+    fn parse_ticks_reads_utime_and_stime() {
+        let stat = "123 (aios worker) S 1 2 3 4 5 6 7 8 9 10 111 222 333 444";
+        assert_eq!(parse_ticks(stat), Some((111, 222)));
+        let short = "123 (aios) S 1 2 3 4 5 6 7";
+        assert_eq!(parse_ticks(short), None);
+        assert_eq!(parse_ticks("no closing paren"), None);
+    }
+
+    #[test]
+    fn format_process_row_orders_fields_with_cpu_percent() {
+        let mut node = node("process:100", NodeType::Process);
+        node.attributes.insert("pid".into(), "100".into());
+        node.attributes.insert("comm".into(), "aios".into());
+        node.attributes.insert("rss_kb".into(), "123456".into());
+        node.attributes.insert("state".into(), "S".into());
+        node.attributes.insert("cmdline".into(), "aios serve".into());
+        let row = format_process_row(&node, 42.5);
+        assert_eq!(
+            row,
+            "pid=100 comm=aios cpu_percent=42.5 rss_kb=123456 state=S cmdline=aios serve"
+        );
     }
 
     #[test]

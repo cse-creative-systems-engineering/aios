@@ -1,7 +1,7 @@
 # Aios Documentation Progress
 
 **Status:** Living document  
-**Last updated:** 2026-08-12
+**Last updated:** 2026-08-13
 
 This document tracks the completion status of the Aios design doc set.
 Updated whenever a document's status changes.
@@ -36,7 +36,7 @@ Updated whenever a document's status changes.
 | `agent-packages.md` | Draft — frozen for M1 | Mermaid/enum/manifest aligned |
 | `model-routing.md` | Draft — updated for M3 | Gateway architecture added (ADR-0006); §6 renumbered |
 | `human-interaction.md` | Draft — frozen for M1 | New — consolidates approval/escalation/facade trust; `Modified` decision removed (see message-protocol) |
-| `implementation-roadmap.md` | Draft — updated for M3 | v0.1 scope clarified for M6; M0–M3 complete |
+| `implementation-roadmap.md` | Draft — updated for M7 | M0–M7 complete; M8 terminal panel and resident docked UI done, dynamic generative surface in progress |
 | `testing-strategy.md` | Draft — frozen for M1 | Test code reconciled with protocol |
 | `observability.md` | Draft — frozen for M1 | May need refinement during implementation; retention advisory note and recursive-log-avoidance added |
 | `modules/` | 📝 Drafted | 19 of 19 module specs written (wifi, storage, network, drivers, graphics, memory, power-thermal, security, processes, packages, boot-recovery, block-disk, filesystem, files-data, gpu, display, session, bluetooth, wired-lan) |
@@ -58,13 +58,15 @@ Module specs: 19 of 19 drafted              (100%)
 ```
 
 Implementation status is tracked in `implementation-roadmap.md`. Current:
-M0–M6 and the M8 terminal panel are **complete**; M7 (Additional
-Specialists) is **in progress** with the Storage, Network, Drivers, Graphics,
-Memory, Power/thermal, and Security/identity umbrella specialists wired
-through the broker. The full test suite passes (323 passed, 1 ignored — the
-real-model test). Remaining M7 specialists: Processes/resources,
-Packages/updates, Boot/recovery. The full Aios UI (presence, screen space,
-screen vision) is a separate workstream tracked in `docs/ui.md`.
+M0–M7 are **complete**. All ten M7 specialists (Storage, Network, Drivers,
+Graphics, Memory, Power/thermal, Security/identity, Processes, Packages,
+Boot/recovery) are wired through the broker with read-only observe/diagnose
+tools, coordinator boot registration, and broker round-trip tests. The full
+test suite passes (359 passed, 1 ignored — the real-model test). The M8
+terminal panel and the resident docked UI (sidebar and canvas windows, GTK
+layer-shell dock) are in place; the dynamic generative surface
+(model-selected, validated widget composition) is the remaining M8 work,
+tracked in `docs/ui.md` and `docs/m8-ui-repair-plan.md`.
 
 ## Dependency Graph
 

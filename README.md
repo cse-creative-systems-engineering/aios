@@ -89,7 +89,7 @@ There is now also a runnable core. `cargo run` drives the in-process demo
 hardware). `cargo run -- shell` boots the interactive shell: it loads
 `~/.aios/config.toml`, runs a local Qwen model through llama.cpp, and routes
 chat through the model gateway, with discovery, provider status, consent, and
-a plan-and-verify flow. `cargo test` is 144 tests and counting.
+a plan-and-verify flow. `cargo test` is 359 tests and counting.
 
 Milestones, briefly:
 
@@ -102,21 +102,30 @@ Milestones, briefly:
 - **M3 — Local model runtime.** Done. Model registry, router, gateway,
   pinner, SHA-256 hub verification, and a llama.cpp backend running a real
   Qwen GGUF offline.
-- **M4 — Dual-agent orchestration.** In progress. The config loader and the
-  OpenAI-compatible `HttpBackend` landed, and the shell's planner + verifier
-  already produce and review action plans against the local model. Still to
-  come: read-only specialist tools wired to live discovery and audit logging.
-- **M5.** Checkpoint/stage/rollback against real services.
-- **M6.** The first real hardware specialist: Wi-Fi, end to end. Discover,
-  diagnose, stage a driver, verify, roll back if it's worse. The vertical
-  slice that proves whether the whole architecture works.
+- **M4 — Dual-agent orchestration.** Done. Config-driven providers, the
+  OpenAI-compatible `HttpBackend`, the shell's planner + verifier against
+  real models, read-only specialist tools wired to live discovery, and
+  audit logging.
+- **M5 — Transactions and staging.** Done. Checkpoint/stage/rollback against
+  real services, with user approval and crash recovery.
+- **M6 — First hardware specialist (Wi-Fi).** Done. Discover, diagnose,
+  stage a driver, verify, roll back if it's worse. The vertical slice that
+  proved the architecture works.
+- **M7 — Additional specialists.** Done. Storage, Network, Drivers,
+  Graphics, Memory, Power/thermal, Security/identity, Processes, Packages,
+  and Boot/recovery, all with read-only observe/diagnose tools through the
+  broker.
+- **M8 — System state panel and docked UI.** The terminal panel and the
+  resident docked UI (sidebar and canvas windows) are in place. The dynamic
+  generative surface — model-selected, validated widget composition — is the
+  remaining piece, tracked in `docs/m8-ui-repair-plan.md`.
 
 ## What I need help with
 
-- **Build M1.** The milestone has explicit acceptance criteria and the testing
-  strategy is already written. If you pick one component, pick the policy
-  broker: it's the trusted one, the one that must never be wrong, and the
-  design is most specific about it.
+- **Finish M8.** The resident docked UI (sidebar and canvas windows) is
+  launchable, but the dynamic generative surface — model-selected, validated
+  widget composition — is still to land. The completion criteria are in
+  `docs/m8-ui-repair-plan.md`.
 - **Find the flaw.** The docs are "frozen" in the sense that changing them is
   deliberately annoying, not forbidden. When the first real code contradicts
   them, the code wins. If you read something and it's wrong, an issue is the
@@ -190,7 +199,7 @@ model-routing → human-interaction. Takes an afternoon.
 
 ```bash
 cargo build          # compile everything
-cargo test           # run the test suite (144 tests)
+cargo test           # run the test suite (359 tests)
 cargo run            # in-process demo: broker, guardian, mock agents
 cargo run -- shell   # interactive shell against your real config and models
 ```

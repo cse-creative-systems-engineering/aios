@@ -1,10 +1,9 @@
 # Aios Implementation Roadmap
 
-**Status:** Draft — updated for M7 (M0–M6 and the M8 terminal panel
-complete, M7 in progress with the Storage, Network, Drivers, Graphics,
-Memory, Power/thermal, Security/identity, Processes, Packages, and
-Boot/Recovery specialists, M8 full UI tracked
-in `docs/ui.md`)  
+**Status:** Draft — updated for M7 (M0–M7 complete, M8 terminal panel and
+resident docked UI complete, with the dynamic generative surface
+(model-selected, validated widget composition) still to land, tracked in
+`docs/ui.md` and `docs/m8-ui-repair-plan.md`)  
 **Depends on:** architecture.md, requirements.md, security-model.md, capability-model.md, message-protocol.md, action-state-machine.md, system-graph.md, agent-packages.md, model-routing.md, all ADRs
 
 ## Purpose
@@ -49,8 +48,8 @@ graph TD
     classDef current fill:#d4a017,color:#fff,stroke:#a07c10,stroke-width:2px
     classDef planned fill:#4a90d9,color:#fff,stroke:#2a6db0,stroke-width:2px
 
-    class M0,M1,M2,M3,M4,M5,M6,M8 done
-    class M7 current
+    class M0,M1,M2,M3,M4,M5,M6,M7 done
+    class M8 current
 ```
 
 ---
@@ -524,7 +523,7 @@ It validates the entire architecture against a real hardware scenario.
 
 ## Milestone 7: Additional Specialists
 
-**Status:** In progress (Storage, Network, Drivers, Graphics, Memory, Power/thermal, and Security/identity specialists)
+**Status:** ✅ Complete
 **Estimated effort:** 2–4 weeks per specialist
 **Dependencies:** M6
 
@@ -678,6 +677,39 @@ Coordinator-level tests drive broker → specialist for observe and diagnose
 tests pass. `quarantine` (risk 4, the bounded containment response) and any
 mutating security operations are deferred to the mutation pass.
 
+**Progress note (2026-08-13, processes):** the Processes and resources
+ specialist follows the same pattern (`aios::processes`,
+ docs/modules/processes.md). It owns the process domain: `process:<pid>`
+ nodes discovered from `/proc` (pid, comm, state, rss_kb attributes) and
+ reports CPU utilization sampled from `/proc/stat`. It instantiates when
+ any process nodes exist (`ProcessesError::NoProcessResources` fails closed
+ otherwise). It declares the read-only tools `processes.observe_process`
+ and `processes.diagnose_fault` on the `processes:domain` resource
+ (invariant PROC-001: processes are present and report resource usage;
+ PROC-002 belongs to the mutation pass). Coordinator boot registers the
+ tools with the broker, spawns the specialist handlers, grants the session
+ principal read-only capabilities on `processes:domain`, and routes
+ `run_tool_as` calls for the processes tools to that resource.
+ Coordinator-level tests drive broker → specialist for observe and
+ diagnose (hermetic `wire_processes` helper seeds a process node when the
+ machine has none). Stopping processes and resource-limit changes are
+ deferred to the mutation pass, and resource budget enforcement stays
+ advisory in v0.1 (REQ-PERF-002).
+
+**Progress note (2026-08-13, processes CPU depth):** a follow-up made
+ `observe_process` answer "which processes use the CPU" instead of just
+ reporting a system-wide number. Discovery now reads the utime/stime tick
+ counters from `/proc/<pid>/stat`, the full command line from
+ `/proc/<pid>/cmdline`, and derives per-process health from the state char
+ (running/sleeping healthy, zombie/stopped/disk-wait degraded). The
+ specialist samples the system and per-process tick counters twice across a
+ short window and reports system CPU utilization, core count, and the top
+ processes by CPU percent (pid, comm, cpu percent, rss, state, command
+ line), or per-pid rows when the target names a specific process. The
+ misleading per-domain `nodes_with_usage` metric key and the every-pid
+ `resources` list were replaced with clearer output. The full suite passes
+ at 359 tests.
+
 **Progress note (2026-08-13, packages):** the Packages and updates
 specialist follows the same pattern (`aios::packages`,
 docs/modules/packages.md). It discovers package resources as
@@ -694,7 +726,7 @@ read-only capabilities on `packages:domain`, and routes
 `run_tool_as` calls for the packages tools to that resource.
 Coordinator-level tests drive broker → specialist for observe and
 diagnose (hermetic `wire_packages` helper seeds a package node
-when the machine has none). 356 tests pass. `stage_update`
+when the machine has none). 359 tests pass. `stage_update`
 (risk 2) and `request_rollback` (risk 4) are deferred to the
 mutation pass.
 
@@ -715,7 +747,7 @@ session principal read-only capabilities on `boot:domain`, and
 routes `run_tool_as` calls for the boot tools to that resource.
 Coordinator-level tests drive broker → specialist for observe and
 diagnose (hermetic `wire_boot_recovery` helper seeds the
-trust-plane nodes). 356 tests pass. Boot-level mutating
+trust-plane nodes). 359 tests pass. Boot-level mutating
 operations (A/B image management, watchdogs) are deferred to
 v0.2+ per ADR-0001.
 
@@ -795,11 +827,13 @@ each specialist is built.
 
 ### Per-specialist deliverables
 
-- [ ] `modules/<name>.md` — specialist specification
-- [ ] Specialist package (manifest, tools, tests)
-- [ ] Specialist-specific health checks and invariants
-- [ ] Integration tests
-- [ ] Module doc in `docs/modules/`
+- [x] `modules/<name>.md` — specialist specification
+- [x] Specialist package (tools, tests; `modules/wifi/manifest.toml` is the
+      only shipped manifest — the M7 specialists declare their tools in code
+      and are wired by the coordinator)
+- [x] Specialist-specific health checks and invariants
+- [x] Integration tests
+- [x] Module doc in `docs/modules/`
 
 ### Per-specialist acceptance criteria
 
@@ -814,9 +848,11 @@ each specialist is built.
 
 ## Milestone 8: System State Panel and Aios UI
 
-**Status:** Panel complete (terminal `panel` command). The full UI (presence,
-screen space, screen vision) remains a separate workstream tracked in
-`docs/ui.md`  
+**Status:** ✅ Terminal panel complete (terminal `panel` command). The
+resident docked UI (sidebar and canvas windows, GTK layer-shell dock) is
+implemented and launchable via `npm run tauri:dev`. The dynamic generative
+surface — model-selected, validated widget composition — is the remaining
+work and is tracked in `docs/ui.md` and `docs/m8-ui-repair-plan.md`  
 **Estimated effort:** 2–3 weeks (panel); the full UI (presence, screen space,
 screen vision) is a larger workstream tracked in `docs/ui.md`  
 **Dependencies:** M2 (can run in parallel with M3–M6)
@@ -834,8 +870,8 @@ its own workstream; the panel is the first concrete piece.
 
 - [x] Health and state aggregator (`src/panel.rs`, snapshot of route,
   connectivity, graph health, active operations, recovery, audit)
-- [ ] System State panel UI (full graphical UI, see `docs/ui.md`);
-      terminal rendering ships with the `panel` shell command
+- [x] System State panel UI (resident Tauri docked UI: sidebar and canvas
+      windows); dynamic widget composition still to land, see `docs/ui.md`
 - [x] Overview view (overall status, subsystem health, connectivity, model route)
 - [x] Subsystem view (per-subsystem health rollup, attention count,
       dependency count, responsible specialist; attention-first ordering)
@@ -871,8 +907,8 @@ its own workstream; the panel is the first concrete piece.
 | M4: Dual-Agent Orchestration | ✅ Complete (offline shell deferred) | 9–13 weeks | M2, M3 |
 | M5: Transactions and Staging | ✅ Complete | 9–13 weeks (parallel with M4) | M2 |
 | M6: First Hardware Specialist | ✅ Complete | 13–19 weeks | M4, M5 |
-| M7: Additional Specialists | In progress (Storage, Network, Drivers, Graphics, Memory, Power/thermal, Security/identity, Processes, Packages, Boot/Recovery specialists) | +2–4 weeks per specialist | M6 |
-| M8: System State Panel | ✅ Terminal panel complete; full UI in `docs/ui.md` | 15–22 weeks (parallel) | M2 |
+| M7: Additional Specialists | ✅ Complete | +2–4 weeks per specialist | M6 |
+| M8: System State Panel | ✅ Terminal panel and resident docked UI complete; dynamic generative surface in progress | 15–22 weeks (parallel) | M2 |
 
 **Estimated time to working v0.1 with Wi-Fi vertical slice:** 4–5 months  
 **Estimated time to full specialist coverage (8 modules):** 8–12 months
