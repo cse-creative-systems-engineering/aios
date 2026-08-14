@@ -1,4 +1,7 @@
-/target
+/target/
+/frontend/target/
+/src-tauri/target/
+/frontend/dist/
 node_modules/
 package-lock.json
 .idea/

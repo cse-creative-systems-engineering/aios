@@ -68,7 +68,12 @@ impl ToolRegistry {
         lines.join("\n")
     }
 
-    pub fn run(&self, graph: &SystemGraph, name: &str, args: &str) -> Result<ToolResult, ToolError> {
+    pub fn run(
+        &self,
+        graph: &SystemGraph,
+        name: &str,
+        args: &str,
+    ) -> Result<ToolResult, ToolError> {
         let tool = self
             .tools
             .iter()
@@ -93,7 +98,10 @@ fn require_args(args: &str, usage: &str) -> Result<String, ToolError> {
     }
 }
 
-fn find_nodes<'a>(graph: &'a SystemGraph, needle: &str) -> Vec<(&'a NodeId, &'a crate::graph::NodeMetadata)> {
+fn find_nodes<'a>(
+    graph: &'a SystemGraph,
+    needle: &str,
+) -> Vec<(&'a NodeId, &'a crate::graph::NodeMetadata)> {
     let needle = needle.to_lowercase();
     let mut found: Vec<(&NodeId, &crate::graph::NodeMetadata)> = graph
         .nodes()
@@ -120,11 +128,16 @@ fn resolve_one(graph: &SystemGraph, needle: &str) -> Result<NodeId, ToolError> {
         0 => Err(ToolError::NotFound(needle.to_string())),
         1 => Ok(found[0].0.clone()),
         n => Err(ToolError::Ambiguous(
-            found.into_iter().take(8).map(|(id, _)| id.to_string()).collect::<Vec<_>>().tap(|v| {
-                if n > 8 {
-                    v.push(format!("... and {} more", n - 8));
-                }
-            }),
+            found
+                .into_iter()
+                .take(8)
+                .map(|(id, _)| id.to_string())
+                .collect::<Vec<_>>()
+                .tap(|v| {
+                    if n > 8 {
+                        v.push(format!("... and {} more", n - 8));
+                    }
+                }),
         )),
     }
 }
@@ -145,7 +158,11 @@ fn node_line(node: &crate::graph::NodeMetadata) -> String {
         "  {:?} {} ({}) health={:?}",
         node.node_type,
         node.node_id,
-        if node.label.is_empty() { "-" } else { &node.label },
+        if node.label.is_empty() {
+            "-"
+        } else {
+            &node.label
+        },
         node.health
     );
     if let Some(version) = &node.version {
@@ -198,7 +215,9 @@ impl SpecialistTool for ObserveDevice {
     fn run(&self, graph: &SystemGraph, args: &str) -> Result<ToolResult, ToolError> {
         let needle = require_args(args, "observe <id|label|attr>")?;
         let id = resolve_one(graph, &needle)?;
-        let node = graph.get_node(&id).ok_or_else(|| ToolError::NotFound(needle.clone()))?;
+        let node = graph
+            .get_node(&id)
+            .ok_or_else(|| ToolError::NotFound(needle.clone()))?;
 
         let mut lines = Vec::new();
         lines.push(format!("node: {}", node_line(&node)));
@@ -241,7 +260,9 @@ impl SpecialistTool for Diagnose {
     fn run(&self, graph: &SystemGraph, args: &str) -> Result<ToolResult, ToolError> {
         let needle = require_args(args, "diagnose <id|label|attr>")?;
         let id = resolve_one(graph, &needle)?;
-        let node = graph.get_node(&id).ok_or_else(|| ToolError::NotFound(needle.clone()))?;
+        let node = graph
+            .get_node(&id)
+            .ok_or_else(|| ToolError::NotFound(needle.clone()))?;
 
         let mut lines = Vec::new();
         lines.push(format!("{} ({:?})", node.node_id, node.node_type));
@@ -262,14 +283,22 @@ impl SpecialistTool for Diagnose {
             lines.push("dependencies:".into());
             for dep in &deps {
                 lines.push(format!("  {} health={:?}", dep.node_id, dep.health));
-                if matches!(dep.health, crate::protocol::HealthState::Degraded | crate::protocol::HealthState::Unhealthy | crate::protocol::HealthState::Stale) {
+                if matches!(
+                    dep.health,
+                    crate::protocol::HealthState::Degraded
+                        | crate::protocol::HealthState::Unhealthy
+                        | crate::protocol::HealthState::Stale
+                ) {
                     unhealthy.push(dep.node_id.to_string());
                 }
             }
             if unhealthy.is_empty() {
                 lines.push("all dependencies look healthy".into());
             } else {
-                lines.push(format!("warning: unhealthy dependencies: {}", unhealthy.join(", ")));
+                lines.push(format!(
+                    "warning: unhealthy dependencies: {}",
+                    unhealthy.join(", ")
+                ));
             }
         }
 
@@ -277,7 +306,11 @@ impl SpecialistTool for Diagnose {
         if !dependents.is_empty() {
             lines.push(format!(
                 "depended on by: {}",
-                dependents.iter().map(|n| n.node_id.to_string()).collect::<Vec<_>>().join(", ")
+                dependents
+                    .iter()
+                    .map(|n| n.node_id.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ));
         }
         Ok(ToolResult {
@@ -430,7 +463,9 @@ impl SpecialistTool for Impact {
     fn run(&self, graph: &SystemGraph, args: &str) -> Result<ToolResult, ToolError> {
         let needle = require_args(args, "impact <id|label|attr>")?;
         let id = resolve_one(graph, &needle)?;
-        let report = graph.analyze_impact(&id).ok_or_else(|| ToolError::NotFound(needle.clone()))?;
+        let report = graph
+            .analyze_impact(&id)
+            .ok_or_else(|| ToolError::NotFound(needle.clone()))?;
         let mut lines = vec![format!(
             "resource: {} ({})",
             report.resource,
@@ -445,7 +480,10 @@ impl SpecialistTool for Impact {
         } else {
             lines.push("dependencies:".into());
             for node in &report.dependencies {
-                lines.push(format!("  {} ({:?}) {:?}", node.node_id, node.node_type, node.health));
+                lines.push(format!(
+                    "  {} ({:?}) {:?}",
+                    node.node_id, node.node_type, node.health
+                ));
             }
         }
         if report.affected_nodes.is_empty() {
@@ -490,11 +528,13 @@ impl SpecialistTool for GraphHealth {
         let mut lines = vec![format!("{} nodes total", graph.nodes().len())];
         let mut health: Vec<(String, usize)> = counts.into_iter().collect();
         health.sort();
-        lines.push(health
-            .iter()
-            .map(|(h, c)| format!("{h}: {c}"))
-            .collect::<Vec<_>>()
-            .join(", "));
+        lines.push(
+            health
+                .iter()
+                .map(|(h, c)| format!("{h}: {c}"))
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
         let mut types: Vec<(String, HashMap<String, usize>)> = by_type.into_iter().collect();
         types.sort_by(|a, b| a.0.cmp(&b.0));
         for (t, states) in types {
@@ -523,7 +563,12 @@ pub fn tools_context(graph: &SystemGraph) -> String {
     let processes: Vec<crate::graph::NodeMetadata> = graph.get_nodes_by_type(NodeType::Process);
     let devices: Vec<crate::graph::NodeMetadata> = graph.get_nodes_by_type(NodeType::Device);
     let services: Vec<crate::graph::NodeMetadata> = graph.get_nodes_by_type(NodeType::Service);
-    if devices.is_empty() && services.is_empty() && sensors.is_empty() && memory.is_empty() && processes.is_empty() {
+    if devices.is_empty()
+        && services.is_empty()
+        && sensors.is_empty()
+        && memory.is_empty()
+        && processes.is_empty()
+    {
         return String::new();
     }
     if !devices.is_empty() {
@@ -551,7 +596,10 @@ pub fn tools_context(graph: &SystemGraph) -> String {
         if !nodes.is_empty() {
             lines.push(format!("{label}:"));
             for node in nodes {
-                lines.push(format!("  {} {} {:?}", node.node_id, node.label, node.attributes));
+                lines.push(format!(
+                    "  {} {} {:?}",
+                    node.node_id, node.label, node.attributes
+                ));
             }
         }
     }
@@ -652,15 +700,17 @@ pub fn resource_index(graph: &SystemGraph) -> String {
 }
 
 pub fn model_tool_instructions() -> &'static str {
-    "Read-only machine tools are available. Never invent command output and never claim to run shell commands. The available tools are: observe, diagnose, query, deps, impact, health, wifi.observe_device, wifi.diagnose_fault, storage.observe_storage, storage.diagnose_fault, network.observe_network, network.diagnose_fault, drivers.observe_device, drivers.diagnose_fault, graphics.observe_graphics, graphics.diagnose_fault, memory.observe_memory, memory.diagnose_fault, processes.observe_process, processes.diagnose_fault, power.observe_thermal, power.diagnose_fault, security.observe_security, security.diagnose_fault, packages.observe_package, packages.diagnose_fault, boot.observe_boot, boot.diagnose_fault. To use a tool, emit a native function call: {\"tool_calls\":[{\"function\":{\"name\":\"<tool>\",\"arguments\":\"<args>\"}}]} where <tool> is exactly one of the available tools and <args> is a plain string argument. Use query sensor for sensor readings, query memory for memory data, and query device for hardware. For a Wi-Fi device, use wifi.observe_device to read its state and wifi.diagnose_fault to diagnose it. For storage, use storage.observe_storage to read disk and filesystem state and storage.diagnose_fault to diagnose it. For the network domain, use network.observe_network to read interface and link state and network.diagnose_fault to diagnose it. For generic hardware, use drivers.observe_device to read device, driver, firmware, and module state and drivers.diagnose_fault to diagnose it (target 'all' for the whole domain). For graphics, use graphics.observe_graphics to read GPU, display, and session state and graphics.diagnose_fault to diagnose it (target 'all' for the whole domain). For memory, use memory.observe_memory to read total, used, free, swap, and pressure state and memory.diagnose_fault to diagnose it (target 'all' for the whole domain). For processes, use processes.observe_process to read process, namespace, and resource-usage state and processes.diagnose_fault to diagnose it (target 'all' for the whole domain). For power and thermal, use power.observe_thermal to read temperature, fan, and power state and power.diagnose_fault to diagnose it (target 'all' for the whole domain). For security and identity, use security.observe_security to read identity, trust, and security state and security.diagnose_fault to diagnose it (target 'all' for the whole domain). For packages, use packages.observe_package to read package, version, and signature state and packages.diagnose_fault to diagnose it (target 'all' for the whole domain). For boot and recovery, use boot.observe_boot to read boot state and recovery-image availability and boot.diagnose_fault to diagnose it (target 'all' for the whole domain). After receiving tool results, answer only from those results. If a tool cannot establish a fact, say so."
+    "Read-only machine tools are available. Never invent command output and never claim to run shell commands. The available tools are: observe, diagnose, query, deps, impact, health, wifi.observe_device, wifi.diagnose_fault, storage.observe_storage, storage.diagnose_fault, network.observe_network, network.diagnose_fault, drivers.observe_device, drivers.diagnose_fault, graphics.observe_graphics, graphics.diagnose_fault, memory.observe_memory, memory.diagnose_fault, processes.observe_process, processes.diagnose_fault, power.observe_thermal, power.diagnose_fault, security.observe_security, security.diagnose_fault, packages.observe_package, packages.diagnose_fault, boot.observe_boot, boot.diagnose_fault. To use a tool, emit a native function call: {\"tool_calls\":[{\"function\":{\"name\":\"<tool>\",\"arguments\":\"<args>\"}}]} where <tool> is exactly one of the available tools and <args> is a plain string argument. For every question about CPU utilization or process load, always call processes.observe_process with target 'all' before answering. Never answer those questions from context alone. Use query sensor for sensor readings, query memory for memory data, and query device for hardware. For a Wi-Fi device, use wifi.observe_device to read its state and wifi.diagnose_fault to diagnose it. For storage, use storage.observe_storage to read disk and filesystem state and storage.diagnose_fault to diagnose it. For the network domain, use network.observe_network to read interface and link state and network.diagnose_fault to diagnose it. For generic hardware, use drivers.observe_device to read device, driver, firmware, and module state and drivers.diagnose_fault to diagnose it (target 'all' for the whole domain). For graphics, use graphics.observe_graphics to read GPU, display, and session state and graphics.diagnose_fault to diagnose it (target 'all' for the whole domain). For memory, use memory.observe_memory to read total, used, free, swap, and pressure state and memory.diagnose_fault to diagnose it (target 'all' for the whole domain). For processes, use processes.observe_process to read process, namespace, and resource-usage state and processes.diagnose_fault to diagnose it (target 'all' for the whole domain). For power and thermal, use power.observe_thermal to read temperature, fan, and power state and power.diagnose_fault to diagnose it (target 'all' for the whole domain). For security and identity, use security.observe_security to read identity, trust, and security state and security.diagnose_fault to diagnose it (target 'all' for the whole domain). For packages, use packages.observe_package to read package, version, and signature state and packages.diagnose_fault to diagnose it (target 'all' for the whole domain). For boot and recovery, use boot.observe_boot to read boot state and recovery-image availability and boot.diagnose_fault to diagnose it (target 'all' for the whole domain). After receiving tool results, answer only from those results. If a tool cannot establish a fact, say so."
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::{EdgeId, EdgeMetadata, EdgeProvenance, NodeMetadata, ProvenanceSource, TrustLevel};
-    use crate::protocol::{EventType, HealthState};
     use crate::capability::PrincipalId;
+    use crate::graph::{
+        EdgeId, EdgeMetadata, EdgeProvenance, NodeMetadata, ProvenanceSource, TrustLevel,
+    };
+    use crate::protocol::{EventType, HealthState};
 
     fn t() -> crate::protocol::Timestamp {
         1000
@@ -699,16 +749,36 @@ mod tests {
     fn fixture() -> SystemGraph {
         let mut graph = SystemGraph::new();
         graph
-            .add_node(node("dev:wifi0", NodeType::Device, "Wireless controller", HealthState::Healthy))
+            .add_node(node(
+                "dev:wifi0",
+                NodeType::Device,
+                "Wireless controller",
+                HealthState::Healthy,
+            ))
             .unwrap();
         graph
-            .add_node(node("dev:eth0", NodeType::Device, "Ethernet controller", HealthState::Healthy))
+            .add_node(node(
+                "dev:eth0",
+                NodeType::Device,
+                "Ethernet controller",
+                HealthState::Healthy,
+            ))
             .unwrap();
         graph
-            .add_node(node("driver:iwlwifi", NodeType::Driver, "kernel driver iwlwifi", HealthState::Healthy))
+            .add_node(node(
+                "driver:iwlwifi",
+                NodeType::Driver,
+                "kernel driver iwlwifi",
+                HealthState::Healthy,
+            ))
             .unwrap();
         graph
-            .add_node(node("svc:networkd", NodeType::Service, "systemd-networkd", HealthState::Degraded))
+            .add_node(node(
+                "svc:networkd",
+                NodeType::Service,
+                "systemd-networkd",
+                HealthState::Degraded,
+            ))
             .unwrap();
         graph
             .add_edge(edge("dev:wifi0", "driver:iwlwifi", EdgeType::DependsOn))
@@ -733,7 +803,12 @@ mod tests {
     fn observe_ambiguous_match_reports_all() {
         let mut graph = fixture();
         graph
-            .add_node(node("dev:wifi1", NodeType::Device, "Wireless controller 2", HealthState::Unknown))
+            .add_node(node(
+                "dev:wifi1",
+                NodeType::Device,
+                "Wireless controller 2",
+                HealthState::Unknown,
+            ))
             .unwrap();
         let registry = ToolRegistry::new();
         let err = registry.run(&graph, "observe", "wireless").unwrap_err();
@@ -746,7 +821,9 @@ mod tests {
     fn observe_missing_is_not_found() {
         let graph = fixture();
         let registry = ToolRegistry::new();
-        let err = registry.run(&graph, "observe", "definitely-missing").unwrap_err();
+        let err = registry
+            .run(&graph, "observe", "definitely-missing")
+            .unwrap_err();
         assert!(matches!(err, ToolError::NotFound(_)), "{err}");
     }
 
@@ -754,8 +831,14 @@ mod tests {
     fn diagnose_reports_unhealthy_dependency() {
         let graph = fixture();
         let registry = ToolRegistry::new();
-        let result = registry.run(&graph, "diagnose", "dev:wifi0").expect("diagnose");
-        assert!(result.text.contains("warning: unhealthy dependencies"), "{}", result.text);
+        let result = registry
+            .run(&graph, "diagnose", "dev:wifi0")
+            .expect("diagnose");
+        assert!(
+            result.text.contains("warning: unhealthy dependencies"),
+            "{}",
+            result.text
+        );
         assert!(result.text.contains("svc:networkd"), "{}", result.text);
     }
 
@@ -797,7 +880,11 @@ mod tests {
         let graph = fixture();
         let registry = ToolRegistry::new();
         let result = registry.run(&graph, "impact", "dev:wifi0").expect("impact");
-        assert!(result.text.contains("2 related components"), "{}", result.text);
+        assert!(
+            result.text.contains("2 related components"),
+            "{}",
+            result.text
+        );
     }
 
     #[test]

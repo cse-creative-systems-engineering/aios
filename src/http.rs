@@ -44,10 +44,6 @@ impl HttpBackend {
         format!("{}/chat/completions", self.endpoint)
     }
 
-    fn models_url(&self) -> String {
-        format!("{}/models", self.endpoint)
-    }
-
     fn request_body(&self, request: &GenerationRequest) -> Value {
         let messages: Vec<Value> = request
             .messages
@@ -80,8 +76,12 @@ impl HttpBackend {
                 function_tool("deps", "Query node dependencies", "target"),
                 function_tool("impact", "Query node impact relationships", "target"),
                 function_tool("health", "Summarize graph health", "query"),
-                function_tool("wifi.observe_device", "Observe the Wi-Fi specialist device", "target"),
-                function_tool("wifi.diagnose_fault", "Diagnose a Wi-Fi fault", "target"),
+                function_tool(
+                    "wifi_observe_device",
+                    "Observe the Wi-Fi specialist device",
+                    "target"
+                ),
+                function_tool("wifi_diagnose_fault", "Diagnose a Wi-Fi fault", "target"),
             ]);
             body["tool_choice"] = json!("auto");
         }
@@ -147,18 +147,6 @@ impl HttpBackend {
             .timeout(std::time::Duration::from_millis(timeout_ms))
             .build()
     }
-
-    fn build_request(
-        &self,
-        agent: &ureq::Agent,
-        url: &str,
-    ) -> Result<ureq::Request, GenerationError> {
-        let mut request = agent.get(url);
-        if let Some(key) = &self.api_key {
-            request = request.set("Authorization", &format!("Bearer {key}"));
-        }
-        Ok(request)
-    }
 }
 
 fn function_tool(name: &str, description: &str, argument: &str) -> Value {
@@ -185,11 +173,11 @@ impl ModelBackend for HttpBackend {
     }
 
     fn is_healthy(&self) -> bool {
-        let agent = self.agent(2000);
-        match self.build_request(&agent, &self.models_url()) {
-            Ok(request) => request.call().is_ok(),
-            Err(_) => false,
-        }
+        // Some OpenAI-compatible gateways, including free-model routes, serve
+        // chat completions but do not expose a usable GET /models endpoint.
+        // Eligibility is therefore established by the real generation call;
+        // transport and HTTP failures are still returned and recorded there.
+        !self.endpoint.trim().is_empty()
     }
 
     fn generate(&self, request: &GenerationRequest) -> Result<GenerationResponse, GenerationError> {
@@ -210,10 +198,20 @@ impl ModelBackend for HttpBackend {
             }
             Err(ureq::Error::Status(code, response)) => {
                 let status_code: u16 = code;
-                let _ = response.into_string();
+                let detail = response
+                    .into_string()
+                    .unwrap_or_default()
+                    .chars()
+                    .take(240)
+                    .collect::<String>();
+                let detail = if detail.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {detail}")
+                };
                 let recoverable = status_code >= 500 || status_code == 429;
                 Err(GenerationError::new(
-                    format!("provider returned HTTP {status_code}"),
+                    format!("provider returned HTTP {status_code}{detail}"),
                     recoverable,
                 ))
             }

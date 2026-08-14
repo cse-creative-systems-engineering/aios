@@ -30,18 +30,55 @@ resident part of the desktop, not a tool you open for a question.
 
 ### 2. Screen space
 
-Aios occupies a single Tauri window that the user can position and resize.
-The window contains a sidebar (left, default 15% width) and a canvas area
-(remaining space). The sidebar is persistent; the canvas is the dynamic
-display surface. Aios does not resize or reflow other applications' windows
-— the Tauri window is self-contained.
+Aios owns a narrow resident sidebar docked to the left side of the desktop.
+The sidebar is the persistent presence and contains the conversational chat
+interface only. It does not contain a canvas and does not become a general
+workspace.
+
+Investigation results are displayed in separate floating canvas/panel windows
+created on demand. A generated panel is disconnected from the resident chat
+sidebar: it has its own window identity, lifecycle, position, and size. It may
+float freely or dock to any edge of the desktop. Floating panels may be
+resized, minimized, and closed by the user. They are display surfaces for
+validated generative-UI output; they are not authority or execution surfaces.
 
 - **Engineering:** Tauri v2 window management (native Ubuntu windowing,
-  system-tray access). The window is borderless or frameless per the
-  visual style. The sidebar and canvas are layout regions within the
-  single window, not separate OS-level windows.
-- **Safety:** moderate. The window occupies screen space and can obscure
-  other applications. The user controls its position and size.
+  system-tray access). One persistent sidebar window and zero or more
+  floating panel windows.
+- **Safety:** moderate. The sidebar and floating panels occupy screen space
+  and can obscure other applications. The user controls their position and size.
+
+### Linux docking contract
+
+A true resident dock is a native desktop-shell surface, not merely a narrow
+Tauri window. It is conceptually closer to a taskbar/panel than to an ordinary
+application window:
+
+- On Wayland compositors advertising `zwlr_layer_shell_v1`, the sidebar uses
+  GTK Layer Shell. It is anchored to the left, top, and bottom edges, requests
+  a fixed width, and reserves an exclusive zone for that width.
+- Layer Shell must be initialized before the GTK window is realized or mapped.
+  The sidebar therefore starts hidden in Tauri configuration and is shown only
+  after native configuration completes. Ordinary `set_position` calls are not
+  used for a Layer Shell sidebar because the compositor owns its placement.
+- On X11, the fallback uses EWMH dock properties and a partial strut
+  (`_NET_WM_WINDOW_TYPE_DOCK` and `_NET_WM_STRUT_PARTIAL`) to reserve work
+  area. A normal Tauri position is not sufficient.
+- On GNOME Wayland, the desktop-native equivalent would be a GNOME Shell
+  extension; ordinary Tauri windows cannot request a reserved strut there.
+- On Wayland compositors without Layer Shell support, including GNOME Shell's
+  normal Wayland session, Aios first prefers an available XWayland backend so
+  it can use X11 edge positioning. If XWayland is unavailable, Aios can provide
+  only a best-effort borderless window. It must not claim that it is permanently
+  docked or that it resizes other applications in that final fallback mode.
+
+This capability is compositor-dependent. The application must detect support,
+log the selected mode, and expose configuration failures rather than silently
+falling back while presenting the result as a dock. Sources consulted for this
+contract include the [Wayland Layer Shell protocol](https://wayland.app/protocols/wlr-layer-shell-unstable-v1),
+[GTK Layer Shell documentation](https://wmww.github.io/gtk-layer-shell/gtk-layer-shell.html),
+[Tauri window configuration](https://v2.tauri.app/reference/config/#windowconfig),
+and the [TAO Wayland positioning limitation](https://docs.rs/tao/latest/tao/window/struct.WindowAttributes.html).
 
 ### 3. Screen vision
 
@@ -60,21 +97,20 @@ Aios has tools to see the screen — it can perceive what is displayed.
 
 ### v0.1 form
 
-The v0.1 UI is a single Tauri window with two layout regions:
+The v0.1 UI consists of a persistent sidebar plus on-demand floating panels:
 
-1. **Sidebar** — a persistent left panel, default width 15% of the window,
-   user-configurable (min 10%, max 30%). It contains the chat interface and
-   a settings panel trigger. The sidebar does not scroll independently; the
-   chat and settings share the sidebar's scroll space.
+1. **Resident sidebar** — a narrow panel docked to the left side of the
+   desktop. It contains the chat interface and a settings trigger. It does not
+   contain a canvas or evidence dashboard. The sidebar remains available while
+   floating result panels are open.
 
-2. **Canvas panel** — the main content area that fills the remaining space.
-   The canvas is the display layer for model-generated UI. It uses Tauri v2
-   for native Ubuntu windowing and Dioxus or Leptos for component-driven
-   rendering. The canvas supports multiple panels within the main window.
-   Each panel is a self-contained widget region that can be minimized to the
-   sidebar as a clickable list item. Panels can be freely positioned and
-   resized within the canvas area by the user. Keep-on-top behavior is per-panel
-   within the canvas.
+2. **Floating result panels** — separate desktop windows created when Aios
+   has a response and validated evidence to display. A panel is a
+   self-contained generative-UI composition, disconnected from the sidebar.
+   It can float freely or dock to the left, right, top, or bottom desktop edge;
+   docking never changes the sidebar's chat-only role. Panels can be resized,
+   minimized, and closed by the user. No panel can execute tools or create
+   authority; all input continues through the conversational/backend path.
 
 ### Chat interface
 
@@ -83,6 +119,8 @@ surface.
 
 - **Layout:** A scrollable message area occupies the upper 70% of the sidebar.
   A text input field with a send button occupies the bottom 30%.
+- **Scope:** The sidebar is chat-only. Evidence is not rendered inline in the
+  sidebar; it appears in floating generative-UI panels.
 - **Messages:** Each message is rendered as a chat bubble. User messages are
   right-aligned with a primary color background. AI responses are left-aligned
   with a surface color background. Tool results are rendered as collapsible
@@ -264,28 +302,31 @@ The canvas handles errors at three levels:
    The broker or model service is not responding." The canvas does not render
    new content.
 
-### Canvas panel lifecycle
+### Floating panel lifecycle
 
-- **Creation:** Panels are created when the LLM generates a widget that
-  requires its own panel (e.g., a `Chart` or `ActionForm`). The panel is
-  added to the canvas area automatically.
-- **Minimization:** A panel can be minimized to the sidebar as a clickable
-  list item. Clicking the list item restores the panel to the canvas.
-- **Closing:** The user can close a panel by clicking a close button on the
-  panel header. Closed panels are removed from the canvas.
-- **Positioning:** Panels are free-positioned within the canvas area. The
-  user can drag panels to rearrange them. The canvas uses a simple stacking
-  order (last added panel is on top).
-- **Default layout:** When the app starts, the canvas is empty. Panels are
-  created on demand as the LLM generates widgets.
+- **Creation:** A floating panel is created when the model returns a validated
+  generative-UI composition that requires a panel. The panel contains only
+  compiled widget components and broker-authorized evidence.
+- **Minimization:** A panel can be minimized to a compact item in the resident
+  sidebar. Selecting the item restores the floating panel.
+- **Closing:** The user can close a panel from its header. Closed panels are
+  removed from the active UI but remain represented by the conversation history.
+- **Positioning:** Floating panels are free-positioned and resizable desktop
+  windows. The user can drag them, change their stacking order, or dock them
+  to any desktop edge. Docking is panel-local and does not merge the panel into
+  the sidebar.
+- **Default layout:** The resident sidebar starts alone. No floating panel is
+  created until Aios has a response and validated evidence/UI composition.
+- **Independence:** Closing, moving, resizing, or docking a result panel does
+  not close, resize, or repurpose the conversational sidebar.
 
 ### Tauri window configuration
 
-- **Window size:** 1200x800 pixels default, user-resizable
-- **Min size:** 800x600
-- **Position:** Center of the primary display on first launch, remembers
-  position and size across sessions
-- **Title:** "Aios"
+- **Sidebar:** narrow, left-docked, persistent, chat-only
+- **Floating panels:** created on demand, resizable, independently positioned
+- **Position:** sidebar starts at the left edge; panels use a remembered or
+  safe default position
+- **Title:** "Aios" for the sidebar and an evidence-specific title for panels
 - **Decorations:** Frameless window with custom title bar (sidebar-style)
 - **Transparency:** Opaque background for v0.1. Slight background transparency
   supported if the compositor allows it.

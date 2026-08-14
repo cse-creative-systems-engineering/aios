@@ -12,14 +12,33 @@
   "app": {
     "windows": [
       {
+        "label": "sidebar",
         "title": "Aios",
-        "width": 1200,
+        "x": 0,
+        "y": 24,
+        "width": 420,
         "height": 800,
-        "minWidth": 800,
-        "minHeight": 600,
-        "resizable": true,
+        "minWidth": 360,
+        "minHeight": 520,
+        "resizable": false,
         "decorations": false,
-        "url": "dev://localhost:5173"
+        "skipTaskbar": true,
+        "alwaysOnTop": true,
+        "visible": false
+      },
+      {
+        "label": "canvas",
+        "title": "Aios Evidence",
+        "x": 440,
+        "y": 48,
+        "width": 860,
+        "height": 700,
+        "minWidth": 600,
+        "minHeight": 480,
+        "resizable": true,
+        "decorations": true,
+        "alwaysOnTop": true,
+        "visible": false
       }
     ],
     "security": {
@@ -32,9 +51,7 @@
     "icon": [
       "assets/32x32.png",
       "assets/128x128.png",
-      "assets/128x128@2x.png",
-      "assets/icon.icns",
-      "assets/icon.ico"
+      "assets/128x128@2x.png"
     ]
   }
 }

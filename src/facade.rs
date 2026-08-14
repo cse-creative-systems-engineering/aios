@@ -11,6 +11,7 @@ pub struct Facade {
     pub coordinator: Coordinator,
     history: VecDeque<String>,
     max_history: usize,
+    last_tool_results: Vec<crate::tools::ToolResult>,
 }
 
 impl Facade {
@@ -30,6 +31,7 @@ impl Facade {
             coordinator,
             history: VecDeque::new(),
             max_history,
+            last_tool_results: Vec::new(),
         }
     }
 
@@ -235,9 +237,11 @@ impl Facade {
             messages.push(crate::model::ModelMessage::new(role, content));
         }
 
-        let result = self.coordinator.chat_with_tools(messages);
+        let result = self.coordinator.chat_with_tools_outcome(messages);
         match result {
-            Ok(answer) => {
+            Ok(outcome) => {
+                self.last_tool_results = outcome.tool_results;
+                let answer = outcome.answer;
                 self.coordinator.record_audit("user", "chat", text, "ok");
                 self.history.push_back(format!("assistant: {answer}"));
                 while self.history.len() > self.max_history {
@@ -251,6 +255,10 @@ impl Facade {
                 format!("chat failed: {e}\nhint: check 'status' for provider health")
             }
         }
+    }
+
+    pub fn take_tool_results(&mut self) -> Vec<crate::tools::ToolResult> {
+        std::mem::take(&mut self.last_tool_results)
     }
 }
 

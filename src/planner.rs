@@ -298,7 +298,7 @@ pub fn parse_tool_calls(text: &str) -> Vec<ToolCallRequest> {
         .iter()
         .filter_map(|call| {
             if let Some(function) = call.get("function") {
-                let name = function.get("name")?.as_str()?.to_string();
+                let name = normalize_tool_name(function.get("name")?.as_str()?);
                 let raw = function
                     .get("arguments")
                     .and_then(|a| a.as_str())
@@ -311,11 +311,19 @@ pub fn parse_tool_calls(text: &str) -> Vec<ToolCallRequest> {
             let name = call.get("tool")?.as_str()?;
             let raw = call.get("args").and_then(|a| a.as_str()).unwrap_or("");
             Some(ToolCallRequest {
-                name: name.to_string(),
+                name: normalize_tool_name(name),
                 arguments: normalize_arguments(raw),
             })
         })
         .collect()
+}
+
+fn normalize_tool_name(name: &str) -> String {
+    match name {
+        "wifi_observe_device" => "wifi.observe_device".to_string(),
+        "wifi_diagnose_fault" => "wifi.diagnose_fault".to_string(),
+        other => other.to_string(),
+    }
 }
 
 fn normalize_arguments(raw: &str) -> String {

@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Aios desktop capability set",
+  "windows": ["sidebar", "canvas"],
+  "permissions": [
+    "core:default",
+    "core:event:allow-listen"
+  ]
+}

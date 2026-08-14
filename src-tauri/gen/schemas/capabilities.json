@@ -1,1 +1,1 @@
-{}
+{"default":{"identifier":"default","description":"Aios desktop capability set","local":true,"windows":["sidebar","canvas"],"permissions":["core:default","core:event:allow-listen"]}}

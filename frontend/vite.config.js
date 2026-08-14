@@ -1,11 +1,15 @@
 import { defineConfig } from 'vite';
-import dioxus from '@dioxus/devtools';
+import { resolve } from 'node:path';
 
 export default defineConfig({
-  plugins: [dioxus()],
-  resolve: {
-    alias: {
-      '@': '/src',
-    },
+  root: resolve(__dirname),
+  build: {
+    outDir: resolve(__dirname, 'dist'),
+    emptyOutDir: false,
+  },
+  server: {
+    host: '127.0.0.1',
+    port: 5173,
+    strictPort: true,
   },
 });

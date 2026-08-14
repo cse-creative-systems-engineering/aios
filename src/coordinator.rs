@@ -1,37 +1,37 @@
 use crate::action::FileActionStore;
 use crate::audit::{AuditLog, audit_log_path};
+use crate::boot::BootRecoverySpecialist;
 use crate::broker::{Broker, BrokerClient};
 use crate::capability::{
     Capability, CapabilityToken, Clearance, Operation, PrincipalId, ResourceId, ResourceState,
     ToolDefinition,
 };
 use crate::config::{AiosConfig, ConfigError, ModelConfig, ProviderConfig};
+use crate::drivers::DriversSpecialist;
 use crate::executor::StagedExecutor;
 use crate::graph::{NodeType, SystemGraph};
+use crate::graphics::GraphicsSpecialist;
 use crate::http::HttpBackend;
 use crate::local::LocalLlama;
-use crate::wifi_driver::{MockDriverControl, WifiDriverResourceDriver};
+use crate::memory::MemorySpecialist;
 use crate::model::{
     AgentRole, ConnectivityProbe, ConnectivityState, ModelEntry, ModelGateway, ModelId,
     ModelMessage, ModelRegistry, ModelRole, ModelTask, ProviderId, RoutingDecision, RoutingError,
 };
+use crate::network::NetworkSpecialist;
+use crate::packages::PackagesSpecialist;
 use crate::planner::{
     AgentError, Planner, ToolCallRequest, parse_tool_calls, strip_tool_calls_json,
 };
+use crate::power::PowerSpecialist;
+use crate::processes::ProcessesSpecialist;
 use crate::protocol::{DataClassification, HealthState, now};
+use crate::security::SecuritySpecialist;
+use crate::storage::StorageSpecialist;
 use crate::tools::{ToolError, ToolRegistry, model_tool_instructions, resource_index};
 use crate::verifier::Verifier;
 use crate::wifi::WifiSpecialist;
-use crate::boot::BootRecoverySpecialist;
-use crate::drivers::DriversSpecialist;
-use crate::graphics::GraphicsSpecialist;
-use crate::memory::MemorySpecialist;
-use crate::network::NetworkSpecialist;
-use crate::packages::PackagesSpecialist;
-use crate::power::PowerSpecialist;
-use crate::processes::ProcessesSpecialist;
-use crate::security::SecuritySpecialist;
-use crate::storage::StorageSpecialist;
+use crate::wifi_driver::{MockDriverControl, WifiDriverResourceDriver};
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc, RwLock,
@@ -68,6 +68,11 @@ pub struct Coordinator {
     security_specialist: Option<SecuritySpecialist>,
     boot_specialist: Option<BootRecoverySpecialist>,
     packages_specialist: Option<PackagesSpecialist>,
+}
+
+pub struct ChatOutcome {
+    pub answer: String,
+    pub tool_results: Vec<crate::tools::ToolResult>,
 }
 
 impl Coordinator {
@@ -267,8 +272,10 @@ impl Coordinator {
                 let handler_tool_id = tool_id.clone();
                 coordinator.broker.spawn_specialist(&tool_id, {
                     std::sync::Arc::new(move |request| {
-                        let specialist =
-                            WifiSpecialist { device: device.clone(), specialist: specialist_id.clone() };
+                        let specialist = WifiSpecialist {
+                            device: device.clone(),
+                            specialist: specialist_id.clone(),
+                        };
                         let graph = graph.read().expect("graph lock");
                         if handler_tool_id.ends_with("observe_device") {
                             specialist.observe(&graph)
@@ -287,7 +294,9 @@ impl Coordinator {
                                 data: None,
                                 error: Some(crate::protocol::ToolError {
                                     code: crate::protocol::ToolErrorCode::OperationNotSupported,
-                                    message: format!("{handler_tool_id} not supported in read-only mode"),
+                                    message: format!(
+                                        "{handler_tool_id} not supported in read-only mode"
+                                    ),
                                     recoverable: false,
                                 }),
                                 health_impact: None,
@@ -554,10 +563,8 @@ impl Coordinator {
         coordinator.graphics_specialist = graphics_specialist;
         if let Some(specialist) = coordinator.graphics_specialist.as_ref() {
             let definitions = specialist.tool_definitions();
-            let principal = PrincipalId::agent(
-                crate::graphics::PACKAGE_ID,
-                specialist.specialist.0.clone(),
-            );
+            let principal =
+                PrincipalId::agent(crate::graphics::PACKAGE_ID, specialist.specialist.0.clone());
             let capabilities = definitions
                 .iter()
                 .flat_map(|definition| definition.required_capabilities.clone())
@@ -624,10 +631,8 @@ impl Coordinator {
         coordinator.memory_specialist = memory_specialist;
         if let Some(specialist) = coordinator.memory_specialist.as_ref() {
             let definitions = specialist.tool_definitions();
-            let principal = PrincipalId::agent(
-                crate::memory::PACKAGE_ID,
-                specialist.specialist.0.clone(),
-            );
+            let principal =
+                PrincipalId::agent(crate::memory::PACKAGE_ID, specialist.specialist.0.clone());
             let capabilities = definitions
                 .iter()
                 .flat_map(|definition| definition.required_capabilities.clone())
@@ -695,10 +700,8 @@ impl Coordinator {
         coordinator.power_specialist = power_specialist;
         if let Some(specialist) = coordinator.power_specialist.as_ref() {
             let definitions = specialist.tool_definitions();
-            let principal = PrincipalId::agent(
-                crate::power::PACKAGE_ID,
-                specialist.specialist.0.clone(),
-            );
+            let principal =
+                PrincipalId::agent(crate::power::PACKAGE_ID, specialist.specialist.0.clone());
             let capabilities = definitions
                 .iter()
                 .flat_map(|definition| definition.required_capabilities.clone())
@@ -774,10 +777,8 @@ impl Coordinator {
         coordinator.security_specialist = security_specialist;
         if let Some(specialist) = coordinator.security_specialist.as_ref() {
             let definitions = specialist.tool_definitions();
-            let principal = PrincipalId::agent(
-                crate::security::PACKAGE_ID,
-                specialist.specialist.0.clone(),
-            );
+            let principal =
+                PrincipalId::agent(crate::security::PACKAGE_ID, specialist.specialist.0.clone());
             let capabilities = definitions
                 .iter()
                 .flat_map(|definition| definition.required_capabilities.clone())
@@ -924,10 +925,8 @@ impl Coordinator {
         coordinator.boot_specialist = boot_specialist;
         if let Some(specialist) = coordinator.boot_specialist.as_ref() {
             let definitions = specialist.tool_definitions();
-            let principal = PrincipalId::agent(
-                crate::boot::PACKAGE_ID,
-                specialist.specialist.0.clone(),
-            );
+            let principal =
+                PrincipalId::agent(crate::boot::PACKAGE_ID, specialist.specialist.0.clone());
             let capabilities = definitions
                 .iter()
                 .flat_map(|definition| definition.required_capabilities.clone())
@@ -994,10 +993,8 @@ impl Coordinator {
         coordinator.packages_specialist = packages_specialist;
         if let Some(specialist) = coordinator.packages_specialist.as_ref() {
             let definitions = specialist.tool_definitions();
-            let principal = PrincipalId::agent(
-                crate::packages::PACKAGE_ID,
-                specialist.specialist.0.clone(),
-            );
+            let principal =
+                PrincipalId::agent(crate::packages::PACKAGE_ID, specialist.specialist.0.clone());
             let capabilities = definitions
                 .iter()
                 .flat_map(|definition| definition.required_capabilities.clone())
@@ -1060,9 +1057,9 @@ impl Coordinator {
         let store = match FileActionStore::new(&action_dir) {
             Ok(store) => store,
             Err(e) => {
-                return Err(BootError::Discovery(
-                    format!("failed to init action store: {e:?}"),
-                ));
+                return Err(BootError::Discovery(format!(
+                    "failed to init action store: {e:?}"
+                )));
             }
         };
         let device_id = coordinator
@@ -1082,12 +1079,10 @@ impl Coordinator {
                 Box::new(MockDriverControl::new())
             };
         let driver = WifiDriverResourceDriver::new(control, device_id);
-        coordinator.broker.set_executor(StagedExecutor::new(
-            Box::new(store),
-            Box::new(driver),
-        ));
         coordinator
-            .record_audit("coordinator", "boot", "system", "ok");
+            .broker
+            .set_executor(StagedExecutor::new(Box::new(store), Box::new(driver)));
+        coordinator.record_audit("coordinator", "boot", "system", "ok");
         Ok(coordinator)
     }
 
@@ -1102,7 +1097,11 @@ impl Coordinator {
     /// actions once the audit log is unavailable.
     pub(crate) fn record_audit(&self, actor: &str, action: &str, target: &str, outcome: &str) {
         if let Err(e) = self.audit.record(actor, action, target, outcome) {
-            self.broker.core().lock().expect("broker lock").set_audit_broken(true);
+            self.broker
+                .core()
+                .lock()
+                .expect("broker lock")
+                .set_audit_broken(true);
             eprintln!("aios: audit log failure — entering read-only mode: {e}");
         }
     }
@@ -1179,8 +1178,16 @@ impl Coordinator {
     }
 
     pub fn chat_with_tools(&self, messages: Vec<ModelMessage>) -> Result<String, AgentError> {
+        Ok(self.chat_with_tools_outcome(messages)?.answer)
+    }
+
+    pub fn chat_with_tools_outcome(
+        &self,
+        messages: Vec<ModelMessage>,
+    ) -> Result<ChatOutcome, AgentError> {
         const MAX_TOOL_TURNS: usize = 4;
         let mut messages = messages;
+        let mut tool_results = Vec::new();
         if let Some(system) = messages
             .first_mut()
             .filter(|message| message.role == ModelRole::System)
@@ -1210,17 +1217,28 @@ impl Coordinator {
                 // a model tool, and we do not force a tool for every trivial
                 // read. If the Planner chose not to call a tool, its plain
                 // answer is returned.
-                return Ok(strip_tool_calls_json(&answer).trim().to_string());
+                return Ok(ChatOutcome {
+                    answer: strip_tool_calls_json(&answer).trim().to_string(),
+                    tool_results,
+                });
             }
 
             messages.push(ModelMessage::new(ModelRole::Assistant, &answer));
             for call in calls {
                 let result = self.run_tool_as("planner", &call);
                 let content = match result {
-                    Ok(result) => format!("tool {} result:\n{}", result.tool, result.text),
+                    Ok(result) => {
+                        let content = format!("tool {} result:\n{}", result.tool, result.text);
+                        tool_results.push(result);
+                        content
+                    }
                     Err(error) => format!("tool {} error: {}", call.name, error),
                 };
                 messages.push(ModelMessage::new(ModelRole::User, content));
+                messages.push(ModelMessage::new(
+                    ModelRole::User,
+                    "The tool result above is complete and authoritative. Do not call another tool. Answer the original user question now using only the returned evidence. If the evidence does not contain the requested metric, say that it is unavailable.",
+                ));
             }
             if turn + 1 == MAX_TOOL_TURNS {
                 self.record_audit("planner", "tool_loop", "chat", "turn cap reached");
@@ -1231,7 +1249,10 @@ impl Coordinator {
             answer = self.planner.chat_with(messages.clone(), None)?;
         }
 
-        Ok(strip_tool_calls_json(&answer).trim().to_string())
+        Ok(ChatOutcome {
+            answer: strip_tool_calls_json(&answer).trim().to_string(),
+            tool_results,
+        })
     }
 
     pub fn local_context(&self) -> Option<String> {
@@ -1273,7 +1294,8 @@ impl Coordinator {
         // (message-protocol §8.1); generic read-only tools route to the graph.
         let is_wifi_tool = matches!(
             call.name.as_str(),
-            "wifi.observe_device" | "wifi.diagnose_fault"
+            "wifi.observe_device"
+                | "wifi.diagnose_fault"
                 | "wifi.stage_driver"
                 | "wifi.request_reset"
         );
@@ -1293,15 +1315,15 @@ impl Coordinator {
             call.name.as_str(),
             "graphics.observe_graphics" | "graphics.diagnose_fault"
         );
-         let is_memory_tool = matches!(
-             call.name.as_str(),
-             "memory.observe_memory" | "memory.diagnose_fault"
-         );
-         let is_processes_tool = matches!(
-             call.name.as_str(),
-             "processes.observe_process" | "processes.diagnose_fault"
-         );
-         let is_power_tool = matches!(
+        let is_memory_tool = matches!(
+            call.name.as_str(),
+            "memory.observe_memory" | "memory.diagnose_fault"
+        );
+        let is_processes_tool = matches!(
+            call.name.as_str(),
+            "processes.observe_process" | "processes.diagnose_fault"
+        );
+        let is_power_tool = matches!(
             call.name.as_str(),
             "power.observe_thermal" | "power.diagnose_fault"
         );
@@ -1321,9 +1343,7 @@ impl Coordinator {
             let device = self
                 .wifi_specialist
                 .as_ref()
-                .ok_or_else(|| {
-                    ToolError::Permission("no wi-fi specialist instantiated".into())
-                })?
+                .ok_or_else(|| ToolError::Permission("no wi-fi specialist instantiated".into()))?
                 .device
                 .clone();
             ResourceId(device.0)
@@ -1337,16 +1357,16 @@ impl Coordinator {
             ResourceId("power:domain".into())
         } else if is_graphics_tool {
             ResourceId("graphics:domain".into())
-         } else if is_memory_tool {
-             ResourceId("memory:domain".into())
-         } else if is_processes_tool {
-             ResourceId("processes:domain".into())
-         } else if is_security_tool {
-             ResourceId("security:domain".into())
-         } else if is_boot_tool {
-             ResourceId("boot:domain".into())
-         } else if is_packages_tool {
-             ResourceId("packages:domain".into())
+        } else if is_memory_tool {
+            ResourceId("memory:domain".into())
+        } else if is_processes_tool {
+            ResourceId("processes:domain".into())
+        } else if is_security_tool {
+            ResourceId("security:domain".into())
+        } else if is_boot_tool {
+            ResourceId("boot:domain".into())
+        } else if is_packages_tool {
+            ResourceId("packages:domain".into())
         } else {
             ResourceId("system:graph".into())
         };
@@ -1361,9 +1381,7 @@ impl Coordinator {
             })
             .cloned()
             .ok_or_else(|| {
-                ToolError::Permission(format!(
-                    "no session token for {operation:?} on {resource}"
-                ))
+                ToolError::Permission(format!("no session token for {operation:?} on {resource}"))
             })?;
         let parameters = tool_parameters(operation, &call.arguments);
         let mut request = crate::protocol::ToolRequest::new(
@@ -1486,11 +1504,8 @@ impl Coordinator {
                 operation,
             })
             .collect();
-        self.broker.register_principal(
-            principal.clone(),
-            capabilities,
-            Clearance::max(),
-        );
+        self.broker
+            .register_principal(principal.clone(), capabilities, Clearance::max());
         self.session_tokens = self
             .broker
             .client(principal.clone())
@@ -1636,7 +1651,12 @@ impl Coordinator {
         let mut core = self.broker.core().lock().expect("broker lock");
         match core.submit_user_response(response) {
             Ok(()) => {
-                self.record_audit("user", "approval", &format!("{approval_request_id}"), "approved");
+                self.record_audit(
+                    "user",
+                    "approval",
+                    &format!("{approval_request_id}"),
+                    "approved",
+                );
                 "approval recorded".to_string()
             }
             Err(e) => format!("approval failed: {e:?}"),
@@ -1649,12 +1669,24 @@ impl Coordinator {
             .map_err(|e| e.to_string());
         let summary = match graph {
             Ok(ref mut graph) => {
-                if let Err(error) = crate::discovery::ServiceDiscovery::new().populate(graph, now())
-                {
-                    return format!("scan failed: {error}");
-                }
+                let service_warning =
+                    match crate::discovery::ServiceDiscovery::new().populate(graph, now()) {
+                        Ok(_) => None,
+                        Err(error) => {
+                            self.record_audit(
+                                "facade",
+                                "service-discovery",
+                                "systemd",
+                                &format!("unavailable: {error}"),
+                            );
+                            Some(error.to_string())
+                        }
+                    };
                 *self.graph.write().expect("graph lock") = graph.clone();
-                let text = scan_summary(graph);
+                let mut text = scan_summary(graph);
+                if let Some(error) = service_warning {
+                    text.push_str(&format!("\nservice discovery unavailable: {error}"));
+                }
                 self.last_scan_summary
                     .write()
                     .expect("scan lock")
@@ -1786,19 +1818,19 @@ fn seed_security_domain(graph: &mut SystemGraph) {
         node.health = HealthState::Healthy;
         let _ = graph.add_node(node);
     };
-    seed(graph, "guardian:0", NodeType::Guardian, "Infrastructure Guardian");
+    seed(
+        graph,
+        "guardian:0",
+        NodeType::Guardian,
+        "Infrastructure Guardian",
+    );
     seed(
         graph,
         "capability:session",
         NodeType::Capability,
         "session capability",
     );
-    seed(
-        graph,
-        "policy:broker",
-        NodeType::Policy,
-        "broker policy",
-    );
+    seed(graph, "policy:broker", NodeType::Policy, "broker policy");
 }
 
 fn seed_boot_domain(graph: &mut SystemGraph) {
@@ -1821,7 +1853,12 @@ fn seed_boot_domain(graph: &mut SystemGraph) {
         node.health = HealthState::Healthy;
         let _ = graph.add_node(node);
     };
-    seed(graph, "bootimage:primary", NodeType::BootImage, "primary boot image");
+    seed(
+        graph,
+        "bootimage:primary",
+        NodeType::BootImage,
+        "primary boot image",
+    );
     seed(
         graph,
         "snapshot:pre-update",
@@ -1861,7 +1898,10 @@ fn protocol_tool_result(
             }
             parts.join(" ")
         }
-        Some(crate::protocol::ToolData::Diagnosis { findings, confidence }) => format!(
+        Some(crate::protocol::ToolData::Diagnosis {
+            findings,
+            confidence,
+        }) => format!(
             "confidence={confidence} findings=[{}]",
             findings.join(" | ")
         ),
@@ -2078,9 +2118,9 @@ mod tests {
     use super::*;
     use crate::broker::build_request;
     use crate::capability::{RiskLevel, ToolDefinition};
-    use crate::guardian::Guardian;
     use crate::config::ProviderConfig;
     use crate::graph::NodeId;
+    use crate::guardian::Guardian;
     use crate::mocks::MockWifiDriver;
     use crate::protocol::{
         DataClassification, HealthState, ToolData, ToolErrorCode, ToolParameters, ToolStatus,
@@ -2332,16 +2372,16 @@ mod tests {
         }
         {
             let mut graph = coordinator.graph.write().expect("graph lock");
-            let has_storage = graph
-                .nodes()
-                .values()
-                .any(|node| node.node_type == NodeType::Filesystem
-                    || node.label.starts_with("block device "));
+            let has_storage = graph.nodes().values().any(|node| {
+                node.node_type == NodeType::Filesystem || node.label.starts_with("block device ")
+            });
             if !has_storage {
                 let mut nvme = crate::graph::NodeMetadata::new(
                     NodeId("device:nvme0n1".into()),
                     NodeType::Device,
-                    crate::graph::ProvenanceSource::Discovered { via: "sysfs".into() },
+                    crate::graph::ProvenanceSource::Discovered {
+                        via: "sysfs".into(),
+                    },
                     crate::graph::TrustLevel::Trusted,
                     crate::protocol::now(),
                 );
@@ -2374,10 +2414,8 @@ mod tests {
             ResourceId("storage:domain".into()),
             ResourceState::Available,
         );
-        let principal = PrincipalId::agent(
-            crate::storage::PACKAGE_ID,
-            specialist.specialist.0.clone(),
-        );
+        let principal =
+            PrincipalId::agent(crate::storage::PACKAGE_ID, specialist.specialist.0.clone());
         coordinator.broker.register_principal(
             principal.clone(),
             vec![
@@ -2460,7 +2498,9 @@ mod tests {
                 let mut eth = crate::graph::NodeMetadata::new(
                     NodeId("device:net-enx00deadbeef".into()),
                     NodeType::Device,
-                    crate::graph::ProvenanceSource::Discovered { via: "sysfs".into() },
+                    crate::graph::ProvenanceSource::Discovered {
+                        via: "sysfs".into(),
+                    },
                     crate::graph::TrustLevel::Trusted,
                     crate::protocol::now(),
                 );
@@ -2492,10 +2532,8 @@ mod tests {
             ResourceId("network:domain".into()),
             ResourceState::Available,
         );
-        let principal = PrincipalId::agent(
-            crate::network::PACKAGE_ID,
-            specialist.specialist.0.clone(),
-        );
+        let principal =
+            PrincipalId::agent(crate::network::PACKAGE_ID, specialist.specialist.0.clone());
         coordinator.broker.register_principal(
             principal.clone(),
             vec![
@@ -2542,11 +2580,7 @@ mod tests {
         let result = coordinator
             .run_tool_as("planner", &call)
             .expect("network observe through broker");
-        assert!(
-            result.text.contains("wired_interfaces"),
-            "{}",
-            result.text
-        );
+        assert!(result.text.contains("wired_interfaces"), "{}", result.text);
     }
 
     #[test]
@@ -2574,17 +2608,18 @@ mod tests {
         }
         {
             let mut graph = coordinator.graph.write().expect("graph lock");
-            let has_hardware = graph
-                .nodes()
-                .values()
-                .any(|node| node.node_type == NodeType::Driver
+            let has_hardware = graph.nodes().values().any(|node| {
+                node.node_type == NodeType::Driver
                     || node.node_type == NodeType::Firmware
-                    || node.node_id.0.starts_with("device:pci-"));
+                    || node.node_id.0.starts_with("device:pci-")
+            });
             if !has_hardware {
                 let mut gpu = crate::graph::NodeMetadata::new(
                     NodeId("device:pci-0000:01:00.0".into()),
                     NodeType::Device,
-                    crate::graph::ProvenanceSource::Discovered { via: "sysfs".into() },
+                    crate::graph::ProvenanceSource::Discovered {
+                        via: "sysfs".into(),
+                    },
                     crate::graph::TrustLevel::Trusted,
                     crate::protocol::now(),
                 );
@@ -2615,10 +2650,8 @@ mod tests {
             ResourceId("drivers:domain".into()),
             ResourceState::Available,
         );
-        let principal = PrincipalId::agent(
-            crate::drivers::PACKAGE_ID,
-            specialist.specialist.0.clone(),
-        );
+        let principal =
+            PrincipalId::agent(crate::drivers::PACKAGE_ID, specialist.specialist.0.clone());
         coordinator.broker.register_principal(
             principal.clone(),
             vec![
@@ -2700,7 +2733,9 @@ mod tests {
                     let mut gpu = crate::graph::NodeMetadata::new(
                         NodeId("device:pci-0000:00:02.0".into()),
                         NodeType::Device,
-                        crate::graph::ProvenanceSource::Discovered { via: "sysfs".into() },
+                        crate::graph::ProvenanceSource::Discovered {
+                            via: "sysfs".into(),
+                        },
                         crate::graph::TrustLevel::Trusted,
                         crate::protocol::now(),
                     );
@@ -2735,10 +2770,8 @@ mod tests {
             ResourceId("graphics:domain".into()),
             ResourceState::Available,
         );
-        let principal = PrincipalId::agent(
-            crate::graphics::PACKAGE_ID,
-            specialist.specialist.0.clone(),
-        );
+        let principal =
+            PrincipalId::agent(crate::graphics::PACKAGE_ID, specialist.specialist.0.clone());
         coordinator.broker.register_principal(
             principal.clone(),
             vec![
@@ -2819,7 +2852,9 @@ mod tests {
                     let mut total = crate::graph::NodeMetadata::new(
                         NodeId("memory:total".into()),
                         NodeType::Memory,
-                        crate::graph::ProvenanceSource::Discovered { via: "sysfs".into() },
+                        crate::graph::ProvenanceSource::Discovered {
+                            via: "sysfs".into(),
+                        },
                         crate::graph::TrustLevel::Trusted,
                         crate::protocol::now(),
                     );
@@ -2850,14 +2885,11 @@ mod tests {
                 })
             });
         }
-        coordinator.broker.set_resource_state(
-            ResourceId("memory:domain".into()),
-            ResourceState::Available,
-        );
-        let principal = PrincipalId::agent(
-            crate::memory::PACKAGE_ID,
-            specialist.specialist.0.clone(),
-        );
+        coordinator
+            .broker
+            .set_resource_state(ResourceId("memory:domain".into()), ResourceState::Available);
+        let principal =
+            PrincipalId::agent(crate::memory::PACKAGE_ID, specialist.specialist.0.clone());
         coordinator.broker.register_principal(
             principal.clone(),
             vec![
@@ -3061,13 +3093,16 @@ mod tests {
                     let mut temp = crate::graph::NodeMetadata::new(
                         NodeId("sensor:hwmon0-temp1".into()),
                         NodeType::Sensor,
-                        crate::graph::ProvenanceSource::Discovered { via: "sysfs".into() },
+                        crate::graph::ProvenanceSource::Discovered {
+                            via: "sysfs".into(),
+                        },
                         crate::graph::TrustLevel::Trusted,
                         crate::protocol::now(),
                     );
                     temp.label = "coretemp temp1".into();
                     temp.attributes.insert("value".into(), "52000".into());
-                    temp.attributes.insert("unit".into(), "millidegree_c".into());
+                    temp.attributes
+                        .insert("unit".into(), "millidegree_c".into());
                     temp.health = HealthState::Healthy;
                     graph.add_node(temp).unwrap();
                     PowerSpecialist::instantiate(&mut graph).unwrap();
@@ -3093,14 +3128,11 @@ mod tests {
                 })
             });
         }
-        coordinator.broker.set_resource_state(
-            ResourceId("power:domain".into()),
-            ResourceState::Available,
-        );
-        let principal = PrincipalId::agent(
-            crate::power::PACKAGE_ID,
-            specialist.specialist.0.clone(),
-        );
+        coordinator
+            .broker
+            .set_resource_state(ResourceId("power:domain".into()), ResourceState::Available);
+        let principal =
+            PrincipalId::agent(crate::power::PACKAGE_ID, specialist.specialist.0.clone());
         coordinator.broker.register_principal(
             principal.clone(),
             vec![
@@ -3204,10 +3236,8 @@ mod tests {
             ResourceId("security:domain".into()),
             ResourceState::Available,
         );
-        let principal = PrincipalId::agent(
-            crate::security::PACKAGE_ID,
-            specialist.specialist.0.clone(),
-        );
+        let principal =
+            PrincipalId::agent(crate::security::PACKAGE_ID, specialist.specialist.0.clone());
         coordinator.broker.register_principal(
             principal.clone(),
             vec![
@@ -3311,14 +3341,11 @@ mod tests {
                 })
             });
         }
-        coordinator.broker.set_resource_state(
-            ResourceId("boot:domain".into()),
-            ResourceState::Available,
-        );
-        let principal = PrincipalId::agent(
-            crate::boot::PACKAGE_ID,
-            specialist.specialist.0.clone(),
-        );
+        coordinator
+            .broker
+            .set_resource_state(ResourceId("boot:domain".into()), ResourceState::Available);
+        let principal =
+            PrincipalId::agent(crate::boot::PACKAGE_ID, specialist.specialist.0.clone());
         coordinator.broker.register_principal(
             principal.clone(),
             vec![
@@ -3400,15 +3427,14 @@ mod tests {
                     let mut pkg = crate::graph::NodeMetadata::new(
                         NodeId("package:linux-kernel".into()),
                         NodeType::Package,
-                        crate::graph::ProvenanceSource::Discovered {
-                            via: "dpkg".into(),
-                        },
+                        crate::graph::ProvenanceSource::Discovered { via: "dpkg".into() },
                         crate::graph::TrustLevel::Trusted,
                         crate::protocol::now(),
                     );
                     pkg.label = "linux-kernel".into();
                     pkg.attributes.insert("version".into(), "6.1.0".into());
-                    pkg.attributes.insert("signature".into(), "sha256:abc123".into());
+                    pkg.attributes
+                        .insert("signature".into(), "sha256:abc123".into());
                     pkg.attributes.insert("state".into(), "installed".into());
                     graph.add_node(pkg).unwrap();
                     PackagesSpecialist::instantiate(&mut graph).ok()
@@ -3439,10 +3465,8 @@ mod tests {
             ResourceId("packages:domain".into()),
             ResourceState::Available,
         );
-        let principal = PrincipalId::agent(
-            crate::packages::PACKAGE_ID,
-            specialist.specialist.0.clone(),
-        );
+        let principal =
+            PrincipalId::agent(crate::packages::PACKAGE_ID, specialist.specialist.0.clone());
         coordinator.broker.register_principal(
             principal.clone(),
             vec![
@@ -3542,11 +3566,9 @@ mod tests {
             required_capabilities: vec![capability.clone()],
             description: format!("{tool_id} on {device}"),
         });
-        coordinator.broker.register_principal(
-            principal.clone(),
-            vec![capability],
-            clearance,
-        );
+        coordinator
+            .broker
+            .register_principal(principal.clone(), vec![capability], clearance);
         coordinator
             .broker
             .set_resource_state(device.clone(), ResourceState::Available);
@@ -3672,10 +3694,12 @@ mod tests {
         driver
             .health_ok
             .store(false, std::sync::atomic::Ordering::Relaxed);
-        coordinator.broker.set_executor(crate::executor::StagedExecutor::new(
-            Box::new(store),
-            Box::new(driver),
-        ));
+        coordinator
+            .broker
+            .set_executor(crate::executor::StagedExecutor::new(
+                Box::new(store),
+                Box::new(driver),
+            ));
         let token = capability_token(&coordinator, &principal, Operation::Stage);
         let request = stage_request(&principal, &device, &token, 9002);
         let result = coordinator
@@ -3685,10 +3709,7 @@ mod tests {
             .expect("broker response");
         assert_eq!(result.status, ToolStatus::RolledBack);
         assert_eq!(
-            result
-                .error
-                .expect("rollback explains health failure")
-                .code,
+            result.error.expect("rollback explains health failure").code,
             ToolErrorCode::HealthCheckFailed
         );
     }
@@ -3711,7 +3732,14 @@ mod tests {
             Clearance(RiskLevel::Recovery),
         );
         let token = capability_token(&coordinator, &principal, Operation::Reset);
-        let request = reset_request(&principal, &device, &token, uuid::Uuid::new_v4(), [7; 32], 9101);
+        let request = reset_request(
+            &principal,
+            &device,
+            &token,
+            uuid::Uuid::new_v4(),
+            [7; 32],
+            9101,
+        );
         let result = coordinator
             .broker
             .client(principal)
@@ -3741,7 +3769,12 @@ mod tests {
         let action_id = uuid::Uuid::new_v4();
         let plan_hash = [9; 32];
         let (request_id, _) = coordinator
-            .issue_reset_approval(action_id, plan_hash, device.clone(), "wifi.request_reset".into())
+            .issue_reset_approval(
+                action_id,
+                plan_hash,
+                device.clone(),
+                "wifi.request_reset".into(),
+            )
             .expect("approval request issued");
         coordinator.submit_approval(request_id, true);
         let token = capability_token(&coordinator, &principal, Operation::Reset);

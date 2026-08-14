@@ -1,8 +1,8 @@
 mod app;
-mod components;
-
-use dioxus::prelude::*;
+mod types;
+mod ipc;
 
 fn main() {
-    dioxus_desktop::launch(app::App);
+    let cfg = dioxus_desktop::Config::default();
+    dioxus_desktop::launch::launch(app::app, vec![], cfg);
 }

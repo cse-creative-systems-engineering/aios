@@ -1,6 +1,6 @@
-mod chat;
-mod sidebar;
-mod canvas;
-mod widgets;
-mod settings;
-mod approval;
+pub mod chat;
+pub mod sidebar;
+pub mod canvas;
+pub mod widgets;
+pub mod settings;
+pub mod approval;

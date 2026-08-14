@@ -1,7 +1,7 @@
 use dioxus::prelude::*;
 
 #[component]
-pub fn Sidebar() -> Element {
+pub fn Sidebar(cx: Scope) -> Element {
     rsx! {
         div {
             class: "flex flex-col w-[15%] min-w-[200px] max-w-[400px] bg-surface-100 border-r border-surface-300/50 h-full",
@@ -10,7 +10,7 @@ pub fn Sidebar() -> Element {
                 class: "flex-1 overflow-y-auto p-4",
                 ChatMessages {},
             },
-            ChatInput {},
+            ChatInput {  },
             ApprovalQueue {},
         }
     }
@@ -57,8 +57,8 @@ fn ChatMessages() -> Element {
 }
 
 #[component]
-fn ChatInput() -> Element {
-    let mut input: String = use_signal(|| String::new());
+fn ChatInput(cx: Scope) -> Element {
+    let input = use_state(&cx, || String::new());
 
     rsx! {
         div {
@@ -69,15 +69,13 @@ fn ChatInput() -> Element {
                     class: "flex-1 bg-surface-300 border border-surface-300/50 rounded px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-primary-400",
                     placeholder: "Ask Aios...",
                     value: "{input}",
-                    oninput: move |e| input.set(e.value),
-                    onkeydown: move |e| {
-                        if e.key == "Enter" && !input().is_empty() {
-                            let _ = input;
-                        }
-                    },
+                    oninput: move |e| input.set(e.value().to_string()),
                 }
                 button {
                     class: "px-3 py-2 bg-primary-500 text-white rounded text-sm hover:bg-primary-600 transition-colors",
+                    onclick: move |_| {
+                        // placeholder: will call IPC to submit prompt
+                    },
                     "Send"
                 }
             }

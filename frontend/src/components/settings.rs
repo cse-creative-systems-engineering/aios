@@ -1,10 +1,10 @@
 use dioxus::prelude::*;
 
 #[component]
-pub fn SettingsPanel() -> Element {
-    let mut providers: String = use_signal(|| String::new());
-    let mut api_keys: String = use_signal(|| String::new());
-    let mut models: String = use_signal(|| String::new());
+pub fn SettingsPanel(cx: Scope) -> Element {
+    let providers = use_state(&cx, || String::new());
+    let api_keys = use_state(&cx, || String::new());
+    let models = use_state(&cx, || String::new());
 
     rsx! {
         div {
@@ -24,7 +24,7 @@ pub fn SettingsPanel() -> Element {
                         class: "bg-surface-300 border border-surface-300/50 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-primary-400",
                         rows: "3",
                         value: "{providers}",
-                        oninput: move |e| providers.set(e.value),
+                        oninput: move |e| providers.set(e.value().to_string()),
                         placeholder: "Enter provider names (comma-separated)",
                     }
                 }
@@ -37,7 +37,7 @@ pub fn SettingsPanel() -> Element {
                         class: "bg-surface-300 border border-surface-300/50 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-primary-400",
                         rows: "3",
                         value: "{api_keys}",
-                        oninput: move |e| api_keys.set(e.value),
+                        oninput: move |e| api_keys.set(e.value().to_string()),
                         placeholder: "Enter API keys (comma-separated)",
                     }
                 }
@@ -50,7 +50,7 @@ pub fn SettingsPanel() -> Element {
                         class: "bg-surface-300 border border-surface-300/50 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-primary-400",
                         rows: "3",
                         value: "{models}",
-                        oninput: move |e| models.set(e.value),
+                        oninput: move |e| models.set(e.value().to_string()),
                         placeholder: "Enter default models per task type",
                     }
                 }

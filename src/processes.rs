@@ -25,6 +25,31 @@ use std::collections::HashMap;
 
 pub const PACKAGE_ID: &str = "processes.specialist";
 
+fn cpu_sample() -> Option<(u64, u64)> {
+    let contents = std::fs::read_to_string("/proc/stat").ok()?;
+    let line = contents.lines().find(|line| line.starts_with("cpu "))?;
+    let values: Vec<u64> = line
+        .split_whitespace()
+        .skip(1)
+        .filter_map(|value| value.parse().ok())
+        .collect();
+    let total = values.iter().sum();
+    let idle = values.get(3).copied().unwrap_or(0) + values.get(4).copied().unwrap_or(0);
+    Some((total, idle))
+}
+
+fn cpu_utilization() -> Option<f64> {
+    let first = cpu_sample()?;
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    let second = cpu_sample()?;
+    let total_delta = second.0.checked_sub(first.0)?;
+    let idle_delta = second.1.checked_sub(first.1)?;
+    if total_delta == 0 || idle_delta > total_delta {
+        return None;
+    }
+    Some((total_delta - idle_delta) as f64 * 100.0 / total_delta as f64)
+}
+
 /// The process domain: the umbrella specialist and the resources it owns.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProcessesSpecialist {
@@ -52,9 +77,7 @@ pub enum ProcessesError {
 impl std::fmt::Display for ProcessesError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NoProcessResources => {
-                f.write_str("no process resources were discovered")
-            }
+            Self::NoProcessResources => f.write_str("no process resources were discovered"),
             Self::Graph(reason) => {
                 write!(f, "could not instantiate processes specialist: {reason}")
             }
@@ -225,9 +248,19 @@ impl ProcessesSpecialist {
             health.nodes_with_usage.to_string(),
         );
         metrics.insert("degraded".into(), health.degraded.to_string());
+        if let Some(utilization) = cpu_utilization() {
+            metrics.insert(
+                "cpu_utilization_percent".into(),
+                format!("{utilization:.1}"),
+            );
+        }
         metrics.insert(
             "resources".into(),
-            resources.iter().map(|id| id.0.clone()).collect::<Vec<_>>().join(","),
+            resources
+                .iter()
+                .map(|id| id.0.clone())
+                .collect::<Vec<_>>()
+                .join(","),
         );
         for id in resources.iter().take(8) {
             if let Some(node) = graph.get_node(id) {
@@ -280,7 +313,10 @@ impl ProcessesSpecialist {
             confidence = 0.9;
         }
         ok(
-            crate::protocol::ToolData::Diagnosis { findings, confidence },
+            crate::protocol::ToolData::Diagnosis {
+                findings,
+                confidence,
+            },
             None,
         )
     }
@@ -304,7 +340,10 @@ fn tool(
     }
 }
 
-fn ok(data: crate::protocol::ToolData, error: Option<crate::protocol::ToolError>) -> crate::protocol::ToolResult {
+fn ok(
+    data: crate::protocol::ToolData,
+    error: Option<crate::protocol::ToolError>,
+) -> crate::protocol::ToolResult {
     crate::protocol::ToolResult {
         envelope: crate::protocol::MessageEnvelope::new(
             crate::protocol::MessageType::ToolResult,
@@ -346,9 +385,7 @@ mod tests {
         let mut node = NodeMetadata::new(
             NodeId(id.into()),
             node_type,
-            ProvenanceSource::Discovered {
-                via: "test".into(),
-            },
+            ProvenanceSource::Discovered { via: "test".into() },
             TrustLevel::Trusted,
             1,
         );
@@ -387,7 +424,12 @@ mod tests {
     fn instantiates_with_owns_edges_for_each_resource() {
         let mut graph = process_graph();
         let specialist = ProcessesSpecialist::instantiate(&mut graph).unwrap();
-        assert_eq!(graph.get_edges(&specialist.specialist, EdgeType::Owns).len(), 2);
+        assert_eq!(
+            graph
+                .get_edges(&specialist.specialist, EdgeType::Owns)
+                .len(),
+            2
+        );
         for resource in specialist.process_nodes.iter() {
             assert_eq!(
                 graph.get_owner(resource).unwrap().node_id,
@@ -493,10 +535,6 @@ mod tests {
         let specialist = ProcessesSpecialist::instantiate(&mut graph).unwrap();
         let result = specialist.observe(&graph, "device:none");
         assert_eq!(result.status, crate::protocol::ToolStatus::Failed);
-        assert!(result
-            .error
-            .unwrap()
-            .message
-            .contains("nothing matches"));
+        assert!(result.error.unwrap().message.contains("nothing matches"));
     }
 }
