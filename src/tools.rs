@@ -699,8 +699,34 @@ pub fn resource_index(graph: &SystemGraph) -> String {
     lines.join("\n")
 }
 
-pub fn model_tool_instructions() -> &'static str {
-    "Read-only machine tools are available. Never invent command output and never claim to run shell commands. The available tools are: observe, diagnose, query, deps, impact, health, wifi.observe_device, wifi.diagnose_fault, storage.observe_storage, storage.diagnose_fault, network.observe_network, network.diagnose_fault, drivers.observe_device, drivers.diagnose_fault, graphics.observe_graphics, graphics.diagnose_fault, memory.observe_memory, memory.diagnose_fault, processes.observe_process, processes.diagnose_fault, power.observe_thermal, power.diagnose_fault, security.observe_security, security.diagnose_fault, packages.observe_package, packages.diagnose_fault, boot.observe_boot, boot.diagnose_fault. To use a tool, emit a native function call: {\"tool_calls\":[{\"function\":{\"name\":\"<tool>\",\"arguments\":\"<args>\"}}]} where <tool> is exactly one of the available tools and <args> is a plain string argument. For every question about CPU utilization or process load, always call processes.observe_process with target 'all' before answering. Never answer those questions from context alone. Use query sensor for sensor readings, query memory for memory data, and query device for hardware. For a Wi-Fi device, use wifi.observe_device to read its state and wifi.diagnose_fault to diagnose it. For storage, use storage.observe_storage to read disk and filesystem state and storage.diagnose_fault to diagnose it. For the network domain, use network.observe_network to read interface and link state and network.diagnose_fault to diagnose it. For generic hardware, use drivers.observe_device to read device, driver, firmware, and module state and drivers.diagnose_fault to diagnose it (target 'all' for the whole domain). For graphics, use graphics.observe_graphics to read GPU, display, and session state and graphics.diagnose_fault to diagnose it (target 'all' for the whole domain). For memory, use memory.observe_memory to read total, used, free, swap, and pressure state and memory.diagnose_fault to diagnose it (target 'all' for the whole domain). For processes, use processes.observe_process to read per-process CPU percent, memory (RSS), state, and command line plus system-wide CPU utilization and core count, and processes.diagnose_fault to diagnose it (target 'all' reports the domain's top processes by CPU percent). For power and thermal, use power.observe_thermal to read temperature, fan, and power state and power.diagnose_fault to diagnose it (target 'all' for the whole domain). For security and identity, use security.observe_security to read identity, trust, and security state and security.diagnose_fault to diagnose it (target 'all' for the whole domain). For packages, use packages.observe_package to read package, version, and signature state and packages.diagnose_fault to diagnose it (target 'all' for the whole domain). For boot and recovery, use boot.observe_boot to read boot state and recovery-image availability and boot.diagnose_fault to diagnose it (target 'all' for the whole domain). After receiving tool results, answer only from those results. If a tool cannot establish a fact, say so."
+/// Per-domain tool claims, kept next to `model_tool_instructions` so a
+/// claims-vs-implementation test can check each claim against what the
+/// specialist actually observes. The macro expands the same literals
+/// into the public consts and the concatenated instruction, so the two
+/// cannot drift.
+macro_rules! tool_claims {
+    ($first:ident: $first_lit:literal, $( $name:ident: $lit:literal ),+ $(,)?) => {
+        pub const $first: &str = $first_lit;
+        $( pub const $name: &str = $lit; )*
+        pub fn model_tool_instructions() -> &'static str {
+            concat!($first_lit, $( " ", $lit ),*)
+        }
+    };
+}
+tool_claims! {
+    TOOL_CLAIM_HEADER: "Read-only machine tools are available. Never invent command output and never claim to run shell commands. The available tools are: observe, diagnose, query, deps, impact, health, wifi.observe_device, wifi.diagnose_fault, storage.observe_storage, storage.diagnose_fault, network.observe_network, network.diagnose_fault, drivers.observe_device, drivers.diagnose_fault, graphics.observe_graphics, graphics.diagnose_fault, memory.observe_memory, memory.diagnose_fault, processes.observe_process, processes.diagnose_fault, power.observe_thermal, power.diagnose_fault, security.observe_security, security.diagnose_fault, packages.observe_package, packages.diagnose_fault, boot.observe_boot, boot.diagnose_fault. To use a tool, emit a native function call: {\"tool_calls\":[{\"function\":{\"name\":\"<tool>\",\"arguments\":\"<args>\"}}]} where <tool> is exactly one of the available tools and <args> is a plain string argument. For every question about CPU utilization or process load, always call processes.observe_process with target 'all' before answering. Never answer those questions from context alone. Use query sensor for sensor readings, query memory for memory data, and query device for hardware.",
+    WIFI_TOOL_CLAIM: "For a Wi-Fi device, use wifi.observe_device to read its state and wifi.diagnose_fault to diagnose it.",
+    STORAGE_TOOL_CLAIM: "For storage, use storage.observe_storage to read disk and filesystem state and storage.diagnose_fault to diagnose it.",
+    NETWORK_TOOL_CLAIM: "For the network domain, use network.observe_network to read interface and link state and network.diagnose_fault to diagnose it.",
+    DRIVERS_TOOL_CLAIM: "For generic hardware, use drivers.observe_device to read device, driver, firmware, and module state and drivers.diagnose_fault to diagnose it (target 'all' for the whole domain).",
+    GRAPHICS_TOOL_CLAIM: "For graphics, use graphics.observe_graphics to read GPU, display, and session state and graphics.diagnose_fault to diagnose it (target 'all' for the whole domain).",
+    MEMORY_TOOL_CLAIM: "For memory, use memory.observe_memory to read total, available, used, free, cached, swap, and pressure state plus page fault and oom counters and memory.diagnose_fault to diagnose it (target 'all' for the whole domain).",
+    PROCESSES_TOOL_CLAIM: "For processes, use processes.observe_process to read per-process CPU percent, memory (RSS), state, and command line plus system-wide CPU utilization and core count, and processes.diagnose_fault to diagnose it (target 'all' reports the domain's top processes by CPU percent).",
+    POWER_TOOL_CLAIM: "For power and thermal, use power.observe_thermal to read temperature, fan, and power state and power.diagnose_fault to diagnose it (target 'all' for the whole domain).",
+    SECURITY_TOOL_CLAIM: "For security and identity, use security.observe_security to read identity, trust, and security state and security.diagnose_fault to diagnose it (target 'all' for the whole domain).",
+    PACKAGES_TOOL_CLAIM: "For packages, use packages.observe_package to read package, version, and signature state and packages.diagnose_fault to diagnose it (target 'all' for the whole domain).",
+    BOOT_TOOL_CLAIM: "For boot and recovery, use boot.observe_boot to read boot state and recovery-image availability and boot.diagnose_fault to diagnose it (target 'all' for the whole domain).",
+    TOOL_CLAIM_TAIL: "After receiving tool results, answer only from those results. If a tool cannot establish a fact, say so.",
 }
 
 #[cfg(test)]
@@ -925,5 +951,30 @@ mod tests {
         // The index is a compact projection: it must not dump dependency
         // chains or full attribute maps (system-graph §6.1).
         assert!(!index.contains("->"), "{index}");
+    }
+
+    #[test]
+    fn composed_instruction_contains_every_domain_claim() {
+        let text = model_tool_instructions();
+        assert!(text.starts_with("Read-only machine tools are available."));
+        assert!(text.ends_with("If a tool cannot establish a fact, say so."));
+        for claim in [
+            TOOL_CLAIM_HEADER,
+            WIFI_TOOL_CLAIM,
+            STORAGE_TOOL_CLAIM,
+            NETWORK_TOOL_CLAIM,
+            DRIVERS_TOOL_CLAIM,
+            GRAPHICS_TOOL_CLAIM,
+            MEMORY_TOOL_CLAIM,
+            PROCESSES_TOOL_CLAIM,
+            POWER_TOOL_CLAIM,
+            SECURITY_TOOL_CLAIM,
+            PACKAGES_TOOL_CLAIM,
+            BOOT_TOOL_CLAIM,
+            TOOL_CLAIM_TAIL,
+        ] {
+            assert!(text.contains(claim), "instruction missing claim: {claim:?}");
+        }
+        assert_eq!(text.len(), 3169, "instruction drifted from verified length");
     }
 }

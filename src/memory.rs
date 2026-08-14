@@ -5,12 +5,14 @@
 //! deferred and will pass through the staged executor and Guardian.
 //!
 //! Discovery represents the memory domain as `memory:total` and
-//! `memory:available` nodes (NodeType::Memory) with a `size_kb` attribute
-//! (src/discovery.rs `discover_memory`). The specialist owns those nodes via
-//! `owns` edges. Invariants MEMORY-001 (the memory subsystem is present and
-//! reports usable capacity) and MEMORY-002 (ECC errors within threshold after
-//! a staged change) are evaluated from graph evidence; missing evidence is
-//! reported as unknown, never as healthy.
+//! `memory:available` nodes (NodeType::Memory) with a `size_kb` attribute,
+//! plus `memory:pressure` and `memory:vmstat` evidence nodes carrying the
+//! full meminfo, PSI, and page counters (src/discovery.rs `discover_memory`).
+//! The specialist owns those nodes via `owns` edges. Invariants MEMORY-001
+//! (the memory subsystem is present and reports usable capacity) and
+//! MEMORY-002 (ECC errors within threshold after a staged change) are
+//! evaluated from graph evidence; missing evidence is reported as unknown,
+//! never as healthy.
 
 use crate::capability::{Capability, Operation, PrincipalId, ResourceId, RiskLevel};
 use crate::graph::{
@@ -26,7 +28,8 @@ pub const PACKAGE_ID: &str = "memory.specialist";
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MemorySpecialist {
     pub specialist: NodeId,
-    /// Memory nodes (`memory:total`, `memory:available`, ...).
+    /// Memory nodes (`memory:total`, `memory:available`,
+    /// `memory:pressure`, `memory:vmstat`, ...).
     pub memory_nodes: Vec<NodeId>,
     /// ECC sensors (`sensor:*` nodes reporting ECC/memory errors).
     pub ecc_sensors: Vec<NodeId>,
@@ -36,7 +39,7 @@ pub struct MemorySpecialist {
 pub struct MemoryHealth {
     /// Memory nodes reporting a `size_kb` attribute (MEMORY-001 evidence:
     /// present and reporting usable capacity).
-    pub nodes_with_capacity: usize,
+    pub nodes_reporting_capacity: usize,
     pub memory_nodes: usize,
     pub ecc_sensors: usize,
     /// Memory nodes not reporting Healthy.
@@ -187,7 +190,7 @@ impl MemorySpecialist {
     /// usable capacity (a `size_kb` attribute), plus memory and ECC-sensor
     /// counts for the domain.
     pub fn health(&self, graph: &SystemGraph) -> MemoryHealth {
-        let nodes_with_capacity = self
+        let nodes_reporting_capacity = self
             .memory_nodes
             .iter()
             .filter(|id| {
@@ -208,7 +211,7 @@ impl MemorySpecialist {
             })
             .count();
         MemoryHealth {
-            nodes_with_capacity,
+            nodes_reporting_capacity,
             memory_nodes: self.memory_nodes.len(),
             ecc_sensors: self.ecc_sensors.len(),
             degraded,
@@ -239,9 +242,9 @@ impl MemorySpecialist {
         matched
     }
 
-    /// Bounded observe tool: memory, swap, pressure, and ECC state for the
-    /// target resources (docs/modules/memory.md). Domain-wide when the target
-    /// is empty or `all`.
+    /// Bounded observe tool: memory, swap, pressure, vmstat, and ECC state
+    /// for the target resources (docs/modules/memory.md). Domain-wide when the
+    /// target is empty or `all`.
     pub fn observe(&self, graph: &SystemGraph, target: &str) -> crate::protocol::ToolResult {
         let resources = self.resolve_target(target);
         if resources.is_empty() {
@@ -251,23 +254,59 @@ impl MemorySpecialist {
         let mut metrics = HashMap::new();
         metrics.insert("memory_nodes".into(), health.memory_nodes.to_string());
         metrics.insert(
-            "nodes_with_capacity".into(),
-            health.nodes_with_capacity.to_string(),
+            "nodes_reporting_capacity".into(),
+            health.nodes_reporting_capacity.to_string(),
         );
         metrics.insert("ecc_sensors".into(), health.ecc_sensors.to_string());
         metrics.insert("degraded".into(), health.degraded.to_string());
-        metrics.insert(
-            "resources".into(),
-            resources.iter().map(|id| id.0.clone()).collect::<Vec<_>>().join(","),
-        );
-        for id in resources.iter().take(8) {
-            if let Some(node) = graph.get_node(id) {
-                metrics.insert(format!("state:{id}"), format!("{:?}", node.health));
-                if let Some(size) = node.attributes.get("size_kb") {
-                    metrics.insert(format!("size_kb:{id}"), size.clone());
+
+        let total = graph.get_node(&NodeId("memory:total".into()));
+        if let Some(total) = &total {
+            for (key, value) in &total.attributes {
+                if let Some(rest) = key.strip_prefix("meminfo_") {
+                    metrics.insert(format!("meminfo_{rest}"), value.clone());
                 }
             }
         }
+        let mem_kb = |node: &crate::graph::NodeMetadata, key: &str| -> Option<u64> {
+            node.attributes.get(key)?.parse().ok()
+        };
+        if let Some(node) = &total {
+            if let (Some(total_kb), Some(avail_kb)) = (
+                mem_kb(node, "meminfo_memtotal"),
+                mem_kb(node, "meminfo_memavailable"),
+            ) {
+                metrics.insert("total_kb".into(), total_kb.to_string());
+                metrics.insert("available_kb".into(), avail_kb.to_string());
+                metrics.insert("used_kb".into(), total_kb.saturating_sub(avail_kb).to_string());
+            }
+            if let Some(free_kb) = mem_kb(node, "meminfo_memfree") {
+                metrics.insert("free_kb".into(), free_kb.to_string());
+            }
+            if let (Some(swap_total), Some(swap_free)) = (
+                mem_kb(node, "meminfo_swaptotal"),
+                mem_kb(node, "meminfo_swapfree"),
+            ) {
+                metrics.insert("swap_total_kb".into(), swap_total.to_string());
+                metrics.insert("swap_free_kb".into(), swap_free.to_string());
+                metrics.insert(
+                    "swap_used_kb".into(),
+                    swap_total.saturating_sub(swap_free).to_string(),
+                );
+            }
+        }
+
+        if let Some(pressure) = graph.get_node(&NodeId("memory:pressure".into())) {
+            for (key, value) in &pressure.attributes {
+                metrics.insert(format!("pressure_{key}"), value.clone());
+            }
+        }
+        if let Some(vmstat) = graph.get_node(&NodeId("memory:vmstat".into())) {
+            for (key, value) in &vmstat.attributes {
+                metrics.insert(format!("vmstat_{key}"), value.clone());
+            }
+        }
+
         ok(
             crate::protocol::ToolData::DeviceState {
                 state: crate::capability::ResourceState::Available,
@@ -288,10 +327,9 @@ impl MemorySpecialist {
         let health = self.health(graph);
         let mut findings: Vec<String> = Vec::new();
         let mut confidence: f64 = 0.5;
-        if health.nodes_with_capacity < health.memory_nodes {
+        if health.nodes_reporting_capacity == 0 {
             findings.push(format!(
-                "MEMORY-001: {} of {} memory nodes lack capacity evidence (present but not confirmed usable)",
-                health.memory_nodes - health.nodes_with_capacity,
+                "MEMORY-001: the memory domain is present but no node reports usable capacity ({} nodes)",
                 health.memory_nodes
             ));
             confidence = 0.7;
@@ -468,7 +506,7 @@ mod tests {
         let specialist = MemorySpecialist::instantiate(&mut graph).unwrap();
         let health = specialist.health(&graph);
         assert_eq!(health.memory_nodes, 2);
-        assert_eq!(health.nodes_with_capacity, 2);
+        assert_eq!(health.nodes_reporting_capacity, 2);
         assert_eq!(health.ecc_sensors, 1);
         assert_eq!(health.degraded, 0);
     }
@@ -483,19 +521,113 @@ mod tests {
             _ => panic!("expected device state"),
         };
         assert_eq!(metrics.get("memory_nodes").unwrap(), "2");
-        assert_eq!(metrics.get("nodes_with_capacity").unwrap(), "2");
+        assert_eq!(metrics.get("nodes_reporting_capacity").unwrap(), "2");
         assert_eq!(metrics.get("ecc_sensors").unwrap(), "1");
+        assert_eq!(metrics.get("degraded").unwrap(), "0");
+    }
+
+    #[test]
+    fn observe_reports_meminfo_pressure_and_vmstat_metrics() {
+        let mut graph = memory_graph();
+        let total = NodeId("memory:total".into());
+        let mut total_node = graph.get_node(&total).unwrap().clone();
+        total_node.attributes.insert("meminfo_memtotal".into(), "16384000".into());
+        total_node.attributes.insert("meminfo_memfree".into(), "10485760".into());
+        total_node.attributes.insert("meminfo_memavailable".into(), "8123456".into());
+        total_node.attributes.insert("meminfo_swaptotal".into(), "2097152".into());
+        total_node.attributes.insert("meminfo_swapfree".into(), "1900544".into());
+        graph.upsert_node(total_node);
+        let mut pressure = node("memory:pressure", NodeType::Memory);
+        pressure.attributes.insert("some_avg10".into(), "0.00".into());
+        pressure.attributes.insert("full_total".into(), "0".into());
+        graph.add_node(pressure).unwrap();
+        let mut vmstat = node("memory:vmstat", NodeType::Memory);
+        vmstat.attributes.insert("oom_kill".into(), "0".into());
+        vmstat.attributes.insert("pswpin".into(), "12".into());
+        graph.add_node(vmstat).unwrap();
+
+        let specialist = MemorySpecialist::instantiate(&mut graph).unwrap();
+        let result = specialist.observe(&graph, "all");
+        let metrics = match result.data.as_ref().unwrap() {
+            crate::protocol::ToolData::DeviceState { metrics, .. } => metrics,
+            _ => panic!("expected device state"),
+        };
+        assert_eq!(metrics.get("memory_nodes").unwrap(), "4");
+        assert_eq!(metrics.get("total_kb").unwrap(), "16384000");
+        assert_eq!(metrics.get("available_kb").unwrap(), "8123456");
+        assert_eq!(metrics.get("used_kb").unwrap(), "8260544");
+        assert_eq!(metrics.get("free_kb").unwrap(), "10485760");
+        assert_eq!(metrics.get("swap_total_kb").unwrap(), "2097152");
+        assert_eq!(metrics.get("swap_used_kb").unwrap(), "196608");
+        assert_eq!(metrics.get("meminfo_memtotal").unwrap(), "16384000");
+        assert_eq!(metrics.get("pressure_some_avg10").unwrap(), "0.00");
+        assert_eq!(metrics.get("pressure_full_total").unwrap(), "0");
+        assert_eq!(metrics.get("vmstat_oom_kill").unwrap(), "0");
+        assert_eq!(metrics.get("vmstat_pswpin").unwrap(), "12");
+    }
+
+    #[test]
+    fn observe_implements_the_memory_tool_claim() {
+        let mut graph = memory_graph();
+        let total = NodeId("memory:total".into());
+        let mut total_node = graph.get_node(&total).unwrap().clone();
+        total_node.attributes.insert("meminfo_memtotal".into(), "16384000".into());
+        total_node.attributes.insert("meminfo_memfree".into(), "10485760".into());
+        total_node.attributes.insert("meminfo_memavailable".into(), "8123456".into());
+        total_node.attributes.insert("meminfo_cached".into(), "3145728".into());
+        total_node.attributes.insert("meminfo_swaptotal".into(), "2097152".into());
+        total_node.attributes.insert("meminfo_swapfree".into(), "1900544".into());
+        graph.upsert_node(total_node);
+        let mut pressure = node("memory:pressure", NodeType::Memory);
+        pressure.attributes.insert("some_avg10".into(), "0.00".into());
+        graph.add_node(pressure).unwrap();
+        let mut vmstat = node("memory:vmstat", NodeType::Memory);
+        vmstat.attributes.insert("pgfault".into(), "2345678".into());
+        vmstat.attributes.insert("oom_kill".into(), "0".into());
+        graph.add_node(vmstat).unwrap();
+
+        let specialist = MemorySpecialist::instantiate(&mut graph).unwrap();
+        let result = specialist.observe(&graph, "all");
+        let metrics = match result.data.as_ref().unwrap() {
+            crate::protocol::ToolData::DeviceState { metrics, .. } => metrics,
+            _ => panic!("expected device state"),
+        };
+        let claim = crate::tools::MEMORY_TOOL_CLAIM;
+        for (capability, metric) in [
+            ("total", "total_kb"),
+            ("available", "available_kb"),
+            ("used", "used_kb"),
+            ("free", "free_kb"),
+            ("cached", "meminfo_cached"),
+            ("swap", "swap_total_kb"),
+            ("pressure", "pressure_some_avg10"),
+            ("page fault", "vmstat_pgfault"),
+            ("oom", "vmstat_oom_kill"),
+        ] {
+            assert!(
+                claim.contains(capability),
+                "tool claim must mention {capability}: {claim}"
+            );
+            assert!(
+                metrics.contains_key(metric),
+                "claim advertises {capability} but observe emits no {metric}"
+            );
+        }
     }
 
     #[test]
     fn diagnose_flags_missing_capacity_evidence() {
         let mut graph = memory_graph();
-        // Remove the size_kb attribute from one memory node: MEMORY-001
+        // Remove the size_kb attribute from every memory node: MEMORY-001
         // evidence disappears.
-        let total = NodeId("memory:total".into());
-        let mut node = graph.get_node(&total).unwrap().clone();
-        node.attributes.remove("size_kb");
-        graph.upsert_node(node);
+        for id in [
+            NodeId("memory:total".into()),
+            NodeId("memory:available".into()),
+        ] {
+            let mut node = graph.get_node(&id).unwrap().clone();
+            node.attributes.remove("size_kb");
+            graph.upsert_node(node);
+        }
         let specialist = MemorySpecialist::instantiate(&mut graph).unwrap();
         let result = specialist.diagnose(&graph, "all");
         let (findings, _confidence) = match result.data.as_ref().unwrap() {

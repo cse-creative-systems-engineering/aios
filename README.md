@@ -89,7 +89,7 @@ There is now also a runnable core. `cargo run` drives the in-process demo
 hardware). `cargo run -- shell` boots the interactive shell: it loads
 `~/.aios/config.toml`, runs a local Qwen model through llama.cpp, and routes
 chat through the model gateway, with discovery, provider status, consent, and
-a plan-and-verify flow. `cargo test` is 359 tests and counting.
+a plan-and-verify flow. `cargo test` is 365 tests and counting.
 
 Milestones, briefly:
 
@@ -199,7 +199,7 @@ model-routing → human-interaction. Takes an afternoon.
 
 ```bash
 cargo build          # compile everything
-cargo test           # run the test suite (359 tests)
+cargo test           # run the test suite (365 tests)
 cargo run            # in-process demo: broker, guardian, mock agents
 cargo run -- shell   # interactive shell against your real config and models
 ```

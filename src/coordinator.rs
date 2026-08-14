@@ -1894,7 +1894,7 @@ fn protocol_tool_result(
             let mut metrics: Vec<(String, String)> = metrics.into_iter().collect();
             metrics.sort();
             for (k, v) in metrics {
-                parts.push(format!("{k}={v}"));
+                parts.push(format!("{k}={}", quote_value(&v)));
             }
             parts.join(" ")
         }
@@ -1915,6 +1915,16 @@ fn protocol_tool_result(
         tool: Box::leak(name.to_string().into_boxed_str()),
         text,
     })
+}
+
+/// Quote a metric value for the flattened `k=v k=v` protocol text so values
+/// with spaces (command lines, mountpoints, labels) survive as one field.
+fn quote_value(value: &str) -> String {
+    if value.is_empty() || value.contains(char::is_whitespace) {
+        format!("\"{}\"", value.replace('"', "\\\""))
+    } else {
+        value.to_string()
+    }
 }
 
 fn model_params(config: Option<&ModelConfig>) -> (u32, i32) {

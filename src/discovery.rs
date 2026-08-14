@@ -303,6 +303,7 @@ impl SysfsDiscovery {
                 expires,
                 HashMap::new(),
             );
+            graph.update_health(&id, HealthState::Healthy);
         }
         id
     }
@@ -324,7 +325,7 @@ impl SysfsDiscovery {
         let id = NodeId(format!("kernel:linux-{version}"));
         self.add_node(
             graph,
-            id,
+            id.clone(),
             NodeType::Kernel,
             format!("linux {version}"),
             Some(version),
@@ -332,6 +333,7 @@ impl SysfsDiscovery {
             expires,
             HashMap::new(),
         );
+        graph.update_health(&id, HealthState::Healthy);
         Ok(())
     }
 
@@ -386,9 +388,10 @@ impl SysfsDiscovery {
             if !model.is_empty() {
                 attrs.insert("model".into(), model.clone());
             }
+            let id = NodeId(format!("cpu:{i}"));
             self.add_node(
                 graph,
-                NodeId(format!("cpu:{i}")),
+                id.clone(),
                 NodeType::Cpu,
                 if model.is_empty() {
                     format!("cpu {i}")
@@ -400,6 +403,7 @@ impl SysfsDiscovery {
                 expires,
                 attrs,
             );
+            graph.update_health(&id, HealthState::Healthy);
         }
         Ok(())
     }
@@ -414,45 +418,83 @@ impl SysfsDiscovery {
         let Some(data) = self.read_optional(root, "proc/meminfo") else {
             return Ok(());
         };
-        let mut mem_total_kb = String::new();
-        let mut mem_avail_kb = String::new();
-        for line in data.lines() {
-            let Some((key, value)) = line.split_once(':') else {
-                continue;
-            };
-            let value = value.trim();
-            match key.trim() {
-                "MemTotal" => mem_total_kb = value.to_string(),
-                "MemAvailable" => mem_avail_kb = value.to_string(),
-                _ => {}
-            }
-        }
-        let mut add_memory = |id: &str, label: &str, kb: &str| {
+        let meminfo = parse_meminfo(&data);
+        let kb = |key: &str| meminfo.get(key).copied();
+
+        if let Some(total_kb) = kb("MemTotal") {
             let mut attrs = HashMap::new();
-            if !kb.is_empty() {
-                let kb_num = kb.trim_end_matches("kB").trim();
-                attrs.insert("size_kb".into(), kb_num.to_string());
+            attrs.insert("size_kb".into(), total_kb.to_string());
+            for (key, value) in &meminfo {
+                attrs.insert(format!("meminfo_{}", key.to_lowercase()), value.to_string());
             }
+            let id = NodeId("memory:total".into());
             self.add_node(
                 graph,
-                NodeId(id.into()),
+                id.clone(),
                 NodeType::Memory,
-                label.into(),
+                format!("total memory ({total_kb} kB)"),
                 None,
                 t,
                 expires,
                 attrs,
             );
-        };
-        if !mem_total_kb.is_empty() {
-            add_memory("memory:total", &format!("total memory ({mem_total_kb})"), &mem_total_kb);
+            graph.update_health(&id, HealthState::Healthy);
         }
-        if !mem_avail_kb.is_empty() {
-            add_memory(
-                "memory:available",
-                &format!("available memory ({mem_avail_kb})"),
-                &mem_avail_kb,
+        if let Some(avail_kb) = kb("MemAvailable") {
+            let mut attrs = HashMap::new();
+            attrs.insert("size_kb".into(), avail_kb.to_string());
+            let id = NodeId("memory:available".into());
+            self.add_node(
+                graph,
+                id.clone(),
+                NodeType::Memory,
+                format!("available memory ({avail_kb} kB)"),
+                None,
+                t,
+                expires,
+                attrs,
             );
+            let health = match kb("MemTotal") {
+                Some(total_kb) if avail_kb * 10 < total_kb => HealthState::Degraded,
+                _ => HealthState::Healthy,
+            };
+            graph.update_health(&id, health);
+        }
+
+        if let Some(data) = self.read_optional(root, "proc/pressure/memory") {
+            let attrs = parse_pressure(&data);
+            if !attrs.is_empty() {
+                let id = NodeId("memory:pressure".into());
+                self.add_node(
+                    graph,
+                    id.clone(),
+                    NodeType::Memory,
+                    "memory pressure".into(),
+                    None,
+                    t,
+                    expires,
+                    attrs,
+                );
+                graph.update_health(&id, HealthState::Healthy);
+            }
+        }
+
+        if let Some(data) = self.read_optional(root, "proc/vmstat") {
+            let attrs = parse_vmstat(&data);
+            if !attrs.is_empty() {
+                let id = NodeId("memory:vmstat".into());
+                self.add_node(
+                    graph,
+                    id.clone(),
+                    NodeType::Memory,
+                    "memory vmstat".into(),
+                    None,
+                    t,
+                    expires,
+                    attrs,
+                );
+                graph.update_health(&id, HealthState::Healthy);
+            }
         }
         Ok(())
     }
@@ -490,8 +532,14 @@ impl SysfsDiscovery {
                 expires,
                 attrs,
             );
-            if state == "up" {
-                graph.update_health(&id, HealthState::Healthy);
+            match state.as_str() {
+                "up" => {
+                    graph.update_health(&id, HealthState::Healthy);
+                }
+                "down" => {
+                    graph.update_health(&id, HealthState::Degraded);
+                }
+                _ => {}
             }
         }
         Ok(())
@@ -533,6 +581,7 @@ impl SysfsDiscovery {
                 expires,
                 HashMap::new(),
             );
+            graph.update_health(&bus_id, HealthState::Healthy);
             let base = format!("sys/bus/pci/devices/{slot}");
             let mut attrs = HashMap::new();
             for (key, file) in [("vendor", "vendor"), ("device", "device"), ("class", "class")] {
@@ -551,6 +600,7 @@ impl SysfsDiscovery {
                 expires,
                 attrs,
             );
+            graph.update_health(&id, HealthState::Healthy);
             self.add_depends_on(graph, &id, &bus_id, t);
             if let Some(driver) = self.symlink_name(root, &format!("{base}/driver")) {
                 let driver_id = self.ensure_driver(graph, &driver, t, expires);
@@ -594,6 +644,7 @@ impl SysfsDiscovery {
                 expires,
                 attrs,
             );
+            graph.update_health(&node_id, HealthState::Healthy);
             let bus_id = NodeId("bus:usb0".into());
             self.add_node(
                 graph,
@@ -605,6 +656,7 @@ impl SysfsDiscovery {
                 expires,
                 HashMap::new(),
             );
+            graph.update_health(&bus_id, HealthState::Healthy);
             self.add_depends_on(graph, &node_id, &bus_id, t);
         }
         Ok(())
@@ -719,6 +771,7 @@ impl SysfsDiscovery {
                 expires,
                 HashMap::new(),
             );
+            graph.update_health(&id, HealthState::Healthy);
         }
         if let Some(device) = device {
             self.add_depends_on(graph, device, &id, t);
@@ -756,6 +809,7 @@ impl SysfsDiscovery {
                 expires,
                 attrs,
             );
+            graph.update_health(&id, HealthState::Healthy);
             if let Some(driver) = self.symlink_name(root, &format!("{base}/device/driver")) {
                 let driver_id = self.ensure_driver(graph, &driver, t, expires);
                 self.add_depends_on(graph, &id, &driver_id, t);
@@ -796,9 +850,10 @@ impl SysfsDiscovery {
             if !device.is_empty() {
                 attrs.insert("device".into(), device.to_string());
             }
+            let id = NodeId(format!("fs:{fstype}-{slug}"));
             self.add_node(
                 graph,
-                NodeId(format!("fs:{fstype}-{slug}")),
+                id.clone(),
                 NodeType::Filesystem,
                 format!("{fstype} mounted at {mountpoint}"),
                 None,
@@ -806,6 +861,7 @@ impl SysfsDiscovery {
                 expires,
                 attrs,
             );
+            graph.update_health(&id, HealthState::Healthy);
         }
         Ok(())
     }
@@ -856,7 +912,7 @@ impl SysfsDiscovery {
                 let id = NodeId(format!("sensor:{hwmon}-{kind}"));
                 self.add_node(
                     graph,
-                    id,
+                    id.clone(),
                     NodeType::Sensor,
                     format!("{name} {kind}"),
                     None,
@@ -864,6 +920,7 @@ impl SysfsDiscovery {
                     expires,
                     attrs,
                 );
+                graph.update_health(&id, HealthState::Healthy);
             }
         }
         Ok(())
@@ -977,6 +1034,69 @@ fn process_health(state: char) -> HealthState {
         'D' | 'Z' | 'T' | 't' | 'X' | 'x' => HealthState::Degraded,
         _ => HealthState::Unknown,
     }
+}
+
+/// Parse `/proc/meminfo` into key -> kB values. Values carry a `kB` suffix
+/// that is dropped; unitless fields (HugePages_*) parse to their number.
+fn parse_meminfo(data: &str) -> HashMap<String, u64> {
+    let mut out = HashMap::new();
+    for line in data.lines() {
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        let value = value.trim();
+        let Some(number) = value.split_whitespace().next() else {
+            continue;
+        };
+        if let Ok(kb) = number.parse::<u64>() {
+            out.insert(key.trim().to_string(), kb);
+        }
+    }
+    out
+}
+
+/// Parse a `/proc/pressure/<domain>` file: `some avg10=.. avg60=.. avg300=..
+/// total=..` lines plus the same for `full`, keyed `some_avg10`, `full_total`,
+/// and so on.
+fn parse_pressure(data: &str) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    for line in data.lines() {
+        let Some((kind, rest)) = line.split_once(char::is_whitespace) else {
+            continue;
+        };
+        for field in rest.split_whitespace() {
+            let Some((name, value)) = field.split_once('=') else {
+                continue;
+            };
+            out.insert(format!("{kind}_{name}"), value.to_string());
+        }
+    }
+    out
+}
+
+/// The `/proc/vmstat` counters the memory specialist reports; the rest of the
+/// file is internal VM accounting and stays out of the graph.
+const VMSTAT_KEYS: &[&str] = &[
+    "pgpgin",
+    "pgpgout",
+    "pswpin",
+    "pswout",
+    "oom_kill",
+    "pgfault",
+    "pgmajfault",
+];
+
+fn parse_vmstat(data: &str) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    for line in data.lines() {
+        let mut fields = line.split_whitespace();
+        let Some(key) = fields.next() else {
+            continue;
+        };
+        if VMSTAT_KEYS.contains(&key) && let Some(value) = fields.next() {
+            out.insert(key.to_string(), value.to_string());
+        }    }
+    out
 }
 
 pub struct ServiceDiscovery {
@@ -1147,7 +1267,15 @@ mod tests {
         );
         write(
             &root.join("proc/meminfo"),
-            "MemTotal:       16384000 kB\nMemAvailable:     8123456 kB\n",
+            "MemTotal:       16384000 kB\nMemFree:        10485760 kB\nMemAvailable:     8123456 kB\nBuffers:          104857 kB\nCached:          3145728 kB\nSwapCached:        65536 kB\nActive:          4194304 kB\nInactive:        2097152 kB\nAnonPages:       2097152 kB\nMapped:          1048576 kB\nShmem:            131072 kB\nSlab:             524288 kB\nSReclaimable:     262144 kB\nSUnreclaim:       262144 kB\nSwapTotal:       2097152 kB\nSwapFree:        1900544 kB\nDirty:             32768 kB\nWriteback:            0 kB\nCommitted_AS:    8192000 kB\nVmallocTotal:   34359738367 kB\nVmallocUsed:      204800 kB\nHugePages_Total:       0\nHugePages_Free:        0\nHugepagesize:       2048 kB\nDirectMap4k:      262144 kB\nDirectMap2M:    13516800 kB\n",
+        );
+        write(
+            &root.join("proc/pressure/memory"),
+            "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
+        );
+        write(
+            &root.join("proc/vmstat"),
+            "nr_free_pages 2559210\nnr_anon_pages 434854\npgpgin 123456\npgpgout 789012\npswpin 12\npswout 345\noom_kill 0\npgfault 2345678\npgmajfault 1234\npgalloc_normal 111111\n",
         );
         write(
             &root.join("proc/modules"),
@@ -1208,6 +1336,14 @@ mod tests {
         assert!(graph.get_node(&NodeId("cpu:0".into())).is_some());
         assert!(graph.get_node(&NodeId("cpu:1".into())).is_some());
         assert!(graph.get_node(&NodeId("memory:total".into())).is_some());
+        assert!(graph.get_node(&NodeId("memory:available".into())).is_some());
+        assert!(graph.get_node(&NodeId("memory:pressure".into())).is_some());
+        assert!(graph.get_node(&NodeId("memory:vmstat".into())).is_some());
+        let total = graph.get_node(&NodeId("memory:total".into())).unwrap();
+        assert_eq!(total.attributes.get("size_kb").unwrap(), "16384000");
+        assert_eq!(total.attributes.get("meminfo_memfree").unwrap(), "10485760");
+        assert_eq!(total.attributes.get("meminfo_swaptotal").unwrap(), "2097152");
+        assert_eq!(total.attributes.get("meminfo_hugepages_total").unwrap(), "0");
         assert!(graph.get_node(&NodeId("device:net-wlan0".into())).is_some());
         assert!(graph.get_node(&NodeId("device:pci-0000:00:14.3".into())).is_some());
         assert!(graph.get_node(&NodeId("bus:pci0000:00".into())).is_some());
@@ -1217,6 +1353,52 @@ mod tests {
         assert!(graph.get_node(&NodeId("driver:nvme".into())).is_some());
         assert!(graph.get_node(&NodeId("fs:ext4-root".into())).is_some());
         assert!(graph.get_node(&NodeId("fs:vfat-boot".into())).is_some());
+    }
+
+    #[test]
+    fn memory_health_tracks_available_headroom() {
+        let (_dir, root) = mock_root();
+        let graph = discovery(root).scan().unwrap();
+        let avail = graph.get_node(&NodeId("memory:available".into())).unwrap();
+        assert_eq!(avail.health, HealthState::Healthy);
+
+        let dir = tempfile::tempdir().unwrap();
+        let low_root = dir.path().to_path_buf();
+        write(
+            &low_root.join("proc/meminfo"),
+            "MemTotal:   1000000 kB\nMemAvailable:     50000 kB\n",
+        );
+        let graph = discovery(low_root).scan().unwrap();
+        let avail = graph.get_node(&NodeId("memory:available".into())).unwrap();
+        assert_eq!(avail.health, HealthState::Degraded);
+    }
+
+    #[test]
+    fn parse_meminfo_handles_kb_suffix_and_unitless_lines() {
+        let meminfo = parse_meminfo(
+            "MemTotal:       16384000 kB\nMemAvailable:     8123456 kB\nHugePages_Total:       0\n",
+        );
+        assert_eq!(meminfo.get("MemTotal"), Some(&16_384_000));
+        assert_eq!(meminfo.get("MemAvailable"), Some(&8_123_456));
+        assert_eq!(meminfo.get("HugePages_Total"), Some(&0));
+        assert_eq!(meminfo.get("Bogus"), None);
+    }
+
+    #[test]
+    fn parse_pressure_and_vmstat_key_their_fields() {
+        let pressure = parse_pressure(
+            "some avg10=0.00 avg60=0.01 avg300=0.02 total=123\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
+        );
+        assert_eq!(pressure.get("some_avg10").unwrap(), "0.00");
+        assert_eq!(pressure.get("some_total").unwrap(), "123");
+        assert_eq!(pressure.get("full_avg300").unwrap(), "0.00");
+
+        let vmstat = parse_vmstat(
+            "nr_free_pages 2559210\npgpgin 123456\npswpin 12\noom_kill 0\npgfault 2345678\n",
+        );
+        assert_eq!(vmstat.get("pgpgin").unwrap(), "123456");
+        assert_eq!(vmstat.get("oom_kill").unwrap(), "0");
+        assert_eq!(vmstat.len(), 4);
     }
 
     #[test]

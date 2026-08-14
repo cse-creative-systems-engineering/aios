@@ -710,6 +710,28 @@ mutating security operations are deferred to the mutation pass.
  `resources` list were replaced with clearer output. The full suite passes
  at 359 tests.
 
+**Progress note (2026-08-13, specialist depth):** a standing plan
+ (`docs/specialist-depth-plan.md`) moves each specialist from count metrics
+ plus a `resources` blob toward returning the full set of evidence the host
+ exposes. Phase 0 shared infrastructure landed first: discovery now assigns
+ real health to every discovered node (kernel, drivers, cpu, pci/usb
+ devices, firmware, block devices, filesystems, sensors, plus the existing
+ network/process health) so the old Unknown-default no longer inflates
+ `degraded` counts, and the flattened tool text quotes values containing
+ spaces so command lines and mountpoints survive as one field. The model
+ tool instructions were split into per-domain claim constants (one
+ `*_TOOL_CLAIM` per specialist) with a claims-vs-implementation test so the
+ instruction text and the observe output cannot drift apart. The Memory
+ specialist was then deepened first: discovery parses the full `/proc/meminfo`
+ (every key lands as a `meminfo_*` attribute on `memory:total`), plus
+ `/proc/pressure/memory` and the page/swap/oom counters from `/proc/vmstat`
+ as `memory:pressure` and `memory:vmstat` nodes; `memory:available` health
+ now degrades when available memory falls below a tenth of total. The
+ specialist reports typed metrics — total/available/used/free/swap in kB,
+ pressure averages, page fault and oom counters — and the `nodes_with_capacity`
+ key was renamed to `nodes_reporting_capacity`. The full suite passes at 365
+ tests.
+
 **Progress note (2026-08-13, packages):** the Packages and updates
 specialist follows the same pattern (`aios::packages`,
 docs/modules/packages.md). It discovers package resources as

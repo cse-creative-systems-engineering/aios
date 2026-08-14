@@ -62,7 +62,7 @@ M0–M7 are **complete**. All ten M7 specialists (Storage, Network, Drivers,
 Graphics, Memory, Power/thermal, Security/identity, Processes, Packages,
 Boot/recovery) are wired through the broker with read-only observe/diagnose
 tools, coordinator boot registration, and broker round-trip tests. The full
-test suite passes (359 passed, 1 ignored — the real-model test). The M8
+test suite passes (365 passed, 1 ignored — the real-model test). The M8
 terminal panel and the resident docked UI (sidebar and canvas windows, GTK
 layer-shell dock) are in place; the dynamic generative surface
 (model-selected, validated widget composition) is the remaining M8 work,
