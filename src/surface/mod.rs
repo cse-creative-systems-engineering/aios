@@ -7,9 +7,11 @@
 //! call (`composer`), and deterministic schema/evidence/layout validation
 //! (`validator`).
 
+pub mod composer;
 pub mod evidence;
 pub mod schema;
 
+pub use composer::{SurfaceComposeError, compose_surface, surface_composition_instructions};
 pub use evidence::{EvidenceEntry, EvidenceIndex, evidence_brief, number_present_in_evidence, value_present_in_evidence};
 pub use schema::{
     ChartPoint, DockEdge, LayoutMode, RegionPriority, StatusItem, Surface, SurfaceLayout,

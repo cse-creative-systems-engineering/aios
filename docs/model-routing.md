@@ -189,6 +189,7 @@ Different agent roles may require different model capabilities:
 | Verification Agent | Independent reasoning, different model preferred | Different provider than Planner when possible |
 | Specialists (diagnosis) | Domain knowledge, tool use | Best available tier |
 | Specialists (read-only) | Lightweight, fast | Local model preferred |
+| Surface Composer | JSON surface description only, no tools, no reasoning | Free internet tier (NVIDIA Nemotron, Poolside Laguna) preferred |
 
 ### 3.4 Planner and Verification independence
 

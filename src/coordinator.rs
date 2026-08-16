@@ -1177,6 +1177,26 @@ impl Coordinator {
         result
     }
 
+    /// Compose a generative surface from the grounded answer and the tool
+    /// evidence returned by a chat outcome. The composer is a separate model
+    /// call with no tool access; a failure here is surfaced to the UI as a
+    /// plain answer plus a `Notice` (Phase E), never as an empty panel.
+    pub fn compose_surface(
+        &self,
+        intent: &str,
+        answer: &str,
+        evidence: &[crate::tools::ToolResult],
+    ) -> Result<crate::surface::Surface, crate::surface::SurfaceComposeError> {
+        let index = crate::surface::EvidenceIndex::from_results(evidence);
+        crate::surface::compose_surface(
+            &self.gateway,
+            intent,
+            answer,
+            &index,
+            self.shell_max_tokens,
+        )
+    }
+
     pub fn chat_with_tools(&self, messages: Vec<ModelMessage>) -> Result<String, AgentError> {
         Ok(self.chat_with_tools_outcome(messages)?.answer)
     }
@@ -2202,6 +2222,60 @@ mod tests {
         let coordinator = stub_coordinator(port);
         let answer = coordinator.chat("hello").expect("chat");
         assert_eq!(answer, "hello from stub");
+    }
+
+    #[test]
+    fn compose_surface_parses_model_surface() {
+        let body: &'static str = r#"{"intent":"how is the disk","title":"Disk","subtitle":null,"placement":{"edge":"right","width":"narrow","float":false},"layout":{"mode":"grid","columns":12},"regions":[{"id":"main","span":12,"priority":"primary","widgets":["w1"]}],"widgets":[{"type":"metricCard","id":"w1","title":"Usage","value":"42%","unit":"%","status":"ok","evidence":["tool-0"]}]}"#;
+        let handler = move |request: &str| {
+            // Structural guard: the composer must never be offered tools.
+            assert!(
+                !request.contains("\"tools\"") && !request.contains("tool_calls"),
+                "composer request advertised tools"
+            );
+            assert!(request.contains("Aios surface composer"));
+            testutil::openai_response(body)
+        };
+        let port = testutil::spawn_json_server(handler);
+        let coordinator = stub_coordinator(port);
+        let evidence = vec![crate::tools::ToolResult {
+            tool: "disk",
+            text: "used 42% of 1TB".into(),
+        }];
+        let surface = coordinator
+            .compose_surface("how is the disk", "42% used", &evidence)
+            .expect("surface");
+        assert_eq!(surface.intent, "how is the disk");
+        assert_eq!(surface.widgets.len(), 1);
+        assert_eq!(surface.widgets[0].id(), "w1");
+    }
+
+    #[test]
+    fn compose_surface_rejects_malformed_model_json() {
+        let handler = |_: &str| testutil::openai_response("definitely not a surface");
+        let port = testutil::spawn_json_server(handler);
+        let coordinator = stub_coordinator(port);
+        let error = coordinator
+            .compose_surface("how is the disk", "42% used", &[])
+            .expect_err("must fail");
+        assert!(
+            matches!(error, crate::surface::SurfaceComposeError::Format(_)),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn compose_surface_rejects_empty_model_reply() {
+        let handler = |_: &str| testutil::openai_response("");
+        let port = testutil::spawn_json_server(handler);
+        let coordinator = stub_coordinator(port);
+        let error = coordinator
+            .compose_surface("how is the disk", "42% used", &[])
+            .expect_err("must fail");
+        assert!(
+            matches!(error, crate::surface::SurfaceComposeError::EmptyResponse),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]

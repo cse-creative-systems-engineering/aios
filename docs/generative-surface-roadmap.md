@@ -15,7 +15,7 @@ touch the M0-M7 backend contracts, broker, or specialists.
 
 - [x] Phase A: Surface IR types in `src/surface/` (no model call yet).
 - [x] Phase B: evidence index and value checks in `src/surface/evidence.rs`.
-- [ ] Phase C: `AgentRole::SurfaceComposition` + composer model call.
+- [x] Phase C: `AgentRole::SurfaceComposition` + composer model call.
 - [ ] Phase D: Surface validator (schema + evidence + layout).
 - [ ] Phase E: IPC contract change (`PromptResponse` carries a `Surface`).
 - [ ] Phase F: frontend surface renderer + layout engine (replaces fixed grid).
@@ -344,6 +344,20 @@ Deliverables:
 Acceptance:
 - `cargo test` (full suite) passes with the new role registered.
 - A stub model can drive `compose_surface` end to end without a display.
+
+Done notes (2026-08-16):
+- The composer call lives in `src/surface/composer.rs`
+  (`compose_surface` + `surface_composition_instructions`); the `Coordinator`
+  entry point delegates to it. Return type is `SurfaceComposeError`, not
+  `AgentError`, so Phase E can map each failure mode to a `Notice` fallback.
+- Because the composer system prompt never contains the tool-advertisement
+  marker, `HttpBackend` sends no `tools` block: the call is tool-less by
+  construction, and a stub test asserts this on the wire.
+- The role routes through the gateway like every other call. The local
+  `~/.aios/config.toml` `surface-openrouter-nemotron` provider (NVIDIA
+  Nemotron Ultra free via OpenRouter) is the first internet-tier provider,
+  so with internet up the composer call lands on Nemotron; offline it falls
+  back to the local Qwen.
 
 ---
 

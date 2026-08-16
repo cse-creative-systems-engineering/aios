@@ -167,6 +167,7 @@ pub enum ModelCapability {
 pub enum AgentRole {
     Planner,
     Verification,
+    SurfaceComposition,
     SpecialistReadOnly,
     SpecialistDiagnosis,
 }
@@ -177,6 +178,7 @@ impl AgentRole {
             AgentRole::Planner | AgentRole::Verification => {
                 vec![ModelCapability::TextGeneration, ModelCapability::Reasoning]
             }
+            AgentRole::SurfaceComposition => vec![ModelCapability::TextGeneration],
             AgentRole::SpecialistDiagnosis => {
                 vec![ModelCapability::TextGeneration, ModelCapability::ToolUse]
             }
