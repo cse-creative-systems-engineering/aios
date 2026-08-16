@@ -53,6 +53,7 @@ pub struct Coordinator {
     pub tools: ToolRegistry,
     pub broker: Broker,
     pub shell_max_tokens: u32,
+    pub compose_max_tokens: u32,
     session_tokens: Vec<CapabilityToken>,
     session_principal: PrincipalId,
     last_scan_summary: RwLock<Option<String>>,
@@ -188,6 +189,10 @@ impl Coordinator {
             .as_ref()
             .map(|s| s.max_tokens)
             .unwrap_or(max_tokens);
+        // The composer must emit a full JSON surface. Reasoning-heavy models
+        // spend tokens on an untagged preamble first, so give the composition
+        // call its own larger budget and keep the interactive budget as-is.
+        let compose_max_tokens = shell_max_tokens.max(4096);
 
         let audit_path = audit_log_path(&config_dir);
 
@@ -204,6 +209,7 @@ impl Coordinator {
             broker: Broker::new(),
             config,
             shell_max_tokens,
+            compose_max_tokens,
             session_tokens: Vec::new(),
             session_principal: PrincipalId::agent("aios.core", "session"),
             last_scan_summary: RwLock::new(None),
@@ -1187,13 +1193,28 @@ impl Coordinator {
         answer: &str,
         evidence: &[crate::tools::ToolResult],
     ) -> Result<crate::surface::Surface, crate::surface::SurfaceComposeError> {
+        self.compose_surface_with_meta(intent, answer, evidence)
+            .map(|(surface, _)| surface)
+    }
+
+    /// Like `compose_surface`, but also returns the routing decision the
+    /// gateway used for the composition call (which provider/model answered).
+    pub fn compose_surface_with_meta(
+        &self,
+        intent: &str,
+        answer: &str,
+        evidence: &[crate::tools::ToolResult],
+    ) -> Result<
+        (crate::surface::Surface, crate::model::RoutingDecision),
+        crate::surface::SurfaceComposeError,
+    > {
         let index = crate::surface::EvidenceIndex::from_results(evidence);
-        crate::surface::compose_surface(
+        crate::surface::compose_surface_with_meta(
             &self.gateway,
             intent,
             answer,
             &index,
-            self.shell_max_tokens,
+            self.compose_max_tokens,
         )
     }
 

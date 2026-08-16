@@ -64,9 +64,12 @@ Boot/recovery) are wired through the broker with read-only observe/diagnose
 tools, coordinator boot registration, and broker round-trip tests. The full
 test suite passes (366 passed, 1 ignored — the real-model test). The M8
 terminal panel and the resident docked UI (sidebar and canvas windows, GTK
-layer-shell dock) are in place; the dynamic generative surface
-(model-selected, validated widget composition) is the remaining M8 work,
-tracked in `docs/ui.md` and `docs/m8-ui-repair-plan.md`.
+layer-shell dock) are in place; the dynamic generative surface's backend is
+built and harness-tested — surface IR, evidence binding, the model composer,
+the deterministic validator, and the headless harness (Phases A–D and I of
+`docs/generative-surface-roadmap.md`) all pass; the remaining M8 work is the
+frontend surface renderer and the IPC wiring, tracked in `docs/ui.md` and
+`docs/m8-ui-repair-plan.md`.
 
 ## Dependency Graph
 

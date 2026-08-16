@@ -16,7 +16,8 @@ touch the M0-M7 backend contracts, broker, or specialists.
 - [x] Phase A: Surface IR types in `src/surface/` (no model call yet).
 - [x] Phase B: evidence index and value checks in `src/surface/evidence.rs`.
 - [x] Phase C: `AgentRole::SurfaceComposition` + composer model call.
-- [ ] Phase D: Surface validator (schema + evidence + layout).
+- [x] Phase D: Surface validator (schema + evidence + layout).
+- [x] Phase I: Headless test harness (implemented ahead of Phases E-H).
 - [ ] Phase E: IPC contract change (`PromptResponse` carries a `Surface`).
 - [ ] Phase F: frontend surface renderer + layout engine (replaces fixed grid).
 - [ ] Phase G: placement hints (edge/width class) mapped to window geometry.
@@ -384,6 +385,82 @@ Deliverables:
 
 Acceptance:
 - `cargo test surface::validator` passes.
+
+Done notes (2026-08-16):
+- Validator lives in `src/surface/validator.rs`: `validate()` returns a hard
+  `Err(ValidationError { stage, message })` on the first schema/evidence/layout
+  violation; `diagnostics()` collects soft findings (status list details, chart
+  points, and notice bodies that are not verbatim in evidence). The soft/hard
+  split keeps surfaces usable when only incidental text does not match.
+- Hard checks: zero `layout.columns`, region span overflows columns, empty or
+  missing evidence keys, widget values absent from the referenced evidence
+  (verbatim string / standalone number via Phase B helpers), dangling or
+  duplicate or unreferenced widget ids.
+- Validation is applied by the harness and IPC layer (Phase E), not inside
+  `compose_surface`: the model call stays a pure IR producer.
+- First live use caught real hallucinated values (a "used memory" figure that
+  was invented arithmetic and not present in evidence) and mislabel text.
+- Composer hardening discovered while driving it live, now in
+  `src/surface/composer.rs` and `src/planner.rs`:
+  - The composition call gets its own token budget (`compose_max_tokens`,
+    `shell_max_tokens.max(4096)`, coordinator.rs) because reasoning-heavy
+    models spend the interactive budget on an untagged preamble before the
+    JSON object.
+  - `compose_surface_with_meta` retries once with a correction turn when the
+    first reply is not a usable surface (the failed reply is quoted back);
+    empty and gateway failures pass through without retry.
+  - `extract_json` in planner.rs repairs trailing commas before `}`/`]`, the
+    most common model JSON slip that previously let parsing fall through to a
+    nested fragment.
+
+---
+
+### Phase I: Headless surface harness
+
+Executed now (before Phases E-H) to prove the composer end to end on real
+system data without a display, and to keep monitoring every generative call
+thereafter.
+
+`src/bin/surface_harness.rs` drives the real pipeline headlessly:
+
+```
+prompt -> chat_with_tools_outcome (specialists read real data)
+       -> compose_surface_with_meta (live model, no tools)
+       -> validate + diagnostics
+       -> render_text / render_html
+       -> report.json (per-prompt chat/compose/route/validation)
+```
+
+Usage:
+- `cargo run --bin surface_harness -- --stub` runs the 7-prompt canned suite
+  against a deterministic stub model server (no network); also asserts the
+  composer request never carried tool definitions on the wire.
+- `cargo run --bin surface_harness -- --out DIR [prompts...]` runs live
+  against the configured providers (`~/.aios/config.toml`); positional prompts
+  override the canned suite. Writes `surface-N.json`, `surface-N.txt`,
+  `surface-N.html`, and `report.json`. Exit code is non-zero on any failure.
+- `--config PATH` loads an alternate config.
+
+Design points:
+- Stub support lives in `src/surface/stub.rs` (the `#[cfg(test)]` `testutil`
+  is unavailable to binaries): `StubServer` serves the chat stages and the
+  composer stage, and captures every request body so the harness can assert
+  `no tool definitions were advertised on composer requests`.
+- Preview rendering lives in `src/surface/render.rs` (`render_text`,
+  `render_html`) so a composed surface is reviewable without the Tauri
+  frontend; the HTML is self-contained with evidence chips per widget.
+- The report records the routing decision for every compose call (provider,
+  model, connectivity, classification) so provider drift is visible.
+
+Done notes (2026-08-16):
+- Stub run: 7/7 pass, composer never advertises tools, zero diagnostics.
+- Live run (NVIDIA Nemotron Ultra free via OpenRouter) surfaced the real
+  failure modes that Phase C alone could not: prose instead of JSON (fixed by
+  budget + correction retry), trailing-comma JSON (fixed by repair), invented
+  derived values (rejected by the validator, and the composer prompt now
+  forbids computing values outright), and transient free-tier timeouts
+  (reported, not retried, to avoid hammering the rate limit).
+- Usage and design are documented in `docs/surface-harness.md`.
 
 ---
 

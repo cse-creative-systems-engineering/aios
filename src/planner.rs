@@ -255,6 +255,14 @@ pub(crate) fn extract_json(text: &str) -> Option<String> {
                         if serde_json::from_str::<serde_json::Value>(candidate).is_ok() {
                             return Some(candidate.to_string());
                         }
+                        // Models often emit a trailing comma before } or ].
+                        // Repair the candidate in place before falling back to
+                        // scanning for a nested fragment.
+                        if let Some(repaired) = repair_trailing_commas(candidate)
+                            && serde_json::from_str::<serde_json::Value>(&repaired).is_ok()
+                        {
+                            return Some(repaired);
+                        }
                         break;
                     }
                 }
@@ -263,6 +271,57 @@ pub(crate) fn extract_json(text: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Remove commas that are immediately followed by `}` or `]`, the most common
+/// JSON syntax slip from generative models. Returns `None` when nothing
+/// changed.
+fn repair_trailing_commas(candidate: &str) -> Option<String> {
+    let bytes = candidate.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        let byte = bytes[i];
+        if in_string {
+            out.push(byte);
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+        match byte {
+            b'"' => {
+                in_string = true;
+                out.push(byte);
+            }
+            b',' => {
+                let mut j = i + 1;
+                while j < bytes.len() && matches!(bytes[j], b' ' | b'\t' | b'\n' | b'\r') {
+                    j += 1;
+                }
+                if j < bytes.len() && matches!(bytes[j], b'}' | b']') {
+                    // Drop the trailing comma.
+                } else {
+                    out.push(byte);
+                }
+            }
+            _ => out.push(byte),
+        }
+        i += 1;
+    }
+    let repaired = String::from_utf8(out).ok()?;
+    if repaired == candidate {
+        None
+    } else {
+        Some(repaired)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -537,6 +596,34 @@ mod tool_calls_tests {
         assert_eq!(
             extract_json(text).as_deref(),
             Some(r#"{"intent":"check","steps":[]}"#)
+        );
+    }
+
+    #[test]
+    fn repairs_trailing_comma_before_object_close() {
+        let text = r#"Here you go: {"intent":"check","steps":[],}
+            afterthought"#;
+        assert_eq!(
+            extract_json(text).as_deref(),
+            Some(r#"{"intent":"check","steps":[]}"#)
+        );
+    }
+
+    #[test]
+    fn repairs_trailing_comma_before_array_close() {
+        let text = r#"{"steps":[1,2,],"extra":"x"}"#;
+        assert_eq!(
+            extract_json(text).as_deref(),
+            Some(r#"{"steps":[1,2],"extra":"x"}"#)
+        );
+    }
+
+    #[test]
+    fn repair_ignores_commas_inside_strings() {
+        let text = r#"{"note":"a,b,","steps":[1,],}"#;
+        assert_eq!(
+            extract_json(text).as_deref(),
+            Some(r#"{"note":"a,b,","steps":[1]}"#)
         );
     }
 }
