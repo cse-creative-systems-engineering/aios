@@ -13,7 +13,7 @@ touch the M0-M7 backend contracts, broker, or specialists.
 
 ### Implementation progress
 
-- [ ] Phase A: Surface IR types in `src/surface/` (no model call yet).
+- [x] Phase A: Surface IR types in `src/surface/` (no model call yet).
 - [ ] Phase B: decide evidence value extraction approach (see §6 decision 1).
 - [ ] Phase C: `AgentRole::SurfaceComposition` + composer model call.
 - [ ] Phase D: Surface validator (schema + evidence + layout).

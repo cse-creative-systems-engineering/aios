@@ -28,6 +28,7 @@ pub mod protocol;
 pub mod packages;
 pub mod security;
 pub mod storage;
+pub mod surface;
 pub mod tools;
 pub mod verifier;
 pub mod wifi;
