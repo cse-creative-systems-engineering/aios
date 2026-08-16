@@ -421,23 +421,36 @@ Executed now (before Phases E-H) to prove the composer end to end on real
 system data without a display, and to keep monitoring every generative call
 thereafter.
 
-`src/bin/surface_harness.rs` drives the real pipeline headlessly:
+`src/bin/surface_harness.rs` drives the real pipeline headlessly as a
+conversation, which is the actual product shape:
 
 ```
-prompt -> chat_with_tools_outcome (specialists read real data)
-       -> compose_surface_with_meta (live model, no tools)
-       -> validate + diagnostics
-       -> render_text / render_html
-       -> report.json (per-prompt chat/compose/route/validation)
+user turn -> chat_with_tools_outcome (real specialists, growing history)
+   (repeat for each turn; follow-ups may or may not call tools)
+final turn -> compose_surface_with_meta (live model, no tools)
+           -> validate + diagnostics
+           -> render_text / render_html
+           -> report.json (per-conversation transcript/compose/route/validation)
 ```
+
+The harness answers the two product questions directly: (1) can Aios converse
+naturally and return the details needed for a panel (the transcript records
+every turn, its answer, and the tool results gathered), and (2) can the
+generative UI layer turn that conversation into a surface that displays the
+data (compose + validate + render). The panel is composed from the last user
+question, the final answer, and every tool result gathered across the
+conversation.
 
 Usage:
-- `cargo run --bin surface_harness -- --stub` runs the 7-prompt canned suite
-  against a deterministic stub model server (no network); also asserts the
-  composer request never carried tool definitions on the wire.
+- `cargo run --bin surface_harness -- --stub` runs the canned conversation
+  suite (`overview`, `storage`, `memory`, 2 turns each) against a
+  deterministic stub model server (no network); also asserts the composer
+  request never carried tool definitions on the wire.
+- `cargo run --bin surface_harness -- --conv NAME` runs one canned
+  conversation; `--out DIR` controls output.
 - `cargo run --bin surface_harness -- --out DIR [prompts...]` runs live
   against the configured providers (`~/.aios/config.toml`); positional prompts
-  override the canned suite. Writes `surface-N.json`, `surface-N.txt`,
+  run as single-turn conversations. Writes `surface-N.json`, `surface-N.txt`,
   `surface-N.html`, and `report.json`. Exit code is non-zero on any failure.
 - `--config PATH` loads an alternate config.
 
@@ -450,11 +463,20 @@ Design points:
   `render_html`) so a composed surface is reviewable without the Tauri
   frontend; the HTML is self-contained with evidence chips per widget.
 - The report records the routing decision for every compose call (provider,
-  model, connectivity, classification) so provider drift is visible.
+  model, connectivity, classification) so provider drift is visible, and marks
+  each conversation with `used_tools` so conversational answers that skip a
+  tool call (legitimate for follow-ups) are visible rather than treated as a
+  failure.
 
 Done notes (2026-08-16):
-- Stub run: 7/7 pass, composer never advertises tools, zero diagnostics.
-- Live run (NVIDIA Nemotron Ultra free via OpenRouter) surfaced the real
+- Stub run: 3 conversations / 6 turns pass, composer never advertises tools,
+  zero diagnostics.
+- Live `--conv storage` run: turn 1 called `observe` tools and answered with
+  real disk numbers; the follow-up ("and is the drive healthy?") was answered
+  naturally from context without a new tool call; compose produced a valid,
+  evidence-bound surface (validated clean, zero diagnostics). Confirms both
+  product questions on the real provider.
+- Live runs (NVIDIA Nemotron Ultra free via OpenRouter) also surfaced the
   failure modes that Phase C alone could not: prose instead of JSON (fixed by
   budget + correction retry), trailing-comma JSON (fixed by repair), invented
   derived values (rejected by the validator, and the composer prompt now

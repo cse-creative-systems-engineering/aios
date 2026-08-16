@@ -26,7 +26,7 @@ impl std::fmt::Display for ToolError {
 
 impl std::error::Error for ToolError {}
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ToolResult {
     pub tool: &'static str,
     pub text: String,

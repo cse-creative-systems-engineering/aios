@@ -1,16 +1,19 @@
 # Surface Harness
 
-Headless test harness for the generative surface pipeline. Drives the real
-backend without a display: prompt -> specialist tool loop -> composer model
-call -> validation -> text/HTML surface preview, and writes a monitoring
-report for every prompt.
+Headless test harness for the generative surface pipeline, driven as a
+conversation. It answers the two product questions directly:
+
+1. Can Aios converse naturally with the user and return the details needed to
+   generate a panel?
+2. Can the generative UI layer turn that conversation into a surface that
+   displays the data?
 
 Binary: `src/bin/surface_harness.rs`.
 
 ## Usage
 
 ```
-cargo run --bin surface_harness -- [--stub] [--config PATH] [--out DIR] [prompts...]
+cargo run --bin surface_harness -- [--stub] [--config PATH] [--out DIR] [--conv NAME] [prompts...]
 ```
 
 | Flag | Meaning |
@@ -18,9 +21,25 @@ cargo run --bin surface_harness -- [--stub] [--config PATH] [--out DIR] [prompts
 | `--stub` | Deterministic stub model server, no network. |
 | `--config PATH` | Alternate config file (defaults to `AIOS_CONFIG` / `~/.aios/config.toml`). |
 | `--out DIR` | Output directory, default `harness-out`. |
-| `prompts...` | Positional prompts. A 7-prompt canned suite runs when none are given. |
+| `--conv NAME` | Run one canned conversation (`overview`, `storage`, `memory`). |
+| `prompts...` | Positional prompts, each run as a single-turn conversation. |
 
-Exit code is non-zero if any probe failed.
+Exit code is non-zero if any conversation failed.
+
+### Canned conversations
+
+The default suite is three natural 2-turn dialogs:
+
+- `overview`: "Hi, can you check on my system?" then
+  "Show me a panel with the overall health and the biggest problems."
+- `storage`: "How much space is left on my disk?" then
+  "And is the drive itself healthy?"
+- `memory`: "How much memory is in use?" then "Is there any memory pressure?"
+
+Each turn goes through the real planner tool loop with the growing message
+history, so the model can call specialists, answer a follow-up from context,
+or both. At the end, a surface is composed from the last user question, the
+final answer, and every tool result gathered across the conversation.
 
 ### Stub run (no network, deterministic)
 
@@ -28,8 +47,8 @@ Exit code is non-zero if any probe failed.
 cargo run --bin surface_harness -- --stub --out harness-out
 ```
 
-7/7 canned prompts run against the stub server. The stub captures every
-request body and the harness asserts the composer request never carried tool
+Runs the canned suite against the stub server. The stub captures every request
+body and the harness asserts the composer request never carried tool
 definitions (`composer request carried tool definitions: never`). This is the
 structural guarantee that the surface call is tool-less.
 
@@ -37,38 +56,38 @@ structural guarantee that the surface call is tool-less.
 
 ```
 cargo run --bin surface_harness -- --out harness-out
+cargo run --bin surface_harness -- --conv storage --out harness-out
 ```
 
-Uses the configured providers. Each prompt runs the real planner tool loop
-(specialists read live system data), then the composer model call, then
-validation. Any subset of the canned suite can be selected by passing prompts:
-
-```
-cargo run --bin surface_harness -- --out harness-out \
-  "How much of the disk is used and is the drive healthy?"
-```
+Uses the configured providers. Each conversation runs the real planner tool
+loop (specialists read live system data) with a growing history, then the
+composer model call, then validation. Free-tier providers can be slow; a
+2-turn conversation is typically 20-90 seconds.
 
 ## Output
 
-Per prompt (`surface-N.*`):
+Per conversation (`surface-N.*`):
 
 - `surface-N.json` - the composed `Surface` (surface/v1).
 - `surface-N.txt`  - text preview of regions/widgets.
 - `surface-N.html` - self-contained HTML preview with evidence chips.
 
-`report.json` - one `probes[]` entry per prompt with:
+`report.json` - one `probes[]` entry per conversation with:
 
-- `chat` - the grounded answer and the `ToolResult`s (evidence `tool-0`, ...).
+- `turns` - the transcript: each user message, ok/error, the Aios answer, and
+  the `ToolResult`s gathered (evidence `tool-0`, ...).
+- `used_tools` - whether any turn invoked a tool (follow-ups may legitimately
+  answer from context without one).
 - `compose` - ok/error, the routing decision (provider, model, connectivity,
   classification) that served the call, and the full surface JSON.
 - `validation` - ok/error (hard) plus soft `diagnostics[]`.
-- `ok` - true only when chat, compose, and validation all succeeded.
+- `ok` - true only when every turn, compose, and validation succeeded.
 
 ## Monitoring semantics
 
 Hard failures (probe FAIL, exit non-zero):
 
-- chat error (no answer produced),
+- a turn produced no answer,
 - compose error (gateway, empty reply, or a reply that is not a usable
   surface after the one correction retry),
 - validation error (schema/evidence/layout violation: zero columns, span
@@ -83,6 +102,11 @@ Soft findings (reported, do not fail the probe):
 
 ## What the live runs found (2026-08-16)
 
+- A live `storage` conversation: turn 1 called `observe` tools and answered
+  with real disk figures; the follow-up ("and is the drive healthy?") was
+  answered naturally from context without a new tool call; compose produced a
+  valid, evidence-bound surface with zero diagnostics. Both product questions
+  confirmed on a real provider.
 - Free-tier models sometimes reply with prose instead of JSON. Mitigated by a
   dedicated composition token budget and a one-turn correction retry in
   `src/surface/composer.rs`.
