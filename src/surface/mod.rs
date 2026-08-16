@@ -7,8 +7,10 @@
 //! call (`composer`), and deterministic schema/evidence/layout validation
 //! (`validator`).
 
+pub mod evidence;
 pub mod schema;
 
+pub use evidence::{EvidenceEntry, EvidenceIndex, evidence_brief, number_present_in_evidence, value_present_in_evidence};
 pub use schema::{
     ChartPoint, DockEdge, LayoutMode, RegionPriority, StatusItem, Surface, SurfaceLayout,
     SurfacePlacement, SurfaceRegion, SurfaceWidget, WidthClass,
