@@ -1,4 +1,5 @@
 use aios::facade::Facade;
+use aios::surface::Surface;
 use aios::tools::ToolResult;
 #[cfg(target_os = "linux")]
 use gdk::prelude::*;
@@ -47,6 +48,9 @@ struct PromptResponse {
     answer: String,
     evidence: Vec<EvidenceItem>,
     widgets: Vec<UiWidget>,
+    /// Composed generative surface (`surface/v1`). `None` when composition
+    /// failed; the frontend then falls back to `widgets` / a notice.
+    surface: Option<Surface>,
     backend_status: BackendStatus,
 }
 
@@ -59,6 +63,9 @@ struct EvidenceItem {
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
+// Legacy fallback widgets; kept only while the transition to `surface`
+// renders. `compile_widgets` currently emits `StatusList` only.
+#[allow(dead_code)]
 enum UiWidget {
     MetricCard {
         label: String,
@@ -137,7 +144,7 @@ async fn submit_prompt(
             .recv()
             .map_err(|_| "backend worker closed the response channel".to_string())?;
         if let Ok(ref payload) = response {
-            if !payload.widgets.is_empty() {
+            if payload.surface.is_some() || !payload.widgets.is_empty() {
                 use tauri::Emitter;
                 let _ = app.emit_to("canvas", "canvas_response", payload);
             }
@@ -232,7 +239,18 @@ fn main() {
                     };
                     let answer = facade.run_line(&prompt);
                     let evidence = facade.take_tool_results();
-                    let widgets = if answer.contains("failed:") {
+                    let surface = if answer.contains("failed:") || evidence.is_empty() {
+                        None
+                    } else {
+                        match facade.compose_surface(&prompt, &answer, &evidence) {
+                            Ok((surface, _)) => Some(surface),
+                            Err(error) => {
+                                eprintln!("Aios canvas: composition failed: {error}");
+                                None
+                            }
+                        }
+                    };
+                    let widgets = if surface.is_some() {
                         Vec::new()
                     } else {
                         compile_widgets(&evidence)
@@ -248,6 +266,7 @@ fn main() {
                         answer,
                         evidence,
                         widgets,
+                        surface,
                         backend_status: status,
                     });
                     let _ = response.send(result);

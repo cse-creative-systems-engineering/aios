@@ -57,3 +57,31 @@ h1 { margin: 8px 0 0; font-size: 26px; letter-spacing: -.03em; }
 .notice-widget { border-color: #785c28; }
 .notice-widget p { margin: 0; color: #d6c18d; font-size: 13px; line-height: 1.5; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+
+/* --- Generative surface (surface/v1) --- */
+.canvas-subtitle { margin-top: 6px; color: #8995aa; font-size: 13px; }
+.surface { display: grid; gap: 16px; margin-top: 32px; align-items: start; }
+.surface-grid { grid-template-columns: repeat(12, minmax(0, 1fr)); }
+.surface-stack { grid-template-columns: 1fr; }
+.surface-row { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+.surface-region { min-width: 0; }
+.region-label { margin-bottom: 8px; color: #5b6778; font-size: 10px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; }
+.region-primary .region-label { color: #6ee7b7; }
+.surface-widget { min-height: 120px; padding: 18px; border: 1px solid #29364c; border-radius: 12px; background: #111722; }
+.surface-widget + .surface-widget { margin-top: 16px; }
+.surface-widget h2 { margin: 0 0 14px; color: #dce4f2; font-size: 15px; }
+.gauge-row { display: flex; align-items: center; gap: 14px; margin: 18px 0 10px; }
+.gauge-track { flex: 1; height: 10px; border-radius: 6px; background: #202a3b; overflow: hidden; }
+.gauge-fill { height: 100%; border-radius: 6px; background: linear-gradient(90deg, #34d399, #6ee7b7); }
+.gauge-value { min-width: 74px; color: #e8edf7; font-size: 18px; font-weight: 700; text-align: right; }
+.gauge-value small { color: #8995aa; font-size: 11px; font-weight: 400; }
+.status-widget ul { display: grid; gap: 8px; padding: 0; margin: 0 0 4px; list-style: none; }
+.status-widget li { display: grid; grid-template-columns: 1fr auto; column-gap: 12px; padding-bottom: 7px; border-bottom: 1px solid #202a3b; color: #aab6c9; font-size: 13px; }
+.status-item-detail { grid-column: 1 / -1; color: #748198; font-size: 11px; }
+.chart-bars { display: flex; align-items: flex-end; gap: 10px; height: 150px; padding-top: 10px; }
+.chart-col { display: flex; flex: 1; flex-direction: column; align-items: center; justify-content: flex-end; min-width: 0; height: 100%; }
+.chart-bar { width: 100%; max-width: 44px; border-radius: 5px 5px 0 0; background: linear-gradient(180deg, #6ee7b7, #34d399); }
+.chart-label, .chart-value { margin-top: 6px; color: #748198; font-size: 11px; white-space: nowrap; }
+.chart-value { color: #c6d0e0; }
+.evidence-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.evidence-chip { padding: 2px 7px; border: 1px solid #344159; border-radius: 999px; color: #748198; font-size: 10px; }

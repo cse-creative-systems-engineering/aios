@@ -260,6 +260,22 @@ impl Facade {
     pub fn take_tool_results(&mut self) -> Vec<crate::tools::ToolResult> {
         std::mem::take(&mut self.last_tool_results)
     }
+
+    /// Compose a generative surface from the last chat answer and its
+    /// evidence, plus the routing decision the gateway used. Returns `Err`
+    /// when the model reply was not a usable surface; callers fall back to a
+    /// plain answer + notice.
+    pub fn compose_surface(
+        &self,
+        intent: &str,
+        answer: &str,
+        evidence: &[crate::tools::ToolResult],
+    ) -> Result<
+        (crate::surface::Surface, crate::model::RoutingDecision),
+        crate::surface::SurfaceComposeError,
+    > {
+        self.coordinator.compose_surface_with_meta(intent, answer, evidence)
+    }
 }
 
 fn harness_command(rest: &str) -> String {

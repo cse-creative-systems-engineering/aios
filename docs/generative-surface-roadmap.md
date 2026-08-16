@@ -18,8 +18,8 @@ touch the M0-M7 backend contracts, broker, or specialists.
 - [x] Phase C: `AgentRole::SurfaceComposition` + composer model call.
 - [x] Phase D: Surface validator (schema + evidence + layout).
 - [x] Phase I: Headless test harness (implemented ahead of Phases E-H).
-- [ ] Phase E: IPC contract change (`PromptResponse` carries a `Surface`).
-- [ ] Phase F: frontend surface renderer + layout engine (replaces fixed grid).
+- [x] Phase E: IPC contract change (`PromptResponse` carries a `Surface`).
+- [x] Phase F: frontend surface renderer + layout engine (replaces fixed grid).
 - [ ] Phase G: placement hints (edge/width class) mapped to window geometry.
 - [ ] Phase H: live desktop verification and doc updates.
 
@@ -513,6 +513,18 @@ Acceptance:
 - `cargo test` in `src-tauri` passes.
 - With a stub provider, `submit_prompt` returns a populated `surface`.
 
+Done notes (2026-08-16):
+- `Facade::compose_surface` (facade.rs) delegates to
+  `Coordinator::compose_surface_with_meta` and returns the routing decision
+  too; the worker thread calls it after `take_tool_results()`.
+- `PromptResponse` gains `surface: Option<Surface>`; the Tauri worker emits
+  `canvas_response` when a surface OR fallback widgets exist. On compose
+  failure (`Err`) the surface is `None` and the legacy `widgets` fallback
+  (StatusList) is sent, so the canvas never goes blank.
+- `UiWidget` is now explicitly the legacy fallback (marked `#[allow(dead_code)]`).
+- The `main_test.rs` bin is an unrelated Layer Shell experiment; nothing to
+  update there.
+
 ---
 
 ### Phase F: Frontend surface renderer
@@ -541,8 +553,22 @@ Deliverables:
 Acceptance:
 - `npm run build` succeeds.
 - Browser preview with a hand-injected sample surface renders regions and
-  widgets in the intended arrangement (test by pasting a sample surface in the
-  devtools `canvas_response` listener or a temporary fixture).
+   widgets in the intended arrangement (test by pasting a sample surface in the
+   devtools `canvas_response` listener or a temporary fixture).
+
+Done notes (2026-08-16):
+- `frontend/src/main.ts` mirrors `src/surface/schema.rs`: `Surface` with
+  `placement`, `layout`, `regions`, and the five widget variants. `renderSurface`
+  orders regions by priority (primary > secondary > tertiary), spans each
+  region `grid-column: span N` over `layout.columns` columns (default 12), and
+  renders `metricCard`, `sensorGauge` (progress bar), `statusList`, `chart`
+  (scaled bar chart), and `notice` inside each region. Every widget shows its
+  evidence key chips.
+- The canvas header uses the surface `title`/`subtitle`; when no surface is
+  present (compose failure) it falls back to the legacy widget grid, so the
+  window is never blank.
+- Sidebar rendering is unchanged.
+- `npm run build` and `cargo build` (src-tauri) both pass.
 
 ---
 
