@@ -646,18 +646,10 @@ Acceptance:
 
 ## 7. Session handoff
 
-State as of 2026-08-16 (all verification reads done, no code changed):
-
-- **Branch:** working tree is on `slint_ui_experiment`
-  (`git log -1` = 6dbac68 "Start Slint UI experiment"), which is `main` plus
-  an abandoned Slint experiment. The relevant work branch is
-  `feature/dynamic-generative-surfaces` (has the deeper specialist reports and
-  the Dioxus-era files). Recommendation for the next session: switch to
-  `feature/dynamic-generative-surfaces` before starting Phase A, and merge or
-  drop the Slint experiment deliberately rather than leaving both live.
-- **Untracked files at repo root:** `aios_issues.md` (the research writeup
-  this roadmap references) and `docs/slint-ui-handoff.md`. Nothing was
-  committed.
+The working desktop foundation was checkpointed as `8afcded` and is now on
+`main`. The former `slint_ui_experiment` branch and its handoff were removed.
+The next lifecycle work is documented in
+`docs/milestones/0002-multi-surface-lifecycle-plan.md`.
 - **Live frontend:** `frontend/src/main.ts` (vanilla TS, Vite build). The
   Dioxus tree under `frontend/src/` is dead code and must not be wired into
   Tauri (see §2.4).

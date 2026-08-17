@@ -2,7 +2,8 @@
 
 **Status:** Working checkpoint
 **Date:** 2026-08-17
-**Branch:** `feature/dynamic-generative-surfaces`
+**Checkpoint commit:** `8afcded`
+**Current branch:** `main`
 
 ## What This Checkpoint Proves
 
