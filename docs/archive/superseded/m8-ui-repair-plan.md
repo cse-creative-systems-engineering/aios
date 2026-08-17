@@ -1,5 +1,9 @@
 # M8 UI Repair and Completion Plan
 
+> Superseded implementation handoff. The current UI contract is `docs/ui.md`;
+> the active surface lifecycle plan is
+> `docs/milestones/0002-multi-surface-lifecycle-plan.md`.
+
 **Status:** Repair plan / implementation handoff  
 **Created:** 2026-08-13  
 **Scope:** Restore a visible, functional Aios desktop UI and connect it to the existing M0–M7 backend without creating a privileged bypass.  

@@ -1,7 +1,7 @@
 # Aios Documentation Progress
 
 **Status:** Living document  
-**Last updated:** 2026-08-13
+**Last updated:** 2026-08-17
 
 This document tracks the completion status of the Aios design doc set.
 Updated whenever a document's status changes.
@@ -28,6 +28,7 @@ Updated whenever a document's status changes.
 | `decisions/0004-two-dimensional-authorization.md` | ✅ Accepted | 100% |
 | `decisions/0005-freeze-triage.md` | ✅ Accepted | 100% |
 | `decisions/0006-model-gateway.md` | ✅ Accepted | 100% |
+| `decisions/0007-groundless-generation-model.md` | ✅ Accepted | 100% |
 | `security-model.md` | Draft — frozen for M1 | Passed adversarial review (round 2) |
 | `capability-model.md` | Draft — frozen for M1 | Fixes applied, dead types removed; risk-4 gate aligned with state machine; broker resource-state plumbing noted |
 | `message-protocol.md` | Draft — frozen for M1 | Fixes applied; duplicate `Deny` removed, `Escalate`/`Modified` variants dropped, audit-loop termination defined |
@@ -36,7 +37,7 @@ Updated whenever a document's status changes.
 | `agent-packages.md` | Draft — frozen for M1 | Mermaid/enum/manifest aligned |
 | `model-routing.md` | Draft — updated for M3 | Gateway architecture added (ADR-0006); §6 renumbered |
 | `human-interaction.md` | Draft — frozen for M1 | New — consolidates approval/escalation/facade trust; `Modified` decision removed (see message-protocol) |
-| `implementation-roadmap.md` | Draft — updated for M7 | M0–M7 complete; M8 terminal panel and resident docked UI done, dynamic generative surface in progress |
+| `implementation-roadmap.md` | Draft — updated for M8 | M0–M7 complete; M8 desktop foundation working, lifecycle planned |
 | `testing-strategy.md` | Draft — frozen for M1 | Test code reconciled with protocol |
 | `observability.md` | Draft — frozen for M1 | May need refinement during implementation; retention advisory note and recursive-log-avoidance added |
 | `modules/` | 📝 Drafted | 19 of 19 module specs written (wifi, storage, network, drivers, graphics, memory, power-thermal, security, processes, packages, boot-recovery, block-disk, filesystem, files-data, gpu, display, session, bluetooth, wired-lan) |
@@ -53,24 +54,22 @@ Design docs:  16 of 19 frozen or accepted  (84%)
 Core contracts: 8 of 8 drafted              (100%)
   (SEC, CAP, MSG, ASM, GRAPH, PKG, MODEL, HI)
 Human interaction: 1 of 1 drafted           (100%)
-ADRs: 6 accepted                             (6 of expected ~15-20)
+ADRs: 7 accepted                             (7 of expected ~15-20)
 Module specs: 19 of 19 drafted              (100%)
 ```
 
-Implementation status is tracked in `implementation-roadmap.md`. Current:
+Implementation status is tracked in `implementation-roadmap.md` and the M8
+milestone documents. Current:
 M0–M7 are **complete**. All ten M7 specialists (Storage, Network, Drivers,
 Graphics, Memory, Power/thermal, Security/identity, Processes, Packages,
 Boot/recovery) are wired through the broker with read-only observe/diagnose
-tools, coordinator boot registration, and broker round-trip tests. The full
-test suite passes (366 passed, 1 ignored — the real-model test). The M8
-terminal panel and the resident docked UI (sidebar and canvas windows, GTK
-layer-shell dock) are in place; the dynamic generative surface is now wired
-end to end — surface IR, evidence binding, the model composer, the
-deterministic validator, the headless harness, the IPC contract, and the TS
-surface renderer (Phases A–F and I of `docs/generative-surface-roadmap.md`)
-all build and pass. Remaining M8 work is placement geometry (Phase G) and
-live desktop verification (Phase H), tracked in `docs/ui.md` and
-`docs/m8-ui-repair-plan.md`.
+tools, coordinator boot registration, and broker round-trip tests. The current
+library baseline is 438 passed, 1 ignored. The M8 desktop foundation is
+working end to end: live evidence, groundless surface generation, value
+fidelity, transparent rendering, movement, click-through, and sidebar docking.
+The next M8 work is the multi-surface lifecycle, documented in
+`milestones/0002-multi-surface-lifecycle-plan.md`, followed by the premium
+sidebar workstream in `ui.md`.
 
 ## Dependency Graph
 

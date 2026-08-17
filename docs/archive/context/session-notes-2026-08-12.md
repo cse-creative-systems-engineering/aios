@@ -1,5 +1,8 @@
 # Aios Session Notes
 
+> Archived context snapshot from 2026-08-12. Use `PROJECT_GROUNDING.md` and its
+> latest linked snapshot for current work.
+
 > Durable context snapshot. Captures the full design-doc read (docs/) and the
 > full source read (src/, ~20.5k lines Rust) as of 2026-08-12. Use this as the
 > starting point for context instead of re-reading the whole tree.
@@ -203,7 +206,7 @@ an invented privileged package.
 - **M5** Transactions and Staging — ✅ (checkpoints, approval, crash recovery)
 - **M6** First Hardware Specialist (Wi-Fi) — ✅ (vertical slice, driver control)
 - **M7** Additional Specialists — ✅ (Storage, Network, Drivers, Graphics, Memory, Power/thermal, Security/identity, Processes, Packages, Boot/Recovery, all wired read-only through the broker)
-- **M8** System State Panel — ✅ terminal panel + resident docked UI (sidebar/canvas, layer-shell dock); dynamic generative surface pending (docs/m8-ui-repair-plan.md)
+- **M8** System State Panel — ✅ terminal panel + resident docked UI (sidebar/canvas, layer-shell dock); dynamic generative surface pending (../superseded/m8-ui-repair-plan.md)
 
 ---
 

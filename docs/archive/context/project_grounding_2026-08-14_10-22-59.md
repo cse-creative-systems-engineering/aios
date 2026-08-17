@@ -1,5 +1,8 @@
 # Aios Project Grounding
 
+> Archived grounding snapshot. The current snapshot is linked from
+> `PROJECT_GROUNDING.md`.
+
 **Snapshot:** 2026-08-14 10:22:59 EDT  
 **Purpose:** Durable context for restarting work after a context reset.  
 **Scope:** Documentation and source review completed in this session.

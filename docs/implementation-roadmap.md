@@ -1,9 +1,8 @@
 # Aios Implementation Roadmap
 
-**Status:** Draft — updated for M7 (M0–M7 complete, M8 terminal panel and
-resident docked UI complete, with the dynamic generative surface
-(model-selected, validated widget composition) still to land, tracked in
-`docs/ui.md` and `docs/m8-ui-repair-plan.md`)  
+**Status:** Draft — updated for M8 (M0–M7 complete, M8 desktop foundation
+working; multi-surface lifecycle and premium sidebar remain planned in
+`docs/milestones/0002-multi-surface-lifecycle-plan.md`)
 **Depends on:** architecture.md, requirements.md, security-model.md, capability-model.md, message-protocol.md, action-state-machine.md, system-graph.md, agent-packages.md, model-routing.md, all ADRs
 
 ## Purpose
@@ -886,30 +885,29 @@ each specialist is built.
 
 ## Milestone 8: System State Panel and Aios UI
 
-**Status:** ✅ Terminal panel complete (terminal `panel` command). The
-resident docked UI (sidebar and canvas windows, GTK layer-shell dock) is
-implemented and launchable via `npm run tauri:dev`. The dynamic generative
-surface — model-selected, validated widget composition — is the remaining
-work and is tracked in `docs/ui.md` and `docs/m8-ui-repair-plan.md`  
-**Estimated effort:** 2–3 weeks (panel); the full UI (presence, screen space,
-screen vision) is a larger workstream tracked in `docs/ui.md`  
+**Status:** ✅ Desktop foundation complete. The resident docked UI, live
+evidence path, groundless generation, value validation, transparent canvas,
+click-through, and widget movement are working. Multi-surface lifecycle and
+sidebar redesign are planned in
+`docs/milestones/0002-multi-surface-lifecycle-plan.md`.
+**Estimated effort:** ongoing M8 workstream; current lifecycle and sidebar work
+are tracked in `docs/milestones/0002-multi-surface-lifecycle-plan.md` and
+`docs/ui.md`
 **Dependencies:** M2 (can run in parallel with M3–M6)
 
 ### Goal
 
-Build the System State panel showing overall health, subsystem status, active
-operations, model connectivity, and recovery state, as one part of the Aios
-UI. The full UI is larger than the panel: Aios is always present on the
-screen, occupies a sidebar with other windows reflowing around it, and has
-tools to see the screen. The full UI design is scoped in `docs/ui.md` and is
-its own workstream; the panel is the first concrete piece.
+Maintain the resident sidebar and detached generated-surface presentation
+layer. The sidebar is the stable chat/control surface. Generated surfaces are
+transparent, movable, click-through presentation hosts. Screen vision and the
+premium sidebar redesign remain separate future workstreams.
 
 ### Deliverables
 
 - [x] Health and state aggregator (`src/panel.rs`, snapshot of route,
   connectivity, graph health, active operations, recovery, audit)
-- [x] System State panel UI (resident Tauri docked UI: sidebar and canvas
-      windows); dynamic widget composition still to land, see `docs/ui.md`
+- [x] System State panel UI and resident Tauri docked UI
+- [x] Groundless generated surface foundation; see `docs/ui.md`
 - [x] Overview view (overall status, subsystem health, connectivity, model route)
 - [x] Subsystem view (per-subsystem health rollup, attention count,
       dependency count, responsible specialist; attention-first ordering)
@@ -930,7 +928,8 @@ its own workstream; the panel is the first concrete piece.
 5. ✅ Failed actions are visible in the recovery view.
 6. ✅ All controls that change the system use the same broker/staging/rollback
    path as chat — the panel is read-only and introduces no privileged bypass.
-7. ✅ All tests pass (244 tests, including panel suite).
+7. ✅ The current library baseline passes 438 tests, with one ignored
+   real-model test; desktop acceptance is recorded in the M8 milestone.
 
 ---
 

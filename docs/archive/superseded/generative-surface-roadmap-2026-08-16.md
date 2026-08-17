@@ -1,13 +1,17 @@
 # Generative Surface Repair Roadmap
 
+> Superseded roadmap retained for implementation history. Current work starts
+> at ADR-0007 and `docs/milestones/0002-multi-surface-lifecycle-plan.md`.
+
 **Status:** Repair roadmap / implementation handoff
 **Created:** 2026-08-16
 **Scope:** Add the missing surface composition layer so Aios renders a true
 dynamic generative surface (layout + widgets + evidence bindings) in the
 floating canvas window instead of a single hard-coded `StatusList`. Does not
 touch the M0-M7 backend contracts, broker, or specialists.
-**Primary references:** `aios_issues.md` (research writeup), `docs/ui.md`,
-`docs/m8-ui-repair-plan.md`, `docs/model-routing.md`, `docs/human-interaction.md`
+**Primary references:** `../research/aios_issues-2026-08-16.md` (research writeup),
+`../../ui.md`, `m8-ui-repair-plan.md`, `../../model-routing.md`,
+`../../human-interaction.md`
 **Working branch:** `feature/dynamic-generative-surfaces` (the current
 `slint_ui_experiment` HEAD is a separate, abandoned experiment; see §7).
 
@@ -27,7 +31,7 @@ touch the M0-M7 backend contracts, broker, or specialists.
 
 ## 1. Why this document exists
 
-`aios_issues.md` records a research pass that concluded the project's
+`../research/aios_issues-2026-08-16.md` records a research pass that concluded the project's
 generative surface feature is broken for an architectural reason: everything
 the specialists gather is collapsed into one `StatusList` widget, and there is
 no model-driven composition step between evidence and rendered UI. This
@@ -129,7 +133,7 @@ ToolResult[]
   (`main.rs`, `app.rs`, `types.rs`, `ipc.rs`, `components/`) are a
   disconnected experiment: `ipc.rs:22` `submit_prompt` returns hard-coded
   widgets from keyword matching and is never called from the Tauri app.
-  `docs/m8-ui-repair-plan.md` §7 already records the decision to restore the
+  `m8-ui-repair-plan.md` §7 already records the decision to restore the
   plain-TS path first and treat Dioxus as an optional later migration. The
   writeup's "five widget types in `app.rs`" therefore exist only in dead code.
 - **The writeup implied the backend produces `MetricCard`/`Notice`; it does
@@ -608,7 +612,7 @@ Acceptance:
 3. Update docs to match reality:
    - `docs/ui.md` §Dynamic generative surface / widget enum: replace the
      v0.1 widget list and data flow with the surface IR shape; note the TS
-     renderer decision (Dioxus stays optional per m8-ui-repair-plan.md §7).
+    renderer decision (Dioxus stays optional per m8-ui-repair-plan.md §7).
    - `docs/model-routing.md`: add `SurfaceComposition` to the role table.
    - `docs/doc-progress.md`: mark this roadmap's status.
 4. Record this roadmap's completion and close out the Phase E `widgets`

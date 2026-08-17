@@ -9,8 +9,7 @@ The generative surface has two candidate implementations:
 
 1. **Surface IR** — the model emits a closed JSON vocabulary (`metricCard`,
    `sensorGauge`, `statusList`, `chart`, `notice`) that a deterministic
-   renderer lays out. This is what `docs/ui.md` and
-   `docs/m8-ui-repair-plan.md` describe.
+   renderer lays out. This is what the archived v0.1 UI documents described.
 2. **Unrestricted HTML** — the model emits a self-contained HTML/CSS panel.
 
 The Surface IR path repeatedly failed to produce useful output. The closed
@@ -19,7 +18,8 @@ and the deterministic renderer flattens whatever it receives into generic
 dashboard cards. The unrestricted HTML path produced genuinely good widgets
 from the same evidence.
 
-The existing "no raw HTML" rule (`m8-ui-repair-plan.md` §2.4) was written to
+The existing "no raw HTML" rule (archived
+`docs/archive/superseded/m8-ui-repair-plan.md` §2.4) was written to
 protect against two things: (a) model output executing code or reaching
 privileged APIs, and (b) the model fabricating machine facts. Both concerns
 are real, but forbidding HTML is not the only way to satisfy them.
@@ -55,7 +55,8 @@ user request ──► Aios ──► planner ──► specialists ──► da
 - Aios owns the surface lifecycle: coverage verification, relay, value
   fidelity verification, display, sizing, docking, and iteration.
 
-This supersedes `m8-ui-repair-plan.md` §2.4 ("a model must never stream raw
+This supersedes the archived `docs/archive/superseded/m8-ui-repair-plan.md`
+§2.4 ("a model must never stream raw
 HTML") and the closed-vocabulary Surface IR as the shipped path. The prior
 surface JSON schema is retained for its validator/evidence machinery only as
 long as it is useful.
@@ -75,7 +76,7 @@ long as it is useful.
 
 ## Related
 
-- `docs/m8-ui-repair-plan.md` §2.4 — superseded
-- `docs/ui.md` — dynamic generative surface (updated by this decision)
+- `docs/archive/superseded/m8-ui-repair-plan.md` §2.4 — superseded
+- `docs/ui.md` — current UI contract
 - `docs/decisions/0003-fail-fast-no-silent-fallbacks.md`
 - `src/surface/composer.rs` — `compose_unconstrained_html`

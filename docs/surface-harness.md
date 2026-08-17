@@ -120,6 +120,7 @@ Soft findings (reported, do not fail the probe):
 
 ## Related
 
-- `docs/generative-surface-roadmap.md` Phase D (validator) and Phase I
+- `docs/decisions/0007-groundless-generation-model.md` and
+  `docs/milestones/0002-multi-surface-lifecycle-plan.md`
   (harness) for design and done notes.
 - `src/surface/validator.rs`, `src/surface/render.rs`, `src/surface/stub.rs`.

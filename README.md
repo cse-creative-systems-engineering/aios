@@ -83,19 +83,19 @@ or firmware requires a scoped, expiring approval tied to the exact plan.
 
 It's further along than the first draft of this section claimed, but not done.
 
-The design is 15 documents and six decision records, about 9,000 lines,
-covering the security model, the capability system, the internal message
-protocol, the action state machine, and a milestone plan with acceptance
-criteria. I did the design first on purpose: the hard problems here are about
-what an agent is *allowed* to do, and those are cheaper to get wrong on paper
-than in production code.
+The design covers the security model, capability system, internal message
+protocol, action state machine, specialist contracts, surface composition, and
+milestone plans with acceptance criteria. I did the design first on purpose:
+the hard problems here are about what an agent is *allowed* to do, and those
+are cheaper to get wrong on paper than in production code.
 
 There is now also a runnable core. `cargo run` drives the in-process demo
 (broker, guardian, executor, mock planner and specialists against fake
 hardware). `cargo run -- shell` boots the interactive shell: it loads
 `~/.aios/config.toml`, runs a local Qwen model through llama.cpp, and routes
 chat through the model gateway, with discovery, provider status, consent, and
-a plan-and-verify flow. `cargo test` is 366 tests and counting.
+a plan-and-verify flow. The current library baseline is 438 passing tests with
+one ignored real-model test.
 
 Milestones, briefly:
 
@@ -121,17 +121,18 @@ Milestones, briefly:
   Graphics, Memory, Power/thermal, Security/identity, Processes, Packages,
   and Boot/recovery, all with read-only observe/diagnose tools through the
   broker.
-- **M8 — System state panel and docked UI.** The terminal panel and the
-  resident docked UI (sidebar and canvas windows) are in place. The dynamic
-  generative surface — model-selected, validated widget composition — is the
-  remaining piece, tracked in `docs/m8-ui-repair-plan.md`.
+- **M8 — Generative surface desktop foundation.** The resident sidebar, live
+  specialist evidence path, groundless surface generation, value validation,
+  transparent canvas, click-through, and widget movement are working. The
+  next lifecycle work is documented in
+  `docs/milestones/0002-multi-surface-lifecycle-plan.md`.
 
 ## What I need help with
 
-- **Finish M8.** The resident docked UI (sidebar and canvas windows) is
-  launchable, but the dynamic generative surface — model-selected, validated
-  widget composition — is still to land. The completion criteria are in
-  `docs/m8-ui-repair-plan.md`.
+- **Finish M8.** Add multi-surface lifecycle, surface editing, multi-specialist
+  composition, and the premium sidebar workstream. The current order and
+  acceptance gates are in
+  `docs/milestones/0002-multi-surface-lifecycle-plan.md`.
 - **Find the flaw.** The docs are "frozen" in the sense that changing them is
   deliberately annoying, not forbidden. When the first real code contradicts
   them, the code wins. If you read something and it's wrong, an issue is the
@@ -192,10 +193,19 @@ map is stale or wrong, the system assumes the worst.
 | [testing-strategy.md](docs/testing-strategy.md) | Six layers of tests, including the unwritten ones |
 | [observability.md](docs/observability.md) | The audit log and tracing |
 | [requirements.md](docs/requirements.md) | 32 traceable requirements, all the REQ-SAF-* ones included |
-| [implementation-roadmap.md](docs/implementation-roadmap.md) | Milestones M0–M8 with acceptance criteria |
+| [implementation-roadmap.md](docs/implementation-roadmap.md) | Core milestones M0–M8 with acceptance criteria |
 | [glossary.md](docs/glossary.md) | Terms |
 | [doc-progress.md](docs/doc-progress.md) | What's done and what's stuck |
-| [decisions/](docs/decisions/) | ADR-0001 through ADR-0006 |
+| [decisions/](docs/decisions/) | ADR-0001 through ADR-0007 |
+
+Current UI and surface documents:
+
+| Document | What's in it |
+|---|---|
+| [ui.md](docs/ui.md) | Current Tauri UI and surface contract |
+| [Foundation](docs/milestones/0001-generative-surface-desktop-foundation.md) | Working desktop checkpoint |
+| [Lifecycle plan](docs/milestones/0002-multi-surface-lifecycle-plan.md) | Multi-surface and editing plan |
+| [Archive](docs/archive/) | Historical and superseded documents |
 
 Reading order: glossary → requirements → security-model → capability-model →
 message-protocol → action-state-machine → system-graph → agent-packages →
@@ -205,7 +215,7 @@ model-routing → human-interaction. Takes an afternoon.
 
 ```bash
 cargo build          # compile everything
-cargo test           # run the test suite (366 tests)
+cargo test           # run the test suite (438 library tests)
 cargo run            # in-process demo: broker, guardian, mock agents
 cargo run -- shell   # interactive shell against your real config and models
 ```

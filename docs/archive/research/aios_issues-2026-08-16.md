@@ -1,3 +1,6 @@
+> Archived research note. This document describes the pre-ADR-0007 surface
+> implementation and is not current implementation guidance.
+
 The current issue is that our project is essentially broke.  The rust/tauri app doesnt produce generative surfaces as designed.
 
 Below I'll describe our project as seen from fresh eyes using the most advanced, high-end model available today.  It'll explain what its seeing and why where It believes we've went wrong.
@@ -21,7 +24,7 @@ The documentation describes one architecture, while the executable code implemen
 
 ### What the design says
 
-Your `docs/m8-ui-repair-plan.md` and `docs/ui.md` explicitly describe the intended system as:
+Your `../superseded/m8-ui-repair-plan.md` and `../../ui.md` explicitly describe the intended system as:
 
 > user intent → specialist evidence → model-selected composition → validated widget surface
 
