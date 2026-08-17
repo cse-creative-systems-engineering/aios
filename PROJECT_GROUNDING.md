@@ -6,7 +6,7 @@ Start here before making changes or answering questions about the repository.
 
 Read the latest dated grounding snapshot:
 
-- [`project_grounding_2026-08-17_17-19-56.md`](project_grounding_2026-08-17_17-19-56.md)
+- [`project_grounding_2026-08-17_17-19-56.md`](docs/grounding/project_grounding_2026-08-17_17-19-56.md)
 
 That snapshot records the current architecture, source layout, implementation
 status, known gaps, test conditions, UI paths, and the recommended restart

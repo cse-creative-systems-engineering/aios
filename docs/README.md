@@ -16,3 +16,5 @@ lifecycle plan is
 [`milestones/0002-multi-surface-lifecycle-plan.md`](milestones/0002-multi-surface-lifecycle-plan.md).
 Historical and superseded material is kept under [`archive/`](archive/) and is
 not current implementation guidance.
+
+Current dated grounding snapshots are kept under [`grounding/`](grounding/).
