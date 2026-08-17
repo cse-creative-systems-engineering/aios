@@ -3,9 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { currentMonitor, getCurrentWindow } from '@tauri-apps/api/window';
 import { PhysicalPosition } from '@tauri-apps/api/dpi';
-
-type EvidenceItem = { tool: string; text: string };
-type Message = { role: 'user' | 'assistant'; text: string; evidence?: EvidenceItem[] };
+import { renderSidebar, type EvidenceItem, type SidebarMessage } from './sidebar';
 type UiWidget =
   | { type: 'metricCard'; label: string; value: string; unit: string; status: string }
   | { type: 'statusList'; title: string; items: string[] }
@@ -56,7 +54,7 @@ let dragState: {
   top: number;
   handle: HTMLElement;
 } | null = null;
-const messages: Message[] = [{
+const messages: SidebarMessage[] = [{
   role: 'assistant',
   text: 'I’m ready to investigate your system. Ask me what you would like to know.',
 }];
@@ -82,17 +80,6 @@ function render(): void {
       surfaceResizeObserver = null;
     }
   }
-}
-
-function renderSidebar(): string {
-  return `<main class="app-shell sidebar-only">
-    <aside class="sidebar">
-      <div class="brand-row"><div class="brand-mark">A</div><div><div class="brand-name">Aios</div><div class="brand-status"><span class="status-dot"></span> System assistant</div></div></div>
-      <div class="conversation-label">Conversation</div>
-      <section class="chat" aria-live="polite">${messages.map((message) => `<article class="message ${message.role}"><div class="message-label">${message.role === 'user' ? 'You' : 'Aios'}</div><p>${escapeHtml(message.text)}</p>${message.evidence?.length ? `<details class="evidence-details"><summary>Specialist evidence (${message.evidence.length})</summary>${message.evidence.map((item) => `<div class="evidence-item"><strong>${escapeHtml(item.tool)}</strong><p>${escapeHtml(item.text)}</p></div>`).join('')}</details>` : ''}</article>`).join('')}</section>
-      <form class="prompt-form" id="prompt-form"><label class="sr-only" for="prompt">Ask Aios</label><textarea id="prompt" rows="3" placeholder="Ask Aios about your system..."></textarea><button type="submit">Send <span>↵</span></button></form>
-    </aside>
-  </main>`;
 }
 
 function renderCanvas(): string {
