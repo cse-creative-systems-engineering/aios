@@ -35,7 +35,8 @@ These results were manually tested after restarting Aios between tests:
 | Generate RAM surface | Pass | Single-domain generation baseline |
 | Move generated surface | Pass | Native overlay and drag baseline |
 | Click through outside surface | Pass | Native input-region baseline |
-| Generate CPU and RAM together | Fail | Multi-domain evidence/composition needs a regression test and repair |
+| Explicitly gather CPU and RAM specialists into one surface | Pass | Multi-domain composition baseline |
+| Vague CPU plus RAM request | Not reliable | Prompt routing and clarification need a regression test |
 | Edit an existing surface | Fail | Persistent per-surface state and update routing are missing |
 | Generate CPU, then RAM | Replaces CPU | Current single-slot renderer behaves as implemented |
 
