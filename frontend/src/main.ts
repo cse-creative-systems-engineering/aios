@@ -36,6 +36,7 @@ type PromptResponse = {
   surface: Surface | null;
   experimentalHtml: string | null;
 };
+type BackendStatus = { ready: boolean; error: string | null };
 
 const currentWindow = getCurrentWindow();
 const isCanvasWindow = currentWindow.label === 'canvas';
@@ -45,6 +46,7 @@ let surface: Surface | null = null;
 let experimentalHtml: string | null = null;
 let sidebarStatus: SidebarStatus | null = null;
 let sidebarStatusError: string | null = null;
+let sidebarStatusRetry: number | null = null;
 const surfacePosition = { x: 20, y: 16 };
 let surfaceResizeObserver: ResizeObserver | null = null;
 let inputRegionFrame: number | null = null;
@@ -90,8 +92,23 @@ async function refreshSidebarStatus(): Promise<void> {
   try {
     sidebarStatus = await invoke<SidebarStatus>('sidebar_status');
     sidebarStatusError = null;
+    if (sidebarStatusRetry !== null) {
+      window.clearTimeout(sidebarStatusRetry);
+      sidebarStatusRetry = null;
+    }
   } catch (error) {
-    sidebarStatusError = String(error);
+    try {
+      const backend = await invoke<BackendStatus>('backend_status');
+      sidebarStatusError = backend.error ?? String(error);
+      if (!backend.ready && backend.error === 'backend is starting' && sidebarStatusRetry === null) {
+        sidebarStatusRetry = window.setTimeout(() => {
+          sidebarStatusRetry = null;
+          void refreshSidebarStatus();
+        }, 500);
+      }
+    } catch (statusError) {
+      sidebarStatusError = `${String(error)}; readiness check failed: ${String(statusError)}`;
+    }
   }
   if (!isCanvasWindow) render();
 }
