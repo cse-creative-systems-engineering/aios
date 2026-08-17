@@ -53,6 +53,25 @@ The sidebar is intentionally basic at the checkpoint. Its redesign is not a
 cosmetic reskin. It becomes the resident Aios administration panel and the
 entry point for the system's moving parts.
 
+### Regression Firewall
+
+Sidebar work must not change the generated-surface renderer, canvas geometry,
+native input-region handling, or surface-generation protocol unless a change is
+explicitly part of the surface lifecycle plan. The following checks remain
+mandatory throughout the sidebar workstream:
+
+- CPU surface still renders completely;
+- RAM surface still renders completely;
+- one explicit CPU plus RAM surface still renders both domains;
+- generated surfaces remain movable;
+- clicks outside surfaces still reach the desktop;
+- the sidebar remains below the desktop top bar and at the left edge;
+- surface-generation and input-region errors remain visible.
+
+The sidebar and canvas should use separate frontend modules and state
+boundaries. A visual sidebar change must be testable without changing the
+canvas payload or native canvas commands.
+
 The sidebar should expose, without overwhelming the conversation:
 
 - current backend readiness and selected connectivity mode;
@@ -139,6 +158,30 @@ expandable system panel for detail. At minimum it should expose:
 Status must be event-driven where possible. It should not make the user infer
 system state from a spinner or from a missing widget. Errors remain visible
 until acknowledged or resolved.
+
+## Full Chat Contract
+
+The chat is the primary Aios control interface. It must grow into a complete
+operational chat experience rather than remain a test prompt:
+
+- streaming assistant output with a visible phase and cancellation;
+- clear pending, complete, failed, cancelled, and retry states;
+- prompt submission with Enter, Shift+Enter, autosizing, and disabled-state
+  handling;
+- retry and edit-and-resubmit for user messages;
+- conversation history and session switching;
+- tool-gathering progress that names the active specialist without exposing
+  secrets or model chain-of-thought;
+- collapsible specialist evidence with timestamps and freshness state;
+- copy, select, and accessible keyboard navigation;
+- clear backend, provider, policy, and validation errors;
+- current surface references and actions once the surface manager exists;
+- a command or settings entry point for administration tasks without mixing
+  configuration into ordinary chat text.
+
+The chat must preserve the existing backend boundary. It submits user intent
+to Aios and renders backend events; it does not call specialists, providers,
+the broker, or the operating system directly.
 
 ## Desktop Compatibility
 

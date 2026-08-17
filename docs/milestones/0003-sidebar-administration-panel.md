@@ -10,6 +10,10 @@ Turn the current sidebar wireframe into Aios's resident system administration
 panel. This is a control and observability surface, not a generic chatbot
 shell.
 
+The work must not regress the generated-surface foundation. The canvas overlay,
+surface generation, value validation, movement, and click-through behavior are
+protected acceptance requirements throughout this milestone.
+
 ## Work Order
 
 ### 1. State and IPC Contract
@@ -87,6 +91,37 @@ Develop the visual language after the state contract exists:
 
 Keep the native sidebar geometry and canvas overlay untouched during the first
 visual passes.
+
+### 6. Full Chat Experience
+
+The chat portion of the administration panel must become fully operational:
+
+- streamed responses and visible operation phases;
+- submit, cancel, retry, edit, and resubmit behavior;
+- conversation sessions and history;
+- specialist progress and collapsible evidence;
+- accessible keyboard navigation, selection, and copy actions;
+- explicit provider, backend, policy, and validation errors;
+- surface references and lifecycle actions after milestone 0002 lands.
+
+Do not implement these as client-only simulations. The backend must expose
+typed events and request state so the sidebar reflects what Aios is actually
+doing.
+
+## Regression Firewall
+
+Every sidebar change must run the existing build and library tests plus the
+desktop acceptance baseline from milestone 0001. The manual baseline must
+repeat:
+
+1. Generate a CPU surface.
+2. Generate a RAM surface.
+3. Explicitly gather CPU and RAM into one surface.
+4. Move a surface.
+5. Click through outside a surface.
+6. Submit another prompt while a surface is visible.
+
+A sidebar change is not accepted if any canvas behavior changes unexpectedly.
 
 ## Safety Requirements
 
