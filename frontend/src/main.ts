@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { currentMonitor, getCurrentWindow } from '@tauri-apps/api/window';
 import { PhysicalPosition } from '@tauri-apps/api/dpi';
-import { renderSidebar, type EvidenceItem, type SidebarMessage } from './sidebar';
+import { renderSidebar, type EvidenceItem, type SidebarMessage, type SidebarStatus } from './sidebar';
 type UiWidget =
   | { type: 'metricCard'; label: string; value: string; unit: string; status: string }
   | { type: 'statusList'; title: string; items: string[] }
@@ -43,6 +43,8 @@ if (isCanvasWindow) document.documentElement.classList.add('canvas-document');
 let widgets: UiWidget[] = [];
 let surface: Surface | null = null;
 let experimentalHtml: string | null = null;
+let sidebarStatus: SidebarStatus | null = null;
+let sidebarStatusError: string | null = null;
 const surfacePosition = { x: 20, y: 16 };
 let surfaceResizeObserver: ResizeObserver | null = null;
 let inputRegionFrame: number | null = null;
@@ -62,7 +64,9 @@ const messages: SidebarMessage[] = [{
 function render(): void {
   const root = document.querySelector<HTMLDivElement>('#root');
   if (!root) return;
-  root.innerHTML = isCanvasWindow ? renderCanvas() : renderSidebar();
+   root.innerHTML = isCanvasWindow
+    ? renderCanvas()
+    : renderSidebar(messages, escapeHtml, sidebarStatus, sidebarStatusError);
   if (!isCanvasWindow) {
     document.querySelector<HTMLFormElement>('#prompt-form')?.addEventListener('submit', submitPrompt);
     document.querySelector<HTMLTextAreaElement>('#prompt')?.addEventListener('pointerdown', () => {
@@ -80,6 +84,16 @@ function render(): void {
       surfaceResizeObserver = null;
     }
   }
+}
+
+async function refreshSidebarStatus(): Promise<void> {
+  try {
+    sidebarStatus = await invoke<SidebarStatus>('sidebar_status');
+    sidebarStatusError = null;
+  } catch (error) {
+    sidebarStatusError = String(error);
+  }
+  if (!isCanvasWindow) render();
 }
 
 function renderCanvas(): string {
@@ -121,6 +135,7 @@ async function submitPrompt(event: SubmitEvent): Promise<void> {
     messages.push({ role: 'assistant', text: response.answer, evidence: response.evidence });
     surface = response.surface;
     widgets = response.widgets;
+    void refreshSidebarStatus();
   } catch (error) {
     messages.push({ role: 'assistant', text: `Backend unavailable: ${String(error)}` });
   }
@@ -306,5 +321,7 @@ if (isCanvasWindow) {
     await currentWindow.show();
   });
 }
+
+if (!isCanvasWindow) void refreshSidebarStatus();
 
 render();
