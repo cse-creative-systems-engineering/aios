@@ -89,6 +89,10 @@ Develop the visual language after the state contract exists:
 - accessible keyboard focus and navigation;
 - no decorative glass effects that reduce status legibility.
 
+The quality bar is ultra-premium. Review each state for optical alignment,
+typography, density, focus behavior, motion, keyboard access, contrast, and
+failure-state polish. A visually attractive idle screenshot is not sufficient.
+
 Keep the native sidebar geometry and canvas overlay untouched during the first
 visual passes.
 

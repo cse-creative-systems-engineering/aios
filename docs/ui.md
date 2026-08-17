@@ -87,6 +87,26 @@ chat remains important, but it is one instrument in a stable control surface.
 The sidebar should always communicate what Aios is doing, what is waiting, and
 what needs attention.
 
+### Ultra-Premium Quality Bar
+
+"Ultra-premium" is an acceptance requirement for every user-facing surface.
+It means:
+
+- deliberate typography, optical alignment, spacing, and hierarchy;
+- a distinct Aios visual language rather than a generic chat template;
+- polished loading, empty, degraded, stale, error, and recovery states;
+- clear interaction feedback for focus, hover, press, drag, selection, and
+  disabled controls;
+- restrained motion that communicates state instead of adding noise;
+- excellent narrow-panel density without cramped text or visual clutter;
+- consistent details across the sidebar, administration views, and generated
+  surface controls;
+- accessibility, keyboard navigation, contrast, and readable status text;
+- no placeholder-looking controls, dead settings, or unfinished visual states.
+
+Visual work is not complete when it merely looks attractive in one screenshot.
+It must remain coherent during real Aios activity and failure conditions.
+
 ## Provider and Model Administration
 
 Provider configuration belongs behind a dedicated administration view reached
