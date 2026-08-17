@@ -73,7 +73,7 @@ pub fn has_default_route_v6(proc_net_ipv6_route: &str) -> bool {
     })
 }
 
-pub trait ConnectivityProbe {
+pub trait ConnectivityProbe: Send + Sync {
     fn probe(&self) -> ConnectivityState;
 }
 
@@ -886,29 +886,6 @@ impl ModelGateway {
         self.submit_inner(task, request, &[])
     }
 
-    pub fn submit_with_fallback(
-        &self,
-        task: &ModelTask,
-        request: &GenerationRequest,
-    ) -> Result<GatewayResponse, GatewayError> {
-        match self.submit_inner(task, request, &[]) {
-            Ok(response) => Ok(response),
-            Err(primary) => {
-                let failed = match primary.provider() {
-                    Some(provider) => provider.clone(),
-                    None => return Err(primary),
-                };
-                self.registry
-                    .write()
-                    .expect("registry lock")
-                    .mark_provider_unhealthy(&failed);
-                let mut retry = task.clone();
-                retry.task_id = Uuid::new_v4();
-                self.submit_inner(&retry, request, &[failed])
-            }
-        }
-    }
-
     fn submit_inner(
         &self,
         task: &ModelTask,
@@ -1449,37 +1426,6 @@ mod tests {
         gateway.set_connectivity(ConnectivityState::LanOnly);
         let retried = gateway.submit(&task, &request(&task)).expect("submit");
         assert_eq!(retried.decision.provider, ProviderId::new("openrouter"));
-    }
-
-    #[test]
-    fn gateway_fallback_uses_new_task_and_marks_unhealthy() {
-        let registry = registry_with(vec![
-            internet_model("net-a", &reasoning()),
-            lan_model("lan-a", &reasoning()),
-        ]);
-        let gateway = ModelGateway::new(registry.clone());
-        gateway.set_connectivity(ConnectivityState::Internet);
-        gateway.register_backend(MockBackend::failing(
-            ProviderId::new("openrouter"),
-            "openrouter",
-        ));
-        gateway.register_backend(MockBackend::ok(ProviderId::new("lan-gpu-01"), "lan"));
-
-        let task = public_task();
-        let response = gateway
-            .submit_with_fallback(&task, &request(&task))
-            .expect("fallback");
-        assert_eq!(response.decision.provider, ProviderId::new("lan-gpu-01"));
-        assert_eq!(response.response.text, "answer from lan");
-        assert_ne!(response.decision.model, ModelId::new("net-a"));
-
-        let entry = registry
-            .read()
-            .expect("registry lock")
-            .get(&ModelId::new("net-a"))
-            .cloned()
-            .expect("entry");
-        assert_eq!(entry.health.state, HealthState::Unhealthy);
     }
 
     #[test]

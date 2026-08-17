@@ -204,7 +204,10 @@ impl Coordinator {
             graph: Arc::new(RwLock::new(SystemGraph::new())),
             planner: Planner::new(gateway.clone(), shell_max_tokens),
             verifier: Verifier::new(gateway.clone(), shell_max_tokens),
-            audit: Arc::new(AuditLog::new(Some(audit_path))),
+            audit: Arc::new(
+                AuditLog::try_new(Some(audit_path))
+                    .map_err(|error| BootError::Audit(error.to_string()))?,
+            ),
             tools: ToolRegistry::new(),
             broker: Broker::new(),
             config,
@@ -1218,6 +1221,22 @@ impl Coordinator {
         )
     }
 
+    pub fn compose_unconstrained_html(
+        &self,
+        intent: &str,
+        evidence: &[crate::tools::ToolResult],
+        previous_html: Option<&str>,
+    ) -> Result<(String, crate::model::RoutingDecision), crate::surface::SurfaceComposeError> {
+        let index = crate::surface::EvidenceIndex::from_results(evidence);
+        crate::surface::compose_unconstrained_html(
+            &self.gateway,
+            intent,
+            &index,
+            previous_html,
+            self.compose_max_tokens,
+        )
+    }
+
     pub fn chat_with_tools(&self, messages: Vec<ModelMessage>) -> Result<String, AgentError> {
         Ok(self.chat_with_tools_outcome(messages)?.answer)
     }
@@ -1247,6 +1266,21 @@ impl Coordinator {
             }
             system.content.push_str("\n\nCurrent local system state:\n");
             system.content.push_str(&context);
+        }
+        let required_calls = required_specialist_calls(&messages);
+        for call in &required_calls {
+            let result = self
+                .run_tool_as("planner", call)
+                .map_err(|error| AgentError::Format(format!("required specialist failed: {error}")))?;
+            let content = format!("tool {} result:\n{}", result.tool, result.text);
+            tool_results.push(result);
+            messages.push(ModelMessage::new(ModelRole::User, content));
+        }
+        if !required_calls.is_empty() {
+            messages.push(ModelMessage::new(
+                ModelRole::User,
+                "The required specialist evidence has been gathered for this request. Do not ask for clarification about those domains. Answer using the returned evidence only.",
+            ));
         }
         let mut answer = self.planner.chat_with(messages.clone(), None)?;
 
@@ -2018,6 +2052,40 @@ fn expand_path(path: &Path, base: &Path) -> PathBuf {
     }
 }
 
+fn required_specialist_calls(messages: &[ModelMessage]) -> Vec<ToolCallRequest> {
+    let Some(prompt) = messages
+        .iter()
+        .rev()
+        .find(|message| message.role == ModelRole::User)
+        .map(|message| message.content.to_ascii_lowercase())
+    else {
+        return Vec::new();
+    };
+    let mut calls = Vec::new();
+    let add = |calls: &mut Vec<ToolCallRequest>, name: &str, arguments: &str| {
+        calls.push(ToolCallRequest {
+            name: name.to_string(),
+            arguments: arguments.to_string(),
+        });
+    };
+    if prompt.contains("cpu") || prompt.contains("process") || prompt.contains("service") {
+        add(&mut calls, "processes.observe_process", "all");
+    }
+    if prompt.contains("service") {
+        add(&mut calls, "query", "service");
+    }
+    if prompt.contains("ram") || prompt.contains("memory") || prompt.contains("swap") {
+        add(&mut calls, "memory.observe_memory", "all");
+    }
+    if prompt.contains("disk") || prompt.contains("storage") {
+        add(&mut calls, "storage.observe_storage", "all");
+    }
+    if prompt.contains("network") || prompt.contains("wifi") || prompt.contains("internet") {
+        add(&mut calls, "network.observe_network", "all");
+    }
+    calls
+}
+
 fn config_dir_for(_config: &AiosConfig) -> PathBuf {
     let path = std::env::var("AIOS_CONFIG")
         .map(PathBuf::from)
@@ -2031,6 +2099,7 @@ fn config_dir_for(_config: &AiosConfig) -> PathBuf {
 #[derive(Debug)]
 pub enum BootError {
     Config(ConfigError),
+    Audit(String),
     Registry(crate::model::RegistryError),
     Local { path: String, reason: String },
     UnknownKind(String),
@@ -2042,6 +2111,7 @@ impl std::fmt::Display for BootError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             BootError::Config(e) => write!(f, "config: {e}"),
+            BootError::Audit(e) => write!(f, "audit: {e}"),
             BootError::Registry(e) => write!(f, "registry: {e}"),
             BootError::Local { path, reason } => {
                 write!(f, "cannot load local model from {path}: {reason}")
@@ -2159,7 +2229,7 @@ pub fn send_direct(coordinator: &Coordinator, text: &str) -> Result<String, Agen
     };
     let response = coordinator
         .gateway
-        .submit_with_fallback(&task, &request)
+        .submit(&task, &request)
         .map_err(AgentError::from)?;
     Ok(crate::planner::strip_think(response.response.text.trim()).to_string())
 }

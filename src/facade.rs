@@ -226,7 +226,7 @@ impl Facade {
 
         let mut messages = vec![crate::model::ModelMessage::new(
             crate::model::ModelRole::System,
-            "You are Aios, the assistant for a Linux system. Answer concisely.",
+            "You are Aios, the assistant for a Linux system. Answer concisely in plain text. You never emit HTML, CSS, code, or markdown fences in your answer; Aios renders any presentation surface itself from your grounded answer and the tool evidence.",
         )];
         for turn in &self.history {
             let (role, content) = turn.split_once(':').unwrap_or(("user", turn));
@@ -263,8 +263,8 @@ impl Facade {
 
     /// Compose a generative surface from the last chat answer and its
     /// evidence, plus the routing decision the gateway used. Returns `Err`
-    /// when the model reply was not a usable surface; callers fall back to a
-    /// plain answer + notice.
+    /// when the model reply was not a usable surface; callers must surface the
+    /// error and must not render a replacement surface.
     pub fn compose_surface(
         &self,
         intent: &str,
@@ -275,6 +275,16 @@ impl Facade {
         crate::surface::SurfaceComposeError,
     > {
         self.coordinator.compose_surface_with_meta(intent, answer, evidence)
+    }
+
+    pub fn compose_unconstrained_html(
+        &self,
+        intent: &str,
+        evidence: &[crate::tools::ToolResult],
+        previous_html: Option<&str>,
+    ) -> Result<(String, crate::model::RoutingDecision), crate::surface::SurfaceComposeError> {
+        self.coordinator
+            .compose_unconstrained_html(intent, evidence, previous_html)
     }
 }
 

@@ -136,12 +136,7 @@ fn cpu_stats(resources: &[NodeId]) -> CpuStats {
             let Some((_, end)) = second.processes.get(&node_id) else {
                 continue;
             };
-            let Some(delta) = end.checked_sub(start) else {
-                continue;
-            };
-            if delta == 0 {
-                continue;
-            }
+            let delta = end.saturating_sub(start);
             let percent = delta as f64 * cores as f64 * 100.0 / total_delta as f64;
             per_process.insert(node_id, (pid, percent));
         }
@@ -167,7 +162,7 @@ fn format_process_row(node: &NodeMetadata, cpu_percent: f64) -> String {
 
 /// The domain processes specialist `observe` reports at most this many rows
 /// when the target covers the whole domain.
-const TOP_PROCESSES: usize = 8;
+const TOP_PROCESSES: usize = 10;
 
 /// The process domain: the umbrella specialist and the resources it owns.
 #[derive(Clone, Debug, PartialEq, Eq)]

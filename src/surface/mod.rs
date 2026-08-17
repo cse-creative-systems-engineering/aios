@@ -15,8 +15,8 @@ pub mod stub;
 pub mod validator;
 
 pub use composer::{
-    SurfaceComposeError, compose_surface, compose_surface_with_meta,
-    surface_composition_instructions,
+    SurfaceComposeError, compose_surface, compose_surface_with_meta, compose_unconstrained_html,
+    coverage_gaps, surface_composition_instructions, verify_value_fidelity,
 };
 pub use evidence::{
     EvidenceEntry, EvidenceIndex, evidence_brief, number_present_in_evidence,
@@ -24,10 +24,10 @@ pub use evidence::{
 };
 pub use render::{render_html, render_text};
 pub use schema::{
-    ChartPoint, DockEdge, LayoutMode, RegionPriority, StatusItem, Surface, SurfaceLayout,
-    SurfacePlacement, SurfaceRegion, SurfaceWidget, WidthClass,
+    ChartPoint, DockEdge, LayoutMode, RegionPriority, StatusItem, Surface, SurfaceDensity,
+    SurfaceLayout, SurfacePlacement, SurfaceRegion, SurfaceWidget, WidthClass,
 };
-pub use validator::{ValidationError, diagnostics, validate};
+pub use validator::{ValidationError, diagnostics, validate, validate_for_intent};
 
 /// Current surface contract version (`surface/v1`).
 pub const SURFACE_VERSION: u32 = schema::SURFACE_VERSION;

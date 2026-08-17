@@ -405,7 +405,7 @@ ul.status li { display: flex; align-items: center; gap: 8px; padding: 4px 0; bor
 mod tests {
     use super::*;
     use crate::surface::schema::{
-        ChartPoint, DockEdge, LayoutMode, RegionPriority, StatusItem, SurfaceLayout,
+        ChartPoint, DockEdge, LayoutMode, RegionPriority, StatusItem, SurfaceDensity, SurfaceLayout,
         SurfacePlacement, SurfaceRegion,
     };
 
@@ -422,6 +422,7 @@ mod tests {
             layout: SurfaceLayout {
                 mode: LayoutMode::Grid,
                 columns: 12,
+                density: SurfaceDensity::Comfortable,
             },
             regions: vec![
                 SurfaceRegion {

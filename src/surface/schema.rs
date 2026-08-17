@@ -43,6 +43,8 @@ pub struct SurfaceLayout {
     /// Grid columns; default 12.
     #[serde(default = "default_columns")]
     pub columns: u32,
+    #[serde(default)]
+    pub density: SurfaceDensity,
 }
 
 fn default_columns() -> u32 {
@@ -55,6 +57,20 @@ pub enum LayoutMode {
     Grid,
     Stack,
     Row,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SurfaceDensity {
+    Compact,
+    Comfortable,
+    Detailed,
+}
+
+impl Default for SurfaceDensity {
+    fn default() -> Self {
+        SurfaceDensity::Comfortable
+    }
 }
 
 impl Default for LayoutMode {
@@ -218,6 +234,7 @@ mod tests {
             layout: SurfaceLayout {
                 mode: LayoutMode::Grid,
                 columns: 12,
+                density: SurfaceDensity::Comfortable,
             },
             regions: vec![
                 SurfaceRegion {
@@ -338,6 +355,7 @@ mod tests {
         let layout: SurfaceLayout = serde_json::from_str("{}").expect("deserialize");
         assert_eq!(layout.mode, LayoutMode::Grid);
         assert_eq!(layout.columns, 12);
+        assert_eq!(layout.density, SurfaceDensity::Comfortable);
     }
 
     #[test]

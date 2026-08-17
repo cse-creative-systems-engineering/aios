@@ -511,8 +511,8 @@ impl SpecialistTool for GraphHealth {
         "health - roll up node health across the graph"
     }
     fn run(&self, graph: &SystemGraph, args: &str) -> Result<ToolResult, ToolError> {
-        if !args.trim().is_empty() {
-            return Err(ToolError::Usage("health takes no arguments".into()));
+        if !args.trim().is_empty() && args.trim() != "all" {
+            return Err(ToolError::Usage("health accepts only an empty scope or 'all'".into()));
         }
         let mut counts: HashMap<String, usize> = HashMap::new();
         let mut by_type: HashMap<String, HashMap<String, usize>> = HashMap::new();
@@ -714,7 +714,7 @@ macro_rules! tool_claims {
     };
 }
 tool_claims! {
-    TOOL_CLAIM_HEADER: "Read-only machine tools are available. Never invent command output and never claim to run shell commands. The available tools are: observe, diagnose, query, deps, impact, health, wifi.observe_device, wifi.diagnose_fault, storage.observe_storage, storage.diagnose_fault, network.observe_network, network.diagnose_fault, drivers.observe_device, drivers.diagnose_fault, graphics.observe_graphics, graphics.diagnose_fault, memory.observe_memory, memory.diagnose_fault, processes.observe_process, processes.diagnose_fault, power.observe_thermal, power.diagnose_fault, security.observe_security, security.diagnose_fault, packages.observe_package, packages.diagnose_fault, boot.observe_boot, boot.diagnose_fault. To use a tool, emit a native function call: {\"tool_calls\":[{\"function\":{\"name\":\"<tool>\",\"arguments\":\"<args>\"}}]} where <tool> is exactly one of the available tools and <args> is a plain string argument. For every question about CPU utilization or process load, always call processes.observe_process with target 'all' before answering. Never answer those questions from context alone. Use query sensor for sensor readings, query memory for memory data, and query device for hardware.",
+    TOOL_CLAIM_HEADER: "Read-only machine tools are available. Never invent command output and never claim to run shell commands. The available tools are: observe, diagnose, query, deps, impact, health, wifi.observe_device, wifi.diagnose_fault, storage.observe_storage, storage.diagnose_fault, network.observe_network, network.diagnose_fault, drivers.observe_device, drivers.diagnose_fault, graphics.observe_graphics, graphics.diagnose_fault, memory.observe_memory, memory.diagnose_fault, processes.observe_process, processes.diagnose_fault, power.observe_thermal, power.diagnose_fault, security.observe_security, security.diagnose_fault, packages.observe_package, packages.diagnose_fault, boot.observe_boot, boot.diagnose_fault. To use a tool, emit a native function call: {\"tool_calls\":[{\"function\":{\"name\":\"<tool>\",\"arguments\":\"<args>\"}}]} where <tool> is exactly one of the available tools and <args> is a plain string argument. The health tool takes no arguments; emit an empty arguments string for it. For every question about CPU utilization, process load, or services ranked by CPU, always call processes.observe_process with target 'all' before answering. Never answer those questions from context alone or call them ambiguous before gathering evidence. For compound requests, emit all required specialist calls in one tool-call response; they will execute in parallel. Use query sensor for sensor readings, query memory for memory data, and query device for hardware.",
     WIFI_TOOL_CLAIM: "For a Wi-Fi device, use wifi.observe_device to read its state and wifi.diagnose_fault to diagnose it.",
     STORAGE_TOOL_CLAIM: "For storage, use storage.observe_storage to read disk and filesystem state: per-device reads/writes, sector and latency counters, rotational, scheduler, and block size from queue attributes, plus per-filesystem usage (used percent, total, used, available), read-only state, and options; storage.diagnose_fault diagnoses it (target 'all' for the whole domain).",
     NETWORK_TOOL_CLAIM: "For the network domain, use network.observe_network to read interface and link state and network.diagnose_fault to diagnose it.",
@@ -923,6 +923,14 @@ mod tests {
     }
 
     #[test]
+    fn health_accepts_explicit_global_scope() {
+        let graph = fixture();
+        let registry = ToolRegistry::new();
+        let result = registry.run(&graph, "health", "all").expect("health all");
+        assert!(result.text.contains("Healthy: 3"), "{}", result.text);
+    }
+
+    #[test]
     fn unknown_tool_is_rejected() {
         let graph = fixture();
         let registry = ToolRegistry::new();
@@ -975,6 +983,6 @@ mod tests {
         ] {
             assert!(text.contains(claim), "instruction missing claim: {claim:?}");
         }
-        assert_eq!(text.len(), 3411, "instruction drifted from verified length");
+        assert_eq!(text.len(), 3676, "instruction drifted from verified length");
     }
 }

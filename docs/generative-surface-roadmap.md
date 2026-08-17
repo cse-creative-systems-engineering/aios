@@ -190,7 +190,7 @@ Facade
         |     |-- evidence check (every value traceable to a ToolResult)
         |     \-- layout check (regions reference real widget ids, spans valid)
         |
-        +-- fallback: plain answer + Notice widget on any failure
+        +-- failure: return an error; emit no surface
         |
         v
    PromptResponse.surface (versioned, surface/v1)
@@ -350,15 +350,15 @@ Done notes (2026-08-16):
 - The composer call lives in `src/surface/composer.rs`
   (`compose_surface` + `surface_composition_instructions`); the `Coordinator`
   entry point delegates to it. Return type is `SurfaceComposeError`, not
-  `AgentError`, so Phase E can map each failure mode to a `Notice` fallback.
+  `AgentError`; failures remain visible and produce no replacement surface.
 - Because the composer system prompt never contains the tool-advertisement
   marker, `HttpBackend` sends no `tools` block: the call is tool-less by
   construction, and a stub test asserts this on the wire.
 - The role routes through the gateway like every other call. The local
   `~/.aios/config.toml` `surface-openrouter-nemotron` provider (NVIDIA
   Nemotron Ultra free via OpenRouter) is the first internet-tier provider,
-  so with internet up the composer call lands on Nemotron; offline it falls
-  back to the local Qwen.
+  so with internet up the composer call lands on Nemotron. Composition does
+  not retry or fall back to another provider.
 
 ---
 
@@ -517,11 +517,9 @@ Done notes (2026-08-16):
 - `Facade::compose_surface` (facade.rs) delegates to
   `Coordinator::compose_surface_with_meta` and returns the routing decision
   too; the worker thread calls it after `take_tool_results()`.
-- `PromptResponse` gains `surface: Option<Surface>`; the Tauri worker emits
-  `canvas_response` when a surface OR fallback widgets exist. On compose
-  failure (`Err`) the surface is `None` and the legacy `widgets` fallback
-  (StatusList) is sent, so the canvas never goes blank.
-- `UiWidget` is now explicitly the legacy fallback (marked `#[allow(dead_code)]`).
+- `PromptResponse` carries only `surface: Option<Surface>` for the canvas.
+  On compose failure (`Err`), no canvas event is emitted and no replacement
+  presentation is rendered.
 - The `main_test.rs` bin is an unrelated Layer Shell experiment; nothing to
   update there.
 
@@ -541,7 +539,8 @@ In `frontend/src/main.ts` (and `frontend/index.css`):
 3. Port the `sensorGauge` (progress-bar style) and `chart` (bar chart)
    renderers from `frontend/src/app.rs:279` / `:327` (the Dioxus reference
    implementations) into `renderWidget`.
-4. Add `notice` renderer behavior for the compose-failure fallback.
+4. Do not add a compose-failure renderer; composition failures remain visible
+   as errors and produce no canvas surface.
 5. Add CSS for `.widget-grid` to honor region spans (grid-column: span N) and
    gauge/chart classes; keep the existing dark card look.
 6. Keep the sidebar rendering unchanged (chat-only, collapsible evidence).

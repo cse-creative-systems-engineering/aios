@@ -75,13 +75,33 @@ impl HttpBackend {
                 function_tool("query", "Query discovered nodes", "query"),
                 function_tool("deps", "Query node dependencies", "target"),
                 function_tool("impact", "Query node impact relationships", "target"),
-                function_tool("health", "Summarize graph health", "query"),
+                function_tool_no_args("health", "Summarize graph health"),
                 function_tool(
                     "wifi_observe_device",
                     "Observe the Wi-Fi specialist device",
                     "target"
                 ),
                 function_tool("wifi_diagnose_fault", "Diagnose a Wi-Fi fault", "target"),
+                function_tool("storage_observe_storage", "Observe storage and filesystem state", "target"),
+                function_tool("storage_diagnose_fault", "Diagnose storage faults", "target"),
+                function_tool("network_observe_network", "Observe network state", "target"),
+                function_tool("network_diagnose_fault", "Diagnose network faults", "target"),
+                function_tool("drivers_observe_device", "Observe device and driver state", "target"),
+                function_tool("drivers_diagnose_fault", "Diagnose device and driver faults", "target"),
+                function_tool("graphics_observe_graphics", "Observe graphics state", "target"),
+                function_tool("graphics_diagnose_fault", "Diagnose graphics faults", "target"),
+                function_tool("memory_observe_memory", "Observe memory and swap state", "target"),
+                function_tool("memory_diagnose_fault", "Diagnose memory faults", "target"),
+                function_tool("processes_observe_process", "Observe system and per-process CPU state", "target"),
+                function_tool("processes_diagnose_fault", "Diagnose process faults", "target"),
+                function_tool("power_observe_thermal", "Observe thermal and power state", "target"),
+                function_tool("power_diagnose_fault", "Diagnose thermal and power faults", "target"),
+                function_tool("security_observe_security", "Observe security state", "target"),
+                function_tool("security_diagnose_fault", "Diagnose security faults", "target"),
+                function_tool("packages_observe_package", "Observe package state", "target"),
+                function_tool("packages_diagnose_fault", "Diagnose package faults", "target"),
+                function_tool("boot_observe_boot", "Observe boot and recovery state", "target"),
+                function_tool("boot_diagnose_fault", "Diagnose boot and recovery faults", "target"),
             ]);
             body["tool_choice"] = json!("auto");
         }
@@ -161,6 +181,22 @@ fn function_tool(name: &str, description: &str, argument: &str) -> Value {
                     argument: { "type": "string" }
                 },
                 "required": [argument],
+                "additionalProperties": false
+            }
+        }
+    })
+}
+
+fn function_tool_no_args(name: &str, description: &str) -> Value {
+    json!({
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": description,
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
                 "additionalProperties": false
             }
         }

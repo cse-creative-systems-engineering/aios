@@ -255,7 +255,7 @@ impl ToolRegistry {
     }
 }
 
-pub trait GuardianClient {
+pub trait GuardianClient: Send + Sync {
     fn review(&self, request: &crate::protocol::ToolRequest)
         -> crate::protocol::GuardianVerdict;
 }

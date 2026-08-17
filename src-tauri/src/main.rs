@@ -1,18 +1,24 @@
 use aios::facade::Facade;
-use aios::surface::Surface;
-use aios::tools::ToolResult;
+use aios::surface::{Surface, SurfaceDensity, WidthClass};
 #[cfg(target_os = "linux")]
 use gdk::prelude::*;
 #[cfg(target_os = "linux")]
 use gtk::prelude::*;
 #[cfg(target_os = "linux")]
+use gtk::cairo::{RectangleInt, Region};
+#[cfg(target_os = "linux")]
 use gtk_layer_shell::{Edge, Layer, LayerShell};
 use serde::Serialize;
+use serde_json::json;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 #[cfg(target_os = "linux")]
 use tauri::AppHandle;
-use tauri::{LogicalPosition, Manager, Position};
+use tauri::{
+    LogicalPosition, LogicalSize, Manager, PhysicalPosition, PhysicalSize, Position, Size,
+};
 #[cfg(target_os = "linux")]
 use x11rb::CURRENT_TIME;
 #[cfg(target_os = "linux")]
@@ -47,10 +53,10 @@ struct BackendStatus {
 struct PromptResponse {
     answer: String,
     evidence: Vec<EvidenceItem>,
-    widgets: Vec<UiWidget>,
-    /// Composed generative surface (`surface/v1`). `None` when composition
-    /// failed; the frontend then falls back to `widgets` / a notice.
+    /// Composed generative surface (`surface/v1`). `None` means the request
+    /// failed and the canvas must not be shown.
     surface: Option<Surface>,
+    experimental_html: Option<String>,
     backend_status: BackendStatus,
 }
 
@@ -61,35 +67,12 @@ struct EvidenceItem {
     text: String,
 }
 
-#[derive(Debug, Serialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
-// Legacy fallback widgets; kept only while the transition to `surface`
-// renders. `compile_widgets` currently emits `StatusList` only.
-#[allow(dead_code)]
-enum UiWidget {
-    MetricCard {
-        label: String,
-        value: String,
-        unit: String,
-        status: String,
-    },
-    StatusList {
-        title: String,
-        items: Vec<String>,
-    },
-    Notice {
-        title: String,
-        body: String,
-    },
-}
-
 #[tauri::command]
 fn focus_sidebar(app: AppHandle) -> Result<(), String> {
     let window = app
         .get_webview_window("sidebar")
         .ok_or_else(|| "sidebar window is unavailable".to_string())?;
     let _ = window.set_focus();
-
     #[cfg(target_os = "linux")]
     {
         let gtk_window = window
@@ -113,6 +96,54 @@ fn focus_sidebar(app: AppHandle) -> Result<(), String> {
             .map_err(|error| format!("cannot flush sidebar focus: {error}"))?;
     }
 
+    Ok(())
+}
+
+#[tauri::command]
+fn hide_canvas(app: AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window("canvas")
+        .ok_or_else(|| "canvas window is unavailable".to_string())?;
+    window
+        .hide()
+        .map_err(|error| format!("cannot hide canvas: {error}"))
+}
+
+/// Set the native input shape of the canvas window so only the widget region
+/// captures clicks. Everything outside the rectangle passes through to apps
+/// behind the transparent work-area overlay.
+#[tauri::command]
+#[cfg(target_os = "linux")]
+fn set_input_region(app: AppHandle, x: f64, y: f64, w: f64, h: f64) -> Result<(), String> {
+    let window = app
+        .get_webview_window("canvas")
+        .ok_or_else(|| "canvas window is unavailable".to_string())?;
+    let gtk_window = window
+        .gtk_window()
+        .map_err(|e| format!("native window unavailable: {e}"))?;
+    let gdk_window = gtk_window
+        .window()
+        .ok_or_else(|| "canvas has no GDK window".to_string())?;
+    let region = if w <= 0.0 || h <= 0.0 {
+        Region::create()
+    } else {
+        let rectangle = RectangleInt::new(
+            x.round() as i32,
+            y.round() as i32,
+            w.round().max(1.0) as i32,
+            h.round().max(1.0) as i32,
+        );
+        Region::create_rectangle(&rectangle)
+    };
+    gdk_window.input_shape_combine_region(&region, 0, 0);
+
+    eprintln!("Aios canvas: input region set to ({x},{y}) {w}x{h}");
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+#[tauri::command]
+fn set_input_region(_app: AppHandle, _x: f64, _y: f64, _w: f64, _h: f64) -> Result<(), String> {
     Ok(())
 }
 
@@ -143,10 +174,29 @@ async fn submit_prompt(
         let response = response_rx
             .recv()
             .map_err(|_| "backend worker closed the response channel".to_string())?;
-        if let Ok(ref payload) = response {
-            if payload.surface.is_some() || !payload.widgets.is_empty() {
+            if let Ok(ref payload) = response {
+            if payload.surface.is_some() || payload.experimental_html.is_some() {
+                if let Some(surface) = payload.surface.as_ref() {
+                    if let Some(window) = app.get_webview_window("canvas") {
+                        let (width, height) = surface_window_size(surface);
+                        let _ = window.set_size(Size::Logical(LogicalSize { width, height }));
+                        let _ = window.show();
+                    }
+                } else if payload.experimental_html.is_some() {
+                    if let Err(error) = set_input_region(app.clone(), 0.0, 0.0, 0.0, 0.0) {
+                        eprintln!("Aios canvas: failed to clear input region: {error}");
+                    }
+                    if let Some(window) = app.get_webview_window("canvas") {
+                        // Showing first keeps hidden WebKitGTK views from missing
+                        // the event listener. The input region is empty until the
+                        // frontend measures the generated surface.
+                        let _ = window.show();
+                    }
+                }
                 use tauri::Emitter;
-                let _ = app.emit_to("canvas", "canvas_response", payload);
+                if let Err(error) = app.emit_to("canvas", "canvas_response", payload) {
+                    eprintln!("Aios canvas: failed to emit response: {error}");
+                }
             }
         }
         response
@@ -174,8 +224,6 @@ fn main() {
                             "Aios sidebar: Layer Shell unavailable; configuring X11 dock fallback"
                         );
                         prepare_x11_dock_window(&window);
-                        let _ = window
-                            .set_position(Position::Logical(LogicalPosition { x: 0.0, y: 0.0 }));
                         configure_x11_dock(&window);
                         if let Err(error) = window.show() {
                             eprintln!("Aios sidebar: failed to show X11 fallback: {error}");
@@ -192,8 +240,42 @@ fn main() {
                 }
             }
             if let Some(window) = app.get_webview_window("canvas") {
-                let _ =
-                    window.set_position(Position::Logical(LogicalPosition { x: 440.0, y: 48.0 }));
+                if let Ok(Some(monitor)) = window.primary_monitor() {
+                    let work_area = monitor.work_area();
+                    let sidebar_right = monitor.position().x.saturating_add(420);
+                    let canvas_x = work_area.position.x.max(sidebar_right);
+                    let work_area_right = work_area
+                        .position
+                        .x
+                        .saturating_add(work_area.size.width as i32);
+                    let canvas_width = work_area_right
+                        .saturating_sub(canvas_x)
+                        .max(1) as u32;
+                    let _ = window.set_position(Position::Physical(PhysicalPosition {
+                        x: canvas_x,
+                        y: work_area.position.y,
+                    }));
+                    let _ = window.set_size(Size::Physical(PhysicalSize {
+                        width: canvas_width,
+                        height: work_area.size.height,
+                    }));
+                    eprintln!(
+                        "Aios canvas: work area=({}, {}) {}x{}, canvas=({}, {}) {}x{}",
+                        work_area.position.x,
+                        work_area.position.y,
+                        work_area.size.width,
+                        work_area.size.height,
+                        canvas_x,
+                        work_area.position.y,
+                        canvas_width,
+                        work_area.size.height
+                    );
+                }
+                // Briefly show the webview so WebKitGTK actually loads the page JS
+                // (hidden webviews may defer script execution).
+                let _ = window.show();
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                let _ = window.hide();
             }
 
             let (requests_tx, requests_rx) = mpsc::channel();
@@ -206,6 +288,7 @@ fn main() {
             thread::spawn(move || {
                 let mut facade = match Facade::boot() {
                     Ok(facade) => {
+                        eprintln!("Aios backend: ready");
                         set_status(
                             &worker_status,
                             BackendStatus {
@@ -217,6 +300,7 @@ fn main() {
                     }
                     Err(error) => {
                         let message = error.to_string();
+                        eprintln!("Aios backend: boot failed: {message}");
                         set_status(
                             &worker_status,
                             BackendStatus {
@@ -232,6 +316,7 @@ fn main() {
                     }
                 };
 
+                let mut previous_experimental_html: Option<String> = None;
                 while let Ok(BackendRequest::Prompt { prompt, response }) = requests_rx.recv() {
                     let status = BackendStatus {
                         ready: true,
@@ -239,21 +324,79 @@ fn main() {
                     };
                     let answer = facade.run_line(&prompt);
                     let evidence = facade.take_tool_results();
-                    let surface = if answer.contains("failed:") || evidence.is_empty() {
-                        None
-                    } else {
-                        match facade.compose_surface(&prompt, &answer, &evidence) {
-                            Ok((surface, _)) => Some(surface),
-                            Err(error) => {
-                                eprintln!("Aios canvas: composition failed: {error}");
-                                None
+                    let unconstrained =
+                        std::env::var("AIOS_UNCONSTRAINED_SURFACE").as_deref() == Ok("1");
+                    let (surface, experimental_html) = if unconstrained {
+                        if evidence.is_empty() {
+                            eprintln!("Aios canvas: no specialist evidence gathered; no surface");
+                            (None, None)
+                        } else {
+                            let gaps = aios::surface::coverage_gaps(&prompt, &evidence);
+                            if !gaps.is_empty() {
+                                eprintln!(
+                                    "Aios canvas: coverage gap for {}; no surface",
+                                    gaps.join(", ")
+                                );
+                                (None, None)
+                            } else {
+                                match facade.compose_unconstrained_html(
+                                    &prompt,
+                                    &evidence,
+                                    previous_experimental_html.as_deref(),
+                                ) {
+                                    Ok((html, routing)) => {
+                                        match aios::surface::verify_value_fidelity(&html, &evidence) {
+                                            Ok(()) => {
+                                                eprintln!(
+                                                    "Aios unconstrained surface: provider={} model={} bytes={}",
+                                                    routing.provider, routing.model, html.len()
+                                                );
+                                                previous_experimental_html = Some(html.clone());
+                                                (None, Some(html))
+                                            }
+                                            Err(error) => {
+                                                eprintln!("Aios canvas: fidelity check failed: {error}");
+                                                (None, None)
+                                            }
+                                        }
+                                    }
+                                    Err(error) => {
+                                        eprintln!("Aios unconstrained composition failed: {error}");
+                                        (None, None)
+                                    }
+                                }
                             }
                         }
-                    };
-                    let widgets = if surface.is_some() {
-                        Vec::new()
+                    } else if answer.contains("failed:") || evidence.is_empty() {
+                        (None, None)
                     } else {
-                        compile_widgets(&evidence)
+                        match facade.compose_surface(&prompt, &answer, &evidence) {
+                            Ok((surface, routing)) => {
+                                eprintln!(
+                                    "Aios surface: provider={} model={} title={:?}",
+                                    routing.provider, routing.model, surface.title
+                                );
+                                write_surface_trace(
+                                    &prompt,
+                                    &answer,
+                                    &evidence,
+                                    Some((&routing, &surface)),
+                                    None,
+                                );
+                                (Some(surface), None)
+                            }
+                            Err(error) => {
+                                eprintln!("Aios canvas: composition failed: {error}");
+                                write_surface_trace(
+                                    &prompt,
+                                    &answer,
+                                    &evidence,
+                                    None,
+                                    Some(&error.to_string()),
+                                );
+                                (None, None)
+                            }
+                        }
                     };
                     let evidence = evidence
                         .iter()
@@ -265,8 +408,8 @@ fn main() {
                     let result = Ok(PromptResponse {
                         answer,
                         evidence,
-                        widgets,
                         surface,
+                        experimental_html,
                         backend_status: status,
                     });
                     let _ = response.send(result);
@@ -283,23 +426,78 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             backend_status,
             focus_sidebar,
+            hide_canvas,
+            set_input_region,
             submit_prompt
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri app");
 }
 
-fn compile_widgets(evidence: &[ToolResult]) -> Vec<UiWidget> {
-    if evidence.is_empty() {
-        return Vec::new();
+fn surface_window_size(surface: &Surface) -> (f64, f64) {
+    let width = match surface.placement.width {
+        Some(WidthClass::Narrow) => 320.0,
+        Some(WidthClass::Medium) => 380.0,
+        Some(WidthClass::Wide) => 520.0,
+        None if surface.layout.density == SurfaceDensity::Compact => 320.0,
+        None if surface.layout.density == SurfaceDensity::Detailed => 600.0,
+        None => 420.0,
+    };
+    let compact_rows = surface
+        .widgets
+        .iter()
+        .filter_map(|widget| match widget {
+            aios::surface::SurfaceWidget::StatusList { items, .. } => Some(items.len()),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0);
+    let height = match surface.layout.density {
+        SurfaceDensity::Compact => (190.0 + compact_rows as f64 * 18.0).min(320.0),
+        SurfaceDensity::Comfortable => 320.0,
+        SurfaceDensity::Detailed => 520.0,
+    };
+    (width, height)
+}
+
+fn write_surface_trace(
+    prompt: &str,
+    answer: &str,
+    evidence: &[aios::tools::ToolResult],
+    generated: Option<(&aios::model::RoutingDecision, &Surface)>,
+    error: Option<&str>,
+) {
+    let Ok(path) = std::env::var("AIOS_SURFACE_TRACE") else {
+        return;
+    };
+    let evidence = evidence
+        .iter()
+        .map(|result| json!({ "tool": result.tool, "text": result.text }))
+        .collect::<Vec<_>>();
+    let generated = generated.map(|(routing, surface)| {
+        json!({
+            "source": "model",
+            "validated": true,
+            "provider": routing.provider.to_string(),
+            "model": routing.model.to_string(),
+            "surface": surface,
+        })
+    });
+    let record = json!({
+        "prompt": prompt,
+        "answer": answer,
+        "evidence": evidence,
+        "generated": generated,
+        "error": error,
+    });
+    match OpenOptions::new().create(true).append(true).open(&path) {
+        Ok(mut file) => {
+            if let Err(write_error) = writeln!(file, "{record}") {
+                eprintln!("Aios surface trace write failed: {write_error}");
+            }
+        }
+        Err(open_error) => eprintln!("Aios surface trace open failed: {open_error}"),
     }
-    vec![UiWidget::StatusList {
-        title: "Specialist evidence".to_string(),
-        items: evidence
-            .iter()
-            .map(|result| format!("{}: {}", result.tool, result.text))
-            .collect(),
-    }]
 }
 
 #[cfg(target_os = "linux")]
@@ -335,14 +533,24 @@ fn configure_x11_dock(window: &tauri::WebviewWindow) {
         return;
     };
     let geometry = monitor.geometry();
-    gtk_window.set_default_size(420, geometry.height());
-    gtk_window.resize(420, geometry.height());
 
     let Ok((connection, _screen_number)) = x11rb::connect(None) else {
         eprintln!("Aios sidebar: cannot connect to X11 for EWMH dock setup");
         return;
     };
+    let screen_number = _screen_number;
     let xid: Window = x11_window.xid() as Window;
+    let (work_x, work_y, work_width, work_height) =
+        x11_work_area(&connection, screen_number, geometry);
+
+    gtk_window.set_default_size(420, work_height as i32);
+    gtk_window.resize(420, work_height as i32);
+    if let Err(error) = window.set_position(Position::Logical(LogicalPosition {
+        x: geometry.x() as f64,
+        y: work_y as f64,
+    })) {
+        eprintln!("Aios sidebar: failed to position in work area: {error}");
+    }
 
     let Ok(dock_cookie) = connection.intern_atom(false, b"_NET_WM_WINDOW_TYPE_DOCK") else {
         eprintln!("Aios sidebar: cannot resolve _NET_WM_WINDOW_TYPE_DOCK");
@@ -385,8 +593,8 @@ fn configure_x11_dock(window: &tauri::WebviewWindow) {
         return;
     };
 
-    let height = geometry.height().max(1) as u32;
-    let start_y = geometry.y().max(0) as u32;
+    let height = work_height.max(1);
+    let start_y = work_y.max(0) as u32;
     let end_y = start_y.saturating_add(height).saturating_sub(1);
     let strut = [420_u32, 0, 0, 0, start_y, end_y, 0, 0, 0, 0, 0, 0];
 
@@ -412,7 +620,56 @@ fn configure_x11_dock(window: &tauri::WebviewWindow) {
         &[420_u32, 0, 0, 0],
     );
     let _ = connection.flush();
-    eprintln!("Aios sidebar: X11 dock strut installed for {height}px monitor height");
+    eprintln!(
+        "Aios sidebar: X11 dock work area=({work_x},{work_y}) {work_width}x{work_height}, strut installed"
+    );
+}
+
+#[cfg(target_os = "linux")]
+fn x11_work_area(
+    connection: &x11rb::rust_connection::RustConnection,
+    screen_number: usize,
+    fallback: gdk::Rectangle,
+) -> (i32, i32, u32, u32) {
+    let fallback = (
+        fallback.x(),
+        fallback.y(),
+        fallback.width().max(1) as u32,
+        fallback.height().max(1) as u32,
+    );
+    let root = connection.setup().roots[screen_number].root;
+    let Ok(atom_cookie) = connection.intern_atom(false, b"_NET_WORKAREA") else {
+        return fallback;
+    };
+    let Ok(atom) = atom_cookie.reply() else {
+        return fallback;
+    };
+    let Ok(property_cookie) = connection.get_property(
+        false,
+        root,
+        atom.atom,
+        AtomEnum::CARDINAL,
+        0,
+        4,
+    ) else {
+        return fallback;
+    };
+    let Ok(property) = property_cookie.reply() else {
+        return fallback;
+    };
+    let values = property.value32().map(|values| values.collect::<Vec<_>>());
+    let Some(values) = values else {
+        return fallback;
+    };
+    if values.len() < 4 {
+        return fallback;
+    }
+    (
+        values[0] as i32,
+        values[1] as i32,
+        values[2].max(1),
+        values[3].max(1),
+    )
 }
 
 #[cfg(target_os = "linux")]

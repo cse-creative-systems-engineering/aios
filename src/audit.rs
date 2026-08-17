@@ -11,6 +11,7 @@ use std::sync::{Mutex, RwLock};
 pub enum AuditError {
     WriteFailed(String),
     ChainVerificationFailed(String),
+    Malformed(String),
 }
 
 impl std::fmt::Display for AuditError {
@@ -20,6 +21,7 @@ impl std::fmt::Display for AuditError {
             AuditError::ChainVerificationFailed(reason) => {
                 write!(f, "audit chain verification failed: {reason}")
             }
+            AuditError::Malformed(reason) => write!(f, "malformed audit log: {reason}"),
         }
     }
 }
@@ -44,7 +46,11 @@ impl AuditEntry {
     fn contents(&self) -> String {
         format!(
             "{} {} {} {} {}",
-            self.timestamp, self.actor, self.action, self.target, self.outcome
+            self.timestamp,
+            encode_field(&self.actor),
+            encode_field(&self.action),
+            encode_field(&self.target),
+            encode_field(&self.outcome)
         )
     }
 
@@ -52,10 +58,10 @@ impl AuditEntry {
         format!(
             "{}|{}|{}|{}|{}|{}|{}",
             self.timestamp,
-            self.actor,
-            self.action,
-            self.target,
-            self.outcome,
+            encode_field(&self.actor),
+            encode_field(&self.action),
+            encode_field(&self.target),
+            encode_field(&self.outcome),
             hex(&self.previous_entry_hash),
             hex(&self.entry_hash),
         )
@@ -73,6 +79,14 @@ impl AuditEntry {
 
 fn hex(bytes: &[u8; 32]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn encode_field(value: &str) -> String {
+    value
+        .replace('%', "%25")
+        .replace('|', "%7C")
+        .replace('\n', "%0A")
+        .replace('\r', "%0D")
 }
 
 fn parse_hash(s: &str) -> Option<[u8; 32]> {
@@ -96,25 +110,26 @@ pub struct AuditLog {
 
 impl AuditLog {
     pub fn new(path: Option<PathBuf>) -> Self {
-        let last_hash = path
-            .as_deref()
-            .map(|p| Self::load_last_hash(Some(p)))
-            .unwrap_or_default();
+        Self::try_new(path).expect("audit log failed to initialize")
+    }
+
+    pub fn try_new(path: Option<PathBuf>) -> Result<Self, AuditError> {
+        let last_hash = Self::load_last_hash(path.as_deref())?;
         let file = if cfg!(test) {
             None
         } else {
-            path.map(|path| Self::open(path))
+            path.as_deref().map(Self::open_checked).transpose()?
         };
-        Self {
+        Ok(Self {
             file: file.map(Mutex::new),
             buffer: RwLock::new(Vec::new()),
             max_buffer: 10_000,
             last_hash: Mutex::new(last_hash),
-        }
+        })
     }
 
     pub fn with_file(path: PathBuf) -> Self {
-        let last_hash = Self::load_last_hash(Some(&path));
+        let last_hash = Self::load_last_hash(Some(&path)).expect("audit log malformed");
         Self {
             file: Some(Mutex::new(Self::open(path))),
             buffer: RwLock::new(Vec::new()),
@@ -127,32 +142,44 @@ impl AuditLog {
     /// session continues the forward chain rather than breaking it
     /// (observability.md §1.5). Returns `[0; 32]` if the file is empty or
     /// unreadable (first entry or fail-fast on malformed).
-    fn load_last_hash(path: Option<&Path>) -> [u8; 32] {
+    fn load_last_hash(path: Option<&Path>) -> Result<[u8; 32], AuditError> {
         let Some(path) = path else {
-            return [0u8; 32];
+            return Ok([0u8; 32]);
         };
         let text = match std::fs::read_to_string(path) {
             Ok(t) => t,
-            Err(_) => return [0u8; 32],
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok([0u8; 32]);
+            }
+            Err(error) => return Err(AuditError::WriteFailed(error.to_string())),
         };
         let last_line = match text.lines().last() {
             Some(l) if !l.trim().is_empty() => l,
-            _ => return [0u8; 32],
+            _ => return Ok([0u8; 32]),
         };
         let fields: Vec<&str> = last_line.split('|').collect();
         match fields.len() {
             // Legacy v0.1 format (space-separated, no hash fields) predates
             // hash chaining. Those entries cannot be verified retroactively,
             // so the chain restarts from zero after an upgrade.
-            1 => return [0u8; 32],
+            1 => return Ok([0u8; 32]),
             7 => {}
-            // A malformed current-format log is a fail-fast condition — we
-            // must not silently start a fresh chain over tampered data.
-            _ => panic!("audit log contains a malformed entry; refusing to continue"),
+            _ => return Err(AuditError::Malformed(format!(
+                "last entry has {} fields; expected 7",
+                fields.len()
+            ))),
         }
-        parse_hash(fields[6]).unwrap_or_else(|| {
-            panic!("audit log entry hash malformed; refusing to continue");
+        parse_hash(fields[6]).ok_or_else(|| {
+            AuditError::Malformed("last entry hash is not 64 hexadecimal characters".into())
         })
+    }
+
+    fn open_checked(path: &Path) -> Result<File, AuditError> {
+        OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .map_err(|error| AuditError::WriteFailed(error.to_string()))
     }
 
     fn open(path: PathBuf) -> File {
@@ -185,10 +212,10 @@ impl AuditLog {
         let contents = format!(
             "{} {} {} {} {}",
             crate::protocol::now(),
-            actor,
-            action,
-            target,
-            outcome
+            encode_field(actor),
+            encode_field(action),
+            encode_field(target),
+            encode_field(outcome)
         );
         let previous_hash = *self.last_hash.lock().expect("audit hash lock");
         let entry_hash = AuditEntry::compute_hash(&contents, &previous_hash);
@@ -329,6 +356,19 @@ mod tests {
         let text = std::fs::read_to_string(&path).expect("read log");
         assert!(text.contains("chat"), "{text}");
         assert!(text.contains("hello"), "{text}");
+    }
+
+    #[test]
+    fn fields_with_record_delimiters_stay_on_one_line() {
+        let (_dir, path) = tmp_log();
+        let log = AuditLog::with_file(path.clone());
+        log.record("user", "chat", "line one\nline two|extra", "ok")
+            .unwrap();
+        drop(log);
+        let text = std::fs::read_to_string(&path).expect("read log");
+        assert_eq!(text.lines().count(), 1, "{text}");
+        assert!(text.contains("%0A"), "{text}");
+        assert!(text.contains("%7C"), "{text}");
     }
 
     #[test]

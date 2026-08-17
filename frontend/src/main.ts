@@ -36,12 +36,26 @@ type PromptResponse = {
   evidence: EvidenceItem[];
   widgets: UiWidget[];
   surface: Surface | null;
+  experimentalHtml: string | null;
 };
 
 const currentWindow = getCurrentWindow();
 const isCanvasWindow = currentWindow.label === 'canvas';
+if (isCanvasWindow) document.documentElement.classList.add('canvas-document');
 let widgets: UiWidget[] = [];
 let surface: Surface | null = null;
+let experimentalHtml: string | null = null;
+const surfacePosition = { x: 20, y: 16 };
+let surfaceResizeObserver: ResizeObserver | null = null;
+let inputRegionFrame: number | null = null;
+let dragState: {
+  pointerId: number;
+  startX: number;
+  startY: number;
+  left: number;
+  top: number;
+  handle: HTMLElement;
+} | null = null;
 const messages: Message[] = [{
   role: 'assistant',
   text: 'I’m ready to investigate your system. Ask me what you would like to know.',
@@ -60,6 +74,13 @@ function render(): void {
     document.querySelectorAll<HTMLButtonElement>('[data-dock]').forEach((button) => {
       button.addEventListener('click', () => void dockPanel(button.dataset.dock as DockEdge));
     });
+    if (experimentalHtml) {
+      wireSurfaceDrag();
+      observeSurfaceSize();
+    } else {
+      surfaceResizeObserver?.disconnect();
+      surfaceResizeObserver = null;
+    }
   }
 }
 
@@ -75,6 +96,9 @@ function renderSidebar(): string {
 }
 
 function renderCanvas(): string {
+  if (experimentalHtml) {
+    return `<div id="surface-host" class="surface-host" style="left:${surfacePosition.x}px;top:${surfacePosition.y}px">${experimentalHtml}</div>`;
+  }
   const heading = surface
     ? `<div class="eyebrow">Generative surface</div><h1>${escapeHtml(surface.title)}</h1>${surface.subtitle ? `<div class="canvas-subtitle">${escapeHtml(surface.subtitle)}</div>` : ''}`
     : `<div class="eyebrow">Live evidence</div><h1>System overview</h1>`;
@@ -198,13 +222,101 @@ function escapeHtml(value: string): string {
   return value.replace(/[&<>'"]/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[character] ?? character);
 }
 
+function surfaceHost(): HTMLElement | null {
+  return document.querySelector<HTMLElement>('#surface-host');
+}
+
+function scheduleInputRegion(): void {
+  if (inputRegionFrame !== null) return;
+  inputRegionFrame = requestAnimationFrame(() => {
+    inputRegionFrame = null;
+    void updateInputRegion();
+  });
+}
+
+async function updateInputRegion(): Promise<void> {
+  const target = experimentalHtml ? surfaceHost() : document.querySelector<HTMLElement>('#root');
+  if (!target) {
+    await invoke('set_input_region', { x: 0, y: 0, w: 0, h: 0 });
+    return;
+  }
+  const rect = target.getBoundingClientRect();
+  const scale = window.devicePixelRatio || 1;
+  await invoke('set_input_region', {
+    x: rect.left * scale,
+    y: rect.top * scale,
+    w: rect.width * scale,
+    h: rect.height * scale,
+  });
+}
+
+function observeSurfaceSize(): void {
+  surfaceResizeObserver?.disconnect();
+  const host = surfaceHost();
+  if (!host) return;
+  surfaceResizeObserver = new ResizeObserver(() => scheduleInputRegion());
+  surfaceResizeObserver.observe(host);
+}
+
+function wireSurfaceDrag(): void {
+  const host = surfaceHost();
+  if (!host) return;
+  const handle = host.querySelector<HTMLElement>('[data-tauri-drag-region], header') ?? host;
+  handle.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0) return;
+    if ((event.target as Element).closest('button, a, input, textarea, select, [data-no-drag]')) return;
+    const rect = host.getBoundingClientRect();
+    dragState = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      left: rect.left,
+      top: rect.top,
+      handle,
+    };
+    handle.setPointerCapture?.(event.pointerId);
+    handle.classList.add('surface-dragging');
+    event.preventDefault();
+  });
+  handle.addEventListener('pointermove', (event) => {
+    if (!dragState || dragState.pointerId !== event.pointerId) return;
+    const root = document.querySelector<HTMLElement>('#root');
+    const maxLeft = root ? Math.max(0, root.clientWidth - host.offsetWidth) : Number.POSITIVE_INFINITY;
+    const maxTop = root ? Math.max(0, root.clientHeight - host.offsetHeight) : Number.POSITIVE_INFINITY;
+    surfacePosition.x = Math.min(maxLeft, Math.max(0, dragState.left + event.clientX - dragState.startX));
+    surfacePosition.y = Math.min(maxTop, Math.max(0, dragState.top + event.clientY - dragState.startY));
+    host.style.left = `${surfacePosition.x}px`;
+    host.style.top = `${surfacePosition.y}px`;
+    scheduleInputRegion();
+  });
+  const endDrag = (event: PointerEvent) => {
+    if (!dragState || dragState.pointerId !== event.pointerId) return;
+    try {
+      dragState.handle.releasePointerCapture?.(event.pointerId);
+    } catch {
+      // The pointer may already have left the webview during a desktop drag.
+    }
+    dragState.handle.classList.remove('surface-dragging');
+    dragState = null;
+    scheduleInputRegion();
+  };
+  handle.addEventListener('pointerup', endDrag);
+  handle.addEventListener('pointercancel', endDrag);
+}
+
 if (isCanvasWindow) {
   void listen<PromptResponse>('canvas_response', async (event) => {
+    experimentalHtml = event.payload.experimentalHtml ?? null;
     surface = event.payload.surface;
     widgets = event.payload.widgets;
     render();
+    if (experimentalHtml) {
+      // Wait for WebKitGTK to finish layout, then expose only the widget area
+      // to the desktop input system.
+      await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())));
+    }
+    await updateInputRegion();
     await currentWindow.show();
-    await currentWindow.setFocus();
   });
 }
 

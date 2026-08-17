@@ -245,7 +245,7 @@ pub enum ResetError {
     Internal(String),
 }
 
-pub trait ActionStore {
+pub trait ActionStore: Send + Sync {
     fn save(&self, record: &ActionRecord) -> Result<(), PersistenceError>;
     fn load(&self, action_id: &ActionId) -> Result<ActionRecord, PersistenceError>;
     fn load_all(&self) -> Result<Vec<ActionRecord>, PersistenceError>;

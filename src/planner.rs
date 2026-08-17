@@ -44,7 +44,7 @@ pub fn submit(
         temperature: 0.3,
         seed: None,
     };
-    let response = gateway.submit_with_fallback(&task, &request)?;
+    let response = gateway.submit(&task, &request)?;
     let text = strip_think(response.response.text.trim());
     if text.is_empty() {
         return Err(AgentError::EmptyResponse);
@@ -381,6 +381,26 @@ fn normalize_tool_name(name: &str) -> String {
     match name {
         "wifi_observe_device" => "wifi.observe_device".to_string(),
         "wifi_diagnose_fault" => "wifi.diagnose_fault".to_string(),
+        "storage_observe_storage" => "storage.observe_storage".to_string(),
+        "storage_diagnose_fault" => "storage.diagnose_fault".to_string(),
+        "network_observe_network" => "network.observe_network".to_string(),
+        "network_diagnose_fault" => "network.diagnose_fault".to_string(),
+        "drivers_observe_device" => "drivers.observe_device".to_string(),
+        "drivers_diagnose_fault" => "drivers.diagnose_fault".to_string(),
+        "graphics_observe_graphics" => "graphics.observe_graphics".to_string(),
+        "graphics_diagnose_fault" => "graphics.diagnose_fault".to_string(),
+        "memory_observe_memory" => "memory.observe_memory".to_string(),
+        "memory_diagnose_fault" => "memory.diagnose_fault".to_string(),
+        "processes_observe_process" => "processes.observe_process".to_string(),
+        "processes_diagnose_fault" => "processes.diagnose_fault".to_string(),
+        "power_observe_thermal" => "power.observe_thermal".to_string(),
+        "power_diagnose_fault" => "power.diagnose_fault".to_string(),
+        "security_observe_security" => "security.observe_security".to_string(),
+        "security_diagnose_fault" => "security.diagnose_fault".to_string(),
+        "packages_observe_package" => "packages.observe_package".to_string(),
+        "packages_diagnose_fault" => "packages.diagnose_fault".to_string(),
+        "boot_observe_boot" => "boot.observe_boot".to_string(),
+        "boot_diagnose_fault" => "boot.diagnose_fault".to_string(),
         other => other.to_string(),
     }
 }

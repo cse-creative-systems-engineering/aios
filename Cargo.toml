@@ -15,6 +15,7 @@ ureq = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
 
 [dev-dependencies]
+fantoccini = "0.22.1"
 tempfile = "3"
 
 [profile.dev]

@@ -18,7 +18,7 @@
 use crate::surface::evidence::{
     EvidenceIndex, number_present_in_evidence, value_present_in_evidence,
 };
-use crate::surface::schema::{LayoutMode, Surface, SurfaceWidget};
+use crate::surface::schema::{LayoutMode, Surface, SurfaceDensity, SurfaceWidget, WidthClass};
 
 /// The first validation failure. `stage` names the check bucket so callers can
 /// bucket errors (and the harness can report them per stage).
@@ -42,6 +42,57 @@ pub fn validate(surface: &Surface, evidence: &EvidenceIndex) -> Result<(), Valid
     evidence_check(surface, evidence)?;
     layout_check(surface)?;
     Ok(())
+}
+
+/// Apply the stricter constraints implied by the user's requested density.
+pub fn validate_for_intent(
+    surface: &Surface,
+    intent: &str,
+    evidence: &EvidenceIndex,
+) -> Result<(), ValidationError> {
+    validate(surface, evidence)?;
+    let requested_compact = intent.to_ascii_lowercase().split_whitespace().any(|word| {
+        matches!(
+            word.trim_matches(|c: char| !c.is_ascii_alphabetic()),
+            "compact" | "small" | "tiny" | "narrow"
+        )
+    });
+    if requested_compact && surface.layout.density != SurfaceDensity::Compact {
+        return Err(err("density", "compact request produced a non-compact surface"));
+    }
+    if requested_compact && surface.placement.width != Some(WidthClass::Narrow) {
+        return Err(err("density", "compact request produced a non-narrow panel"));
+    }
+    if let Some(requested) = requested_top_count(intent) {
+        let presented = surface
+            .widgets
+            .iter()
+            .map(|widget| match widget {
+                SurfaceWidget::StatusList { items, .. } => items.len(),
+                SurfaceWidget::Chart { data, .. } => data.len(),
+                _ => 1,
+            })
+            .max()
+            .unwrap_or(0);
+        if presented < requested {
+            return Err(err(
+                "content",
+                format!("request requires top {requested} entries but surface presents {presented}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn requested_top_count(intent: &str) -> Option<usize> {
+    let words: Vec<&str> = intent.split_whitespace().collect();
+    words.windows(2).find_map(|pair| {
+        if pair[0].eq_ignore_ascii_case("top") {
+            pair[1].trim_matches(|c: char| !c.is_ascii_digit()).parse().ok()
+        } else {
+            None
+        }
+    })
 }
 
 fn schema_check(surface: &Surface) -> Result<(), ValidationError> {
@@ -112,6 +163,14 @@ fn layout_check(surface: &Surface) -> Result<(), ValidationError> {
     if surface.regions.is_empty() {
         return Err(err("layout", "surface has no regions"));
     }
+    if surface.layout.density == SurfaceDensity::Compact {
+        if surface.widgets.len() > 6 {
+            return Err(err("density", "compact surface has more than 6 widgets"));
+        }
+        if surface.layout.mode == LayoutMode::Stack && surface.widgets.len() > 1 {
+            return Err(err("density", "compact surface cannot stack multiple widgets"));
+        }
+    }
     let widget_by_id: std::collections::HashMap<&str, &SurfaceWidget> = surface
         .widgets
         .iter()
@@ -136,6 +195,16 @@ fn layout_check(surface: &Surface) -> Result<(), ValidationError> {
         }
     }
     for widget in &surface.widgets {
+        if surface.layout.density == SurfaceDensity::Compact {
+            if let SurfaceWidget::StatusList { items, .. } = widget {
+                if items.len() > 10 {
+                    return Err(err(
+                        "density",
+                        format!("compact status list '{}' has more than 10 rows", widget.id()),
+                    ));
+                }
+            }
+        }
         if !referenced.contains(widget.id()) {
             return Err(err("layout", format!("widget '{}' is not referenced by any region", widget.id())));
         }
@@ -204,7 +273,7 @@ pub fn diagnostics(surface: &Surface, evidence: &EvidenceIndex) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::surface::schema::{
-        ChartPoint, DockEdge, LayoutMode, RegionPriority, StatusItem, SurfaceLayout,
+        ChartPoint, DockEdge, LayoutMode, RegionPriority, StatusItem, SurfaceDensity, SurfaceLayout,
         SurfacePlacement, SurfaceRegion,
     };
     use crate::tools::ToolResult;
@@ -247,6 +316,7 @@ mod tests {
             layout: SurfaceLayout {
                 mode: LayoutMode::Grid,
                 columns: 12,
+                density: SurfaceDensity::Comfortable,
             },
             regions: vec![SurfaceRegion {
                 id: "main".to_string(),
@@ -274,6 +344,45 @@ mod tests {
             "{:?}",
             validate(&surface, &evidence)
         );
+    }
+
+    #[test]
+    fn compact_request_requires_compact_density() {
+        let surface = base_surface();
+        let evidence = index_with(&["disk_used = 81%"]);
+        let error = validate_for_intent(&surface, "show a compact storage panel", &evidence)
+            .expect_err("comfortable surface must not satisfy compact request");
+        assert_eq!(error.stage, "density");
+    }
+
+    #[test]
+    fn compact_status_list_has_a_hard_row_budget() {
+        let mut surface = base_surface();
+        surface.layout.density = SurfaceDensity::Compact;
+        surface.widgets[0] = SurfaceWidget::StatusList {
+            id: "usage".to_string(),
+            title: "Storage details".to_string(),
+            items: (0..11)
+                .map(|index| StatusItem {
+                    label: format!("metric-{index}"),
+                    status: "present".to_string(),
+                    detail: None,
+                })
+                .collect(),
+            evidence: vec!["tool-0".to_string()],
+        };
+        let evidence = index_with(&["disk_used = 81%"]);
+        let error = validate(&surface, &evidence).expect_err("compact report must be rejected");
+        assert_eq!(error.stage, "density");
+    }
+
+    #[test]
+    fn requested_top_count_cannot_be_silently_truncated() {
+        let surface = base_surface();
+        let evidence = index_with(&["disk_used = 81%"]);
+        let error = validate_for_intent(&surface, "show the top 10 processes", &evidence)
+            .expect_err("partial top-N surfaces must fail");
+        assert_eq!(error.stage, "content");
     }
 
     #[test]
