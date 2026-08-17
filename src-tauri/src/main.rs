@@ -31,6 +31,7 @@ use x11rb::wrapper::ConnectionExt as WrapperConnectionExt;
 struct AppState {
     requests: mpsc::Sender<BackendRequest>,
     status: Arc<Mutex<BackendStatus>>,
+    sidebar_status: Arc<Mutex<Option<SidebarStatusResponse>>>,
     app: tauri::AppHandle,
 }
 
@@ -65,6 +66,44 @@ struct PromptResponse {
 struct EvidenceItem {
     tool: String,
     text: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SidebarStatusResponse {
+    backend_status: BackendStatus,
+    connectivity: String,
+    current_route: Option<SidebarRoute>,
+    route_error: Option<String>,
+    local_model: Option<String>,
+    providers: Vec<SidebarProvider>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SidebarRoute {
+    provider: String,
+    model: String,
+    connectivity: String,
+    data_classification: String,
+    reduced_confidence: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SidebarProvider {
+    id: String,
+    kind: String,
+    model: String,
+    tier: String,
+    capabilities: Vec<String>,
+    health: String,
+    last_checked: u64,
+    latency_ms: Option<u32>,
+    error_rate: f64,
+    retry_after: Option<u64>,
+    credential_configured: bool,
+    consent_scopes: Vec<String>,
 }
 
 #[tauri::command]
@@ -154,6 +193,18 @@ fn backend_status(state: tauri::State<'_, AppState>) -> Result<BackendStatus, St
         .lock()
         .map(|status| status.clone())
         .map_err(|_| "backend status lock is poisoned".to_string())
+}
+
+#[tauri::command]
+fn sidebar_status(
+    state: tauri::State<'_, AppState>,
+) -> Result<SidebarStatusResponse, String> {
+    state
+        .sidebar_status
+        .lock()
+        .map_err(|_| "sidebar status lock is poisoned".to_string())?
+        .clone()
+        .ok_or_else(|| "sidebar status is not ready".to_string())
 }
 
 #[tauri::command]
@@ -283,19 +334,20 @@ fn main() {
                 ready: false,
                 error: Some("backend is starting".to_string()),
             }));
+            let sidebar_status = Arc::new(Mutex::new(None));
             let worker_status = Arc::clone(&status);
+            let worker_sidebar_status = Arc::clone(&sidebar_status);
 
             thread::spawn(move || {
                 let mut facade = match Facade::boot() {
                     Ok(facade) => {
                         eprintln!("Aios backend: ready");
-                        set_status(
-                            &worker_status,
-                            BackendStatus {
-                                ready: true,
-                                error: None,
-                            },
-                        );
+                        let next_status = BackendStatus {
+                            ready: true,
+                            error: None,
+                        };
+                        set_status(&worker_status, next_status.clone());
+                        refresh_sidebar_status(&worker_sidebar_status, &facade, next_status);
                         facade
                     }
                     Err(error) => {
@@ -412,6 +464,13 @@ fn main() {
                         experimental_html,
                         backend_status: status,
                     });
+                    if let Ok(ref response) = result {
+                        refresh_sidebar_status(
+                            &worker_sidebar_status,
+                            &facade,
+                            response.backend_status.clone(),
+                        );
+                    }
                     let _ = response.send(result);
                 }
             });
@@ -419,6 +478,7 @@ fn main() {
             app.manage(AppState {
                 requests: requests_tx,
                 status,
+                sidebar_status,
                 app: app.handle().clone(),
             });
             Ok(())
@@ -427,11 +487,99 @@ fn main() {
             backend_status,
             focus_sidebar,
             hide_canvas,
+            sidebar_status,
             set_input_region,
             submit_prompt
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri app");
+}
+
+fn refresh_sidebar_status(
+    target: &Arc<Mutex<Option<SidebarStatusResponse>>>,
+    facade: &Facade,
+    backend_status: BackendStatus,
+) {
+    match sidebar_status_snapshot(facade, backend_status) {
+        Ok(snapshot) => {
+            if let Ok(mut current) = target.lock() {
+                *current = Some(snapshot);
+            }
+        }
+        Err(error) => eprintln!("Aios sidebar: status snapshot failed: {error}"),
+    }
+}
+
+fn sidebar_status_snapshot(
+    facade: &Facade,
+    backend_status: BackendStatus,
+) -> Result<SidebarStatusResponse, String> {
+    let coordinator = &facade.coordinator;
+    let (current_route, route_error) = match coordinator.current_route() {
+        Ok(route) => (
+            Some(SidebarRoute {
+                provider: route.provider.to_string(),
+                model: route.model.to_string(),
+                connectivity: format!("{:?}", route.connectivity_state),
+                data_classification: format!("{:?}", route.data_classification),
+                reduced_confidence: route.reduced_confidence,
+            }),
+            None,
+        ),
+        Err(error) => (None, Some(error.to_string())),
+    };
+    let providers = coordinator
+        .provider_entries()
+        .into_iter()
+        .map(|entry| {
+            let provider_id = entry.provider.to_string();
+            let config = coordinator
+                .config
+                .provider(&provider_id)
+                .ok_or_else(|| format!("provider '{provider_id}' is missing from configuration"))?;
+            let consent_scopes = coordinator
+                .gateway
+                .router()
+                .consent_for(&entry.provider)
+                .map(|consent| {
+                    consent
+                        .data_scope
+                        .iter()
+                        .map(|scope| format!("{:?}", scope))
+                        .collect()
+                })
+                .unwrap_or_default();
+            Ok(SidebarProvider {
+                id: provider_id,
+                kind: config.kind.clone(),
+                model: entry.model_id.to_string(),
+                tier: format!("{:?}", entry.tier),
+                capabilities: entry
+                    .capabilities
+                    .iter()
+                    .map(|capability| format!("{:?}", capability))
+                    .collect(),
+                health: format!("{:?}", entry.health.state),
+                last_checked: entry.health.last_checked,
+                latency_ms: entry.health.latency_ms,
+                error_rate: entry.health.error_rate,
+                retry_after: entry.health.retry_after,
+                credential_configured: config.api_key.is_some() || config.api_key_env.is_some(),
+                consent_scopes,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+
+    Ok(SidebarStatusResponse {
+        backend_status,
+        connectivity: format!("{:?}", coordinator.connectivity()),
+        current_route,
+        route_error,
+        local_model: coordinator
+            .local_model_path()
+            .map(|path| path.display().to_string()),
+        providers,
+    })
 }
 
 fn surface_window_size(surface: &Surface) -> (f64, f64) {
