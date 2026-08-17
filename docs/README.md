@@ -14,6 +14,8 @@ the relevant milestone, and the relevant module or decision document.
 The active UI path is described in [`ui.md`](ui.md). The current surface
 lifecycle plan is
 [`milestones/0002-multi-surface-lifecycle-plan.md`](milestones/0002-multi-surface-lifecycle-plan.md).
+The sidebar administration-panel plan is
+[`milestones/0003-sidebar-administration-panel.md`](milestones/0003-sidebar-administration-panel.md).
 Historical and superseded material is kept under [`archive/`](archive/) and is
 not current implementation guidance.
 

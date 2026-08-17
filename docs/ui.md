@@ -4,6 +4,7 @@
 **Active renderer:** Tauri v2 plus Vite/TypeScript
 **Current checkpoint:** `docs/milestones/0001-generative-surface-desktop-foundation.md`
 **Next plan:** `docs/milestones/0002-multi-surface-lifecycle-plan.md`
+**Sidebar plan:** `docs/milestones/0003-sidebar-administration-panel.md`
 
 ## Active Architecture
 
@@ -48,11 +49,96 @@ work is the surface lifecycle plan in
 
 ## Sidebar Workstream
 
-The sidebar is intentionally basic at the checkpoint. Its redesign is a
-separate workstream after the surface lifecycle is stable. The redesign should
-improve hierarchy, conversation states, prompt composition, evidence display,
-surface management, settings, and desktop polish without moving backend
-authority into the frontend.
+The sidebar is intentionally basic at the checkpoint. Its redesign is not a
+cosmetic reskin. It becomes the resident Aios administration panel and the
+entry point for the system's moving parts.
+
+The sidebar should expose, without overwhelming the conversation:
+
+- current backend readiness and selected connectivity mode;
+- provider health and model availability;
+- planner, verifier, surface-composer, and specialist assignments;
+- active surfaces and their lifecycle state;
+- evidence freshness, warnings, and recent failures;
+- settings and provider credential management;
+- the conversation and prompt composer.
+
+The visual direction is a refined system instrument, not a generic chatbot. The
+chat remains important, but it is one instrument in a stable control surface.
+The sidebar should always communicate what Aios is doing, what is waiting, and
+what needs attention.
+
+## Provider and Model Administration
+
+Provider configuration belongs behind a dedicated administration view reached
+from the sidebar. It must not be implemented as a raw configuration-file dump
+or a plain API-key textarea.
+
+The administration view should support:
+
+- adding and removing provider records;
+- entering credentials through a trusted secret-entry path;
+- discovering models from a provider when the provider supports it;
+- showing provider connectivity and health;
+- showing model capabilities and limits;
+- assigning a provider and model to an operation role;
+- assigning a default provider/model to all specialists, with per-specialist
+  overrides;
+- showing which assignment is active for the current task.
+
+Assignments should be layered:
+
+1. System default
+2. Role default, such as Planner or SurfaceComposition
+3. Specialist override, such as Memory or Processes
+4. Explicit task pin while a request is active
+
+The backend owns the assignment registry and task pins. The sidebar edits
+typed settings through backend commands; it does not route model requests or
+hold provider credentials.
+
+The Policy Broker is not a model role. It remains deterministic authority for
+capability, risk, Guardian, approval, staging, and audit decisions. A model may
+provide analysis around a broker decision later, but it must never be assigned
+the authority to make or override that decision.
+
+## Assignment Validation
+
+Selecting a model for a role should run capability checks before the assignment
+is accepted. Examples:
+
+- Planner requires reliable tool calling and sufficient context length.
+- Verifier requires structured, bounded review output.
+- SurfaceComposition requires generation quality and must not receive tools or
+  system access.
+- A specialist assignment must support the data classification and tool
+  contract required by that specialist.
+- A provider must be reachable and credentialed before it is marked usable.
+
+An incompatible assignment is rejected with a specific reason. The UI should
+show the reason and the required capabilities rather than allowing a broken
+configuration that fails later during a request.
+
+Provider metadata, model lists, health checks, and assignment errors must never
+include secret values in frontend state, logs, prompts, or generated surfaces.
+
+## Persistent Status Feedback
+
+The sidebar should have a compact status area that is always present and an
+expandable system panel for detail. At minimum it should expose:
+
+- Aios readiness;
+- connectivity state;
+- active provider/model route;
+- provider and model health;
+- current operation phase, such as gathering, verifying, composing, or idle;
+- active surface count and update state;
+- stale or unknown evidence;
+- actionable errors and recovery state.
+
+Status must be event-driven where possible. It should not make the user infer
+system state from a spinner or from a missing widget. Errors remain visible
+until acknowledged or resolved.
 
 ## Desktop Compatibility
 

@@ -205,6 +205,7 @@ Current UI and surface documents:
 | [ui.md](docs/ui.md) | Current Tauri UI and surface contract |
 | [Foundation](docs/milestones/0001-generative-surface-desktop-foundation.md) | Working desktop checkpoint |
 | [Lifecycle plan](docs/milestones/0002-multi-surface-lifecycle-plan.md) | Multi-surface and editing plan |
+| [Sidebar administration](docs/milestones/0003-sidebar-administration-panel.md) | Provider, model, status, and control-panel plan |
 | [Archive](docs/archive/) | Historical and superseded documents |
 
 Reading order: glossary → requirements → security-model → capability-model →

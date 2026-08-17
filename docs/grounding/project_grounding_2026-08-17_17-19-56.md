@@ -48,7 +48,8 @@ changing that boundary.
    regions and positions.
 4. Add explicit surface create versus update intent handling.
 5. Support one surface composed from multiple specialist domains.
-6. Redesign the basic sidebar after the surface lifecycle is stable.
+6. Redesign the basic sidebar after the surface lifecycle is stable, following
+   `docs/milestones/0003-sidebar-administration-panel.md`.
 
 ## Non-Negotiable Development Rules
 

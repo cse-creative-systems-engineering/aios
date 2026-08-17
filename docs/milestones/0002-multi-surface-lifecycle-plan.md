@@ -251,6 +251,9 @@ three specialist results in one surface.
 Do not redesign the sidebar while the surface manager is changing. After the
 surface lifecycle is stable, redesign the sidebar in separate visual passes:
 
+The detailed sidebar administration-panel plan is
+`docs/milestones/0003-sidebar-administration-panel.md`.
+
 1. Write a visual design brief covering typography, spacing, hierarchy, motion,
    states, and desktop integration.
 2. Split the current one-file TypeScript renderer into sidebar components and
