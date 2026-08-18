@@ -9,7 +9,7 @@ use crate::capability::{
 use crate::config::{AiosConfig, ConfigError, ModelConfig, ProviderConfig};
 use crate::drivers::DriversSpecialist;
 use crate::executor::StagedExecutor;
-use crate::graph::{NodeType, SystemGraph};
+use crate::graph::{NodeId, NodeMetadata, NodeType, ProvenanceSource, SystemGraph, TrustLevel};
 use crate::graphics::GraphicsSpecialist;
 use crate::http::HttpBackend;
 use crate::local::LocalLlama;
@@ -230,6 +230,7 @@ impl Coordinator {
             packages_specialist: None,
         };
         coordinator.configure_read_only_broker();
+        coordinator.ensure_control_plane_nodes();
         coordinator.refresh_connectivity();
         // Running Aios is consent to inspect this machine for the session.
         // Provider-level consent still remains explicit for other data classes,
@@ -1585,6 +1586,44 @@ impl Coordinator {
             .broker
             .client(principal.clone())
             .capability_tokens(&principal);
+    }
+
+    /// Instantiate the Aios control-plane nodes so every runtime component in
+    /// `docs/ui.md` is a real `SystemGraph` node. Health is the genuine boot
+    /// state; later health wiring updates these from runtime signals. A node
+    /// whose signal is absent stays `Unknown` — never a silent green.
+    fn ensure_control_plane_nodes(&mut self) {
+        let t = now();
+        let mut graph = self.graph.write().expect("graph lock");
+        let definitions: &[(&str, NodeType, &str)] = &[
+            ("facade", NodeType::Facade, "Facade"),
+            ("broker", NodeType::Broker, "Broker"),
+            ("gateway", NodeType::ModelGateway, "ModelGateway"),
+            ("composer", NodeType::SurfaceComposer, "SurfaceComposer"),
+            ("evidence", NodeType::EvidenceIndex, "EvidenceIndex"),
+            ("validator", NodeType::SurfaceValidator, "SurfaceValidator"),
+            ("staged", NodeType::StagedExecutor, "StagedExecutor"),
+            ("audit", NodeType::AuditLog, "AuditLog"),
+            ("tools", NodeType::ToolRegistry, "ToolRegistry"),
+        ];
+        for (id, node_type, label) in definitions {
+            if graph.get_node(&NodeId(id.to_string())).is_some() {
+                continue;
+            }
+            let mut node = NodeMetadata::new(
+                NodeId(id.to_string()),
+                *node_type,
+                ProvenanceSource::Declared {
+                    package: "aios.core".into(),
+                },
+                TrustLevel::Trusted,
+                t,
+            );
+            node.label = label.to_string();
+            node.health = HealthState::Healthy;
+            node.attributes.insert("package".into(), "aios.core".into());
+            let _ = graph.add_node(node);
+        }
     }
 
     pub fn tools_help(&self) -> String {

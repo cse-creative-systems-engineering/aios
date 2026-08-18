@@ -41,6 +41,16 @@ pub enum NodeType {
     BootImage,
     Snapshot,
     Watchdog,
+    // Control-plane runtime components (every ui.md component is a real node).
+    Facade,
+    Broker,
+    ModelGateway,
+    SurfaceComposer,
+    EvidenceIndex,
+    SurfaceValidator,
+    StagedExecutor,
+    AuditLog,
+    ToolRegistry,
 }
 
 impl NodeType {
@@ -74,6 +84,15 @@ impl NodeType {
             NodeType::BootImage,
             NodeType::Snapshot,
             NodeType::Watchdog,
+            NodeType::Facade,
+            NodeType::Broker,
+            NodeType::ModelGateway,
+            NodeType::SurfaceComposer,
+            NodeType::EvidenceIndex,
+            NodeType::SurfaceValidator,
+            NodeType::StagedExecutor,
+            NodeType::AuditLog,
+            NodeType::ToolRegistry,
         ]
     }
 }

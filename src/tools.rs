@@ -393,8 +393,17 @@ fn parse_node_type(needle: &str) -> Result<Option<NodeType>, ToolError> {
         "filesystem" | "filesystems" => Ok(Some(NodeType::Filesystem)),
         "firmware" => Ok(Some(NodeType::Firmware)),
         "package" | "packages" => Ok(Some(NodeType::Package)),
+        "facade" => Ok(Some(NodeType::Facade)),
+        "broker" => Ok(Some(NodeType::Broker)),
+        "modelgateway" | "gateway" => Ok(Some(NodeType::ModelGateway)),
+        "surfacecomposer" | "composer" => Ok(Some(NodeType::SurfaceComposer)),
+        "evidenceindex" => Ok(Some(NodeType::EvidenceIndex)),
+        "surfacevalidator" | "validator" => Ok(Some(NodeType::SurfaceValidator)),
+        "stagedexecutor" => Ok(Some(NodeType::StagedExecutor)),
+        "auditlog" => Ok(Some(NodeType::AuditLog)),
+        "toolregistry" => Ok(Some(NodeType::ToolRegistry)),
         other => Err(ToolError::Usage(format!(
-            "unknown type '{other}' (device, service, driver, sensor, cpu, kernel, memory, bus, filesystem, firmware, package, all)"
+            "unknown type '{other}' (device, service, driver, sensor, cpu, kernel, memory, bus, filesystem, firmware, package, facade, broker, gateway, composer, validator, all)"
         ))),
     }
 }
