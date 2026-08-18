@@ -20,25 +20,33 @@ html.canvas-document, html.canvas-document body { overflow: hidden; }
 .surface-dragging, .surface-dragging * { cursor: grabbing !important; }
 
 .app-shell { display: grid; grid-template-columns: 1fr; width: 100%; height: 100vh; background: #0c1018; }
-.sidebar { display: flex; flex-direction: column; width: 100%; min-width: 0; min-height: 100vh; padding: 28px 24px 22px; border-right: 1px solid #263044; background: #111722; }
-.brand-row { display: flex; align-items: center; gap: 12px; margin-bottom: 42px; }
-.brand-mark { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 11px; color: #081018; background: #6ee7b7; font-weight: 800; font-size: 21px; }
-.brand-name { font-size: 18px; font-weight: 700; letter-spacing: .02em; }
-.brand-status, .connection-state { color: #8995aa; font-size: 12px; }
-.status-dot { display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 50%; background: #6ee7b7; }
-.system-status { display: grid; gap: 9px; margin: 18px 0 24px; padding: 11px 12px; border: 1px solid #29364c; border-radius: 10px; background: linear-gradient(145deg, #151e2e, #101722); box-shadow: 0 8px 20px rgb(0 0 0 / 14%); }
-.status-heading, .status-grid, .status-route { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.status-heading { color: #dce4f2; font-size: 12px; font-weight: 700; }
-.status-value { font-size: 11px; }
-.status-good { color: #6ee7b7; }
-.status-waiting { color: #e8c46a; }
-.status-grid { gap: 8px; }
-.status-grid > div { display: grid; gap: 3px; min-width: 0; }
-.status-grid > div:last-child { text-align: right; }
-.status-grid span, .status-route span { color: #748198; font-size: 10px; }
-.status-grid strong, .status-route strong { overflow: hidden; color: #b8c1d2; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-.status-route { padding-top: 8px; border-top: 1px solid #202a3b; }
-.status-error { padding-top: 8px; border-top: 1px solid #4e3a2b; color: #d6c18d; font-size: 10px; line-height: 1.4; }
+.sidebar { display: flex; width: 100%; min-width: 0; min-height: 100vh; background: #111722; }
+.sidebar-content { display: flex; flex-direction: column; flex: 1; min-width: 0; padding: 0 20px 18px; overflow: hidden; }
+
+/* --- Icon Rail --- */
+.icon-rail { display: flex; flex-direction: column; align-items: center; width: 56px; min-width: 56px; padding: 16px 0; border-right: 1px solid #1c2636; background: #0d1219; }
+.rail-top { margin-bottom: 20px; }
+.rail-brand { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 8px; color: #081018; background: #6ee7b7; font-weight: 800; font-size: 16px; }
+.rail-sections { display: flex; flex-direction: column; gap: 4px; flex: 1; }
+.rail-btn { display: grid; place-items: center; width: 36px; height: 36px; padding: 0; border: 0; border-radius: 8px; color: #5a6680; background: transparent; transition: color .15s, background .15s; }
+.rail-btn:hover { color: #b8c1d2; background: #1a2233; }
+.rail-btn.active { color: #6ee7b7; background: #162030; }
+.rail-btn svg { width: 18px; height: 18px; }
+.rail-bottom { display: flex; flex-direction: column; gap: 6px; margin-top: auto; }
+.rail-dot { display: block; width: 8px; height: 8px; border-radius: 50%; }
+.dot-good { background: #6ee7b7; }
+.dot-bad { background: #e8c46a; }
+
+/* --- System Feedback Block --- */
+.system-feedback { display: grid; gap: 1px; margin: 20px 0 16px; padding: 12px; border: 1px solid #1e2940; border-radius: 10px; background: #0d1219; }
+.feedback-row { display: grid; grid-template-columns: 72px 1fr auto; align-items: center; gap: 8px; padding: 7px 8px; border-radius: 6px; }
+.feedback-row:hover { background: #141d2b; }
+.feedback-label { color: #5a6680; font-size: 11px; font-weight: 600; letter-spacing: .03em; text-transform: uppercase; }
+.feedback-value { color: #dce4f2; font-size: 12px; font-weight: 600; }
+.feedback-detail { color: #5a6680; font-size: 11px; text-align: right; }
+.value-good { color: #6ee7b7; }
+.value-bad { color: #e8c46a; }
+.value-idle { color: #5a6680; }
 .conversation-label, .eyebrow { color: #748198; font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
 .chat { flex: 1; overflow: auto; padding: 16px 0; }
 .message { margin: 0 0 18px; color: #b8c1d2; font-size: 14px; line-height: 1.55; }

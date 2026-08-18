@@ -74,6 +74,16 @@ function render(): void {
     document.querySelector<HTMLTextAreaElement>('#prompt')?.addEventListener('pointerdown', () => {
       void invoke('focus_sidebar');
     });
+    document.querySelectorAll<HTMLButtonElement>('.rail-btn').forEach((button) => {
+      button.addEventListener('click', () => {
+        const section = button.dataset.section;
+        if (section && section !== 'chat') {
+          console.log(`[Aios] slide-out panel: ${section}`);
+        }
+        document.querySelectorAll('.rail-btn').forEach((b) => b.classList.remove('active'));
+        button.classList.add('active');
+      });
+    });
   } else {
     document.querySelectorAll<HTMLButtonElement>('[data-dock]').forEach((button) => {
       button.addEventListener('click', () => void dockPanel(button.dataset.dock as DockEdge));
