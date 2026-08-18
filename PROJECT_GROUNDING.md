@@ -13,6 +13,40 @@ status, known gaps, test conditions, UI paths, and the recommended restart
 order. It is a context index, not a replacement for the focused contracts in
 `docs/`.
 
+## Sidebar Layout Design (2026-08-17)
+
+The sidebar uses a three-zone layout plus a slide-out panel:
+
+- **Icon rail** (56px, always visible): permanent navigation skeleton with
+  grouped section icons (Chat, Providers, Roles, Surfaces, Audit, Settings)
+  and feedback indicator dots (backend readiness, connectivity, specialist
+  activity, pending alerts).
+
+- **System feedback block** (above chat): substantial area showing Aios's
+  full system state. Every system, sub-system, specialist, and model has
+  reserved real estate. The user sees Aios working while waiting for a
+  response. Expands when active, contracts when idle.
+
+- **Chat interface** (always visible): messages, composer, evidence. The
+  primary control interface. Sits below the system feedback block.
+
+- **Slide-out panel** (right edge, separate Tauri window): appears at x=420,
+  same z-level as sidebar (always on top). Shows detailed admin views for
+  Providers, Roles, Surfaces, Audit, Settings. Overlays the canvas. Nothing
+  shifts. Click icon again or click outside to close.
+
+Design principles:
+- Screen space is precious. The rail is fixed at 56px. The system feedback
+  block takes what it needs. The chat fills remaining space. The slide-out
+  panel appears on demand.
+- The UI must convey that Aios touches every part of the system down to
+  kernel and hardware level. It is not a generic chat interface.
+- Neither comprehensiveness nor complexity restricts design decisions. The
+  right design is the one that serves Aios, regardless of complexity.
+- Chat is always visible. It is never replaced by another view.
+
+Full layout contract: `docs/ui.md`
+
 ## Re-grounding Order
 
 1. Read the latest `project_grounding_*.md` file.

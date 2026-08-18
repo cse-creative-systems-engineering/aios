@@ -107,6 +107,75 @@ It means:
 Visual work is not complete when it merely looks attractive in one screenshot.
 It must remain coherent during real Aios activity and failure conditions.
 
+### Sidebar Layout Design (2026-08-17)
+
+The original sidebar direction was a single-column layout with a status rail,
+chat, and prompt form. During design discussion we changed direction for three
+reasons:
+
+1. **Screen space is precious.** The sidebar is 420px. A single-column layout
+   wastes width on navigation and status that could serve the chat or system
+   feedback. An icon rail at 56px gives permanent navigation without consuming
+   width.
+
+2. **Chat must always be visible.** The original design treated chat as one
+   section among many. But chat is the primary control interface. It should
+   never disappear or be replaced by another view. The new layout keeps chat
+   visible at all times.
+
+3. **System feedback needs dedicated space.** Aios touches every part of the
+   system down to kernel and hardware level. The user should see Aios working
+   while waiting for a response — not a spinner, but real system state. The
+   original status rail was too compact. A substantial block above the chat
+   gives every system, sub-system, specialist, and model reserved real estate.
+
+The new layout uses a three-zone sidebar plus a slide-out panel:
+
+```
+┌─────────┬──────────────────────────┐
+│  Rail   │  System Feedback Block   │
+│  56px   │  (reserved per system)   │
+│         │  ──────────────────────  │
+│         │  Chat Interface          │
+│         │  (messages + composer)   │
+└─────────┴──────────────────────────┘
+                                    ┌──────────────┐
+                                    │ Slide-out    │
+                                    │ Panel        │
+                                    │ (admin views)│
+                                    └──────────────┘
+```
+
+**Icon rail** (56px, always visible): permanent navigation skeleton with
+grouped section icons (Chat, Providers, Roles, Surfaces, Audit, Settings)
+and feedback indicator dots (backend readiness, connectivity, specialist
+activity, pending alerts). The rail never hides.
+
+**System feedback block** (above chat): substantial area showing Aios's
+full system state. Every system, sub-system, specialist, and model has
+reserved real estate. The user sees Aios working while waiting for a
+response. Expands when active, contracts when idle. Displays: Planner
+status, Broker state, Specialist activity, Model assignments, Surface
+lifecycle, System readiness.
+
+**Chat interface** (always visible): sits below the system feedback block.
+Messages, composer, evidence. The primary control interface. Never replaced
+by another view.
+
+**Slide-out panel** (right edge, separate Tauri window): appears at x=420,
+same z-level as sidebar (always on top). Shows detailed admin views for
+Providers, Roles, Surfaces, Audit, Settings. Overlays the canvas. Nothing
+shifts. Click icon again or click outside to close.
+
+Design principles:
+- Neither comprehensiveness nor complexity restricts design decisions. The
+  right design is the one that serves Aios, regardless of complexity.
+- The UI must convey that Aios is a deep system, not a generic chatbot.
+- Chat is always visible. It is never replaced by another view.
+- Screen space is precious. The rail is fixed. The system feedback block
+  takes what it needs. The chat fills remaining space. The slide-out panel
+  appears on demand.
+
 ## Provider and Model Administration
 
 Provider configuration belongs behind a dedicated administration view reached
