@@ -162,6 +162,12 @@ future discussion, not part of v1.
 
 ## Frontend Plan (renderer-independent; mermaid chosen)
 
+**Layout proportion (2026-08-17, corrected):** the system feedback block owns
+the top half (~50%) of the sidebar for visualization + system feedback +
+controls; the chat interface owns the bottom half (~50%). The prior agent
+crammed the whole visualization into the top ~25% — unnecessary. The sidebar is
+420px wide; the content column is 364px (420 − 56px rail).
+
 - Add `mermaid` to root `package.json` (currently only `@tauri-apps/api`,
   `@tauri-apps/cli`, vite, tailwind, postcss, autoprefixer).
 - Define a frontend `GraphState` (nodes/edges/health/active/phase) that is a

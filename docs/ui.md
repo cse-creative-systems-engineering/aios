@@ -124,10 +124,12 @@ reasons:
    visible at all times.
 
 3. **System feedback needs dedicated space.** Aios touches every part of the
-   system down to kernel and hardware level. The user should see Aios working
-   while waiting for a response — not a spinner, but real system state. The
-   original status rail was too compact. A substantial block above the chat
-   gives every system, sub-system, specialist, and model reserved real estate.
+    system down to kernel and hardware level. The user should see Aios working
+    while waiting for a response — not a spinner, but real system state. The
+    original status rail was too compact. The **top half (≈50%)** of the sidebar
+    is reserved for the system feedback block — visualization, status, and
+    controls — giving every system, sub-system, specialist, and model real
+    estate without crowding the chat. The chat takes the bottom half.
 
 The new layout uses a three-zone sidebar plus a slide-out panel:
 
@@ -151,18 +153,20 @@ grouped section icons (Chat, Providers, Roles, Surfaces, Audit, Settings).
 The rail never hides. The rail is purely navigational; all system feedback
 lives in the live system graph above chat.
 
-**System feedback block** (above chat): a live, animated SVG graph
-visualization of the Aios runtime topology. Every node represents a real
-runtime component (see Live System Graph section below). The graph shows
+**System feedback block** (top half of the sidebar, ≈50%): a live, animated
+SVG graph visualization of the Aios runtime topology. This block holds the
+visualization, system feedback, and controls — not just the graph. Every node
+represents a real runtime component (see Live System Graph section below). The
+graph shows
 Planner, Verifier, Broker, Guardian, ModelGateway, all 11 specialists,
 SystemGraph, and the surface pipeline. Nodes pulse when active, edges glow
 when data flows, health states shift in real time. Expands when active,
 contracts when idle. Below the graph, a compact text readout shows the
 current phase, active route, provider health, and surface status.
 
-**Chat interface** (always visible): sits below the system feedback block.
-Messages, composer, evidence. The primary control interface. Never replaced
-by another view.
+**Chat interface** (always visible): occupies the bottom half (≈50%) of the
+sidebar, directly below the system feedback block. Messages, composer,
+evidence. The primary control interface. Never replaced by another view.
 
 **Slide-out panel** (right edge, separate Tauri window): appears at x=420,
 same z-level as sidebar (always on top). Shows detailed admin views for
@@ -174,9 +178,10 @@ Design principles:
   right design is the one that serves Aios, regardless of complexity.
 - The UI must convey that Aios is a deep system, not a generic chatbot.
 - Chat is always visible. It is never replaced by another view.
-- Screen space is precious. The rail is fixed. The system feedback block
-  takes what it needs. The chat fills remaining space. The slide-out panel
-  appears on demand.
+- Screen space is precious. The rail is fixed at 56px. The system feedback
+   block owns the top half of the sidebar for visualization, system feedback,
+   and controls; the chat interface owns the bottom half. The slide-out panel
+   appears on demand.
 
 ### Live System Graph (2026-08-17)
 
@@ -234,8 +239,8 @@ The backend contains these confirmed runtime components:
 #### Graph Layout
 
 The graph occupies the system feedback block (364px wide, between the
-56px rail and the right edge). Nodes are arranged in layers matching
-the architecture:
+56px rail and the right edge; the block spans the top half of the sidebar
+height). Nodes are arranged in layers matching the architecture:
 
 ```
 ┌──────────────────────────────────────────────┐
@@ -464,6 +469,12 @@ custom SVG without touching the backend event/data plumbing.
 
 **Activity latch:** v1 lights a node only while it is genuinely active. Keeping
 a node lit after activation is deferred to a later discussion.
+
+**Layout proportion:** the system feedback block owns the top half (≈50%) of
+the sidebar for visualization, system feedback, and controls; the chat
+interface owns the bottom half (≈50%). The prior agent crammed the whole
+visualization into the top ~25%, which is unnecessary — the chat is fine with
+the bottom half.
 
 **Firewall:** changes are confined to `src/graph.rs`, `src/coordinator.rs`,
 `src/facade.rs`, `src/tauri/src/main.rs`, and the frontend sidebar module. The

@@ -23,10 +23,10 @@ The sidebar uses a three-zone layout plus a slide-out panel:
   and feedback indicator dots (backend readiness, connectivity, specialist
   activity, pending alerts).
 
-- **System feedback block** (above chat): substantial area showing Aios's
-  full system state. Every system, sub-system, specialist, and model has
-  reserved real estate. The user sees Aios working while waiting for a
-  response. Expands when active, contracts when idle.
+- **System feedback block** (top half of the sidebar, ≈50%): substantial area
+   showing Aios's full system state, plus controls. Every system, sub-system,
+   specialist, and model has reserved real estate. The user sees Aios working
+   while waiting for a response. The chat interface owns the bottom half.
 
 - **Chat interface** (always visible): messages, composer, evidence. The
   primary control interface. Sits below the system feedback block.
