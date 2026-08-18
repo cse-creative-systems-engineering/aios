@@ -6,7 +6,7 @@ Start here before making changes or answering questions about the repository.
 
 Read the latest dated grounding snapshot:
 
-- [`project_grounding_2026-08-17_18-05-00.md`](docs/grounding/project_grounding_2026-08-17_18-05-00.md) — sidebar "Live System Graph" redesign (extend `SystemGraph` with real control-plane nodes + real activity events; mermaid renderer)
+- [`project_grounding_2026-08-18_00-33-45.md`](docs/grounding/project_grounding_2026-08-18_00-33-45.md) — restored bespoke graph renderer with real node health and backend activity wiring
 - [`project_grounding_2026-08-17_17-19-56.md`](docs/grounding/project_grounding_2026-08-17_17-19-56.md) — surface-lifecycle foundation context
 
 That snapshot records the current architecture, source layout, implementation

@@ -5,6 +5,7 @@ use crate::capability::{
 };
 use crate::executor::{StagedExecutor, StagingError, StagingResult};
 use crate::guardian::Guardian;
+use crate::progress::{GraphActivity, GraphPhase, ProgressSink};
 use crate::protocol::{
     Approval, ApprovalRequest, ApprovalScope, DataClassification, MessageEnvelope, MessageType,
     PolicyDecision, PolicyVerdict, Timestamp, ToolError, ToolErrorCode, ToolRequest, ToolResult,
@@ -43,6 +44,7 @@ pub struct PolicyBroker {
     guardian: Option<Box<dyn crate::capability::GuardianClient>>,
     audit_entries: Vec<PolicyDecision>,
     audit_broken: bool,
+    progress: Option<ProgressSink>,
     clock: Box<dyn Fn() -> Timestamp + Send + Sync>,
 }
 
@@ -61,6 +63,7 @@ impl PolicyBroker {
             guardian: None,
             audit_entries: Vec::new(),
             audit_broken: false,
+            progress: None,
             clock: Box::new(now),
         }
     }
@@ -210,6 +213,10 @@ impl PolicyBroker {
         self.guardian = Some(Box::new(guardian));
     }
 
+    pub fn set_progress_reporter(&mut self, sink: ProgressSink) {
+        self.progress = Some(sink);
+    }
+
     pub fn set_audit_broken(&mut self, broken: bool) {
         self.audit_broken = broken;
     }
@@ -357,10 +364,19 @@ impl PolicyBroker {
         if risk.requires_guardian() {
             match &self.guardian {
                 None => return PolicyVerdict::Deny(DenyReason::GuardianUnavailable),
-                Some(g) => match g.review(request) {
+                Some(g) => {
+                    if let Some(sink) = &self.progress {
+                        sink.report(GraphActivity {
+                            phase: GraphPhase::PolicyCheck,
+                            active_node_ids: vec!["broker".into(), "guardian".into()],
+                            timestamp_ms: crate::progress::now_ms(),
+                        });
+                    }
+                    match g.review(request) {
                     crate::protocol::GuardianVerdict::Allow => {}
                     crate::protocol::GuardianVerdict::Block(reason) => {
                         return PolicyVerdict::Deny(DenyReason::GuardianBlocked(reason));
+                    }
                     }
                 },
             }
@@ -436,6 +452,13 @@ impl Broker {
             executor: Arc::new(Mutex::new(None)),
             resource_locks: Arc::new(Mutex::new(HashMap::new())),
             runtime,
+        }
+    }
+
+    pub fn set_progress_reporter(&self, sink: ProgressSink) {
+        match self.core.lock() {
+            Ok(mut core) => core.set_progress_reporter(sink),
+            Err(error) => eprintln!("Aios broker: progress reporter lock failed: {error}"),
         }
     }
 

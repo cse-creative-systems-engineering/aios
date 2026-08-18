@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { currentMonitor, getCurrentWindow } from '@tauri-apps/api/window';
 import { PhysicalPosition } from '@tauri-apps/api/dpi';
-import { renderSidebar, type EvidenceItem, type SidebarMessage, type SidebarStatus } from './sidebar';
+import { isSectionId, renderSidebar, type EvidenceItem, type FlightProgress, type SectionId, type SidebarMessage, type SidebarStatus, type SystemGraphSnapshot } from './sidebar';
 type UiWidget =
   | { type: 'metricCard'; label: string; value: string; unit: string; status: string }
   | { type: 'statusList'; title: string; items: string[] }
@@ -37,6 +37,11 @@ type PromptResponse = {
   experimentalHtml: string | null;
 };
 type BackendStatus = { ready: boolean; error: string | null };
+type GraphActivityEvent = {
+  phase: 'idle' | 'planning' | 'verifying' | 'gathering' | 'composing' | 'policycheck';
+  activeNodeIds: string[];
+  timestampMs: number;
+};
 
 const currentWindow = getCurrentWindow();
 const isCanvasWindow = currentWindow.label === 'canvas';
@@ -47,6 +52,13 @@ let experimentalHtml: string | null = null;
 let sidebarStatus: SidebarStatus | null = null;
 let sidebarStatusError: string | null = null;
 let sidebarStatusRetry: number | null = null;
+let graphSnapshot: SystemGraphSnapshot | null = null;
+let graphSnapshotError: string | null = null;
+let activeSection: SectionId = 'chat';
+let requestInFlight = false;
+let flightProgress: FlightProgress | null = null;
+let lastSurfacePresent = false;
+let chatScrollMode: 'restore' | 'end' = 'restore';
 const surfacePosition = { x: 20, y: 16 };
 let surfaceResizeObserver: ResizeObserver | null = null;
 let inputRegionFrame: number | null = null;
@@ -61,29 +73,111 @@ let dragState: {
 const messages: SidebarMessage[] = [{
   role: 'assistant',
   text: 'I’m ready to investigate your system. Ask me what you would like to know.',
+  state: 'complete',
 }];
+
+type SidebarDomSnap = {
+  value: string;
+  start: number;
+  end: number;
+  height: string;
+  chatScroll: number;
+  promptFocused: boolean;
+  railSection: string | null;
+};
+
+function snapshotSidebarDom(): SidebarDomSnap {
+  const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
+  const chat = document.querySelector<HTMLElement>('.chat');
+  const active = document.activeElement as HTMLElement | null;
+  return {
+    value: prompt?.value ?? '',
+    start: prompt?.selectionStart ?? 0,
+    end: prompt?.selectionEnd ?? 0,
+    height: prompt?.style.height ?? '',
+    chatScroll: chat?.scrollTop ?? 0,
+    promptFocused: active?.id === 'prompt',
+    railSection: active?.dataset.section ?? null,
+  };
+}
+
+function restoreSidebarDom(snap: SidebarDomSnap): void {
+  const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
+  const chat = document.querySelector<HTMLElement>('.chat');
+  if (prompt) {
+    prompt.value = snap.value;
+    prompt.style.height = snap.height;
+    autosizePrompt(prompt);
+    updatePromptSend(prompt);
+    if (snap.promptFocused) {
+      prompt.focus();
+      prompt.setSelectionRange(snap.start, snap.end);
+    }
+  }
+  if (snap.railSection) {
+    document.querySelector<HTMLButtonElement>(`.rail-btn[data-section="${snap.railSection}"]`)?.focus();
+  }
+  if (chat) {
+    chat.scrollTop = chatScrollMode === 'end' ? chat.scrollHeight : snap.chatScroll;
+  }
+  chatScrollMode = 'restore';
+}
+
+function bindSidebar(): void {
+  document.querySelector<HTMLFormElement>('#prompt-form')?.addEventListener('submit', submitPrompt);
+  const promptEl = document.querySelector<HTMLTextAreaElement>('#prompt');
+  promptEl?.addEventListener('pointerdown', () => {
+    void invoke('focus_sidebar');
+  });
+  promptEl?.addEventListener('input', () => {
+    autosizePrompt(promptEl);
+    updatePromptSend(promptEl);
+  });
+  promptEl?.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      promptEl.form?.requestSubmit();
+    }
+  });
+  document.querySelectorAll<HTMLButtonElement>('.rail-btn').forEach((button) => {
+    button.addEventListener('click', () => {
+      const section = button.dataset.section;
+      if (!isSectionId(section)) return;
+      activeSection = activeSection === section && section !== 'chat' ? 'chat' : section;
+      render();
+    });
+  });
+  document.querySelector<HTMLButtonElement>('[data-dismiss-inspector]')?.addEventListener('click', () => {
+    activeSection = 'chat';
+    render();
+  });
+  document.querySelectorAll<HTMLButtonElement>('[data-retry]').forEach((button) => {
+    button.addEventListener('click', () => {
+      void retryLastRequest();
+    });
+  });
+}
 
 function render(): void {
   const root = document.querySelector<HTMLDivElement>('#root');
   if (!root) return;
-   root.innerHTML = isCanvasWindow
+  const snap = isCanvasWindow ? null : snapshotSidebarDom();
+  root.innerHTML = isCanvasWindow
     ? renderCanvas()
-    : renderSidebar(messages, escapeHtml, sidebarStatus, sidebarStatusError);
+    : renderSidebar({
+        messages,
+        status: sidebarStatus,
+        statusError: sidebarStatusError,
+        section: activeSection,
+        requestInFlight,
+        flightProgress,
+        hasSurface: lastSurfacePresent,
+        graph: graphSnapshot,
+        graphError: graphSnapshotError,
+      }, escapeHtml);
   if (!isCanvasWindow) {
-    document.querySelector<HTMLFormElement>('#prompt-form')?.addEventListener('submit', submitPrompt);
-    document.querySelector<HTMLTextAreaElement>('#prompt')?.addEventListener('pointerdown', () => {
-      void invoke('focus_sidebar');
-    });
-    document.querySelectorAll<HTMLButtonElement>('.rail-btn').forEach((button) => {
-      button.addEventListener('click', () => {
-        const section = button.dataset.section;
-        if (section && section !== 'chat') {
-          console.log(`[Aios] slide-out panel: ${section}`);
-        }
-        document.querySelectorAll('.rail-btn').forEach((b) => b.classList.remove('active'));
-        button.classList.add('active');
-      });
-    });
+    bindSidebar();
+    if (snap) restoreSidebarDom(snap);
   } else {
     document.querySelectorAll<HTMLButtonElement>('[data-dock]').forEach((button) => {
       button.addEventListener('click', () => void dockPanel(button.dataset.dock as DockEdge));
@@ -123,6 +217,16 @@ async function refreshSidebarStatus(): Promise<void> {
   if (!isCanvasWindow) render();
 }
 
+async function refreshGraph(): Promise<void> {
+  try {
+    graphSnapshot = await invoke<SystemGraphSnapshot>('system_graph');
+    graphSnapshotError = null;
+  } catch (error) {
+    graphSnapshotError = String(error);
+  }
+  if (!isCanvasWindow) render();
+}
+
 function renderCanvas(): string {
   if (experimentalHtml) {
     return `<div id="surface-host" class="surface-host" style="left:${surfacePosition.x}px;top:${surfacePosition.y}px">${experimentalHtml}</div>`;
@@ -150,23 +254,118 @@ async function dockPanel(edge: DockEdge): Promise<void> {
   await currentWindow.setPosition(new PhysicalPosition(x, y));
 }
 
+function autosizePrompt(el: HTMLTextAreaElement): void {
+  el.style.height = 'auto';
+  el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+}
+
+function updatePromptSend(el: HTMLTextAreaElement): void {
+  const send = document.querySelector<HTMLButtonElement>('.prompt-send');
+  if (send) send.disabled = requestInFlight || !el.value.trim();
+}
+
 async function submitPrompt(event: SubmitEvent): Promise<void> {
   event.preventDefault();
   const input = document.querySelector<HTMLTextAreaElement>('#prompt');
   const text = input?.value.trim();
-  if (!text) return;
-  messages.push({ role: 'user', text });
+  if (!input || !text || requestInFlight) return;
+  input.value = '';
+  autosizePrompt(input);
+  updatePromptSend(input);
+  await runPrompt(text, true);
+}
+
+async function retryLastRequest(): Promise<void> {
+  if (requestInFlight) return;
+  const lastUser = [...messages].reverse().find((message) => message.role === 'user');
+  if (!lastUser) return;
+  const last = messages[messages.length - 1];
+  if (last?.state === 'failed') messages.pop();
+  await runPrompt(lastUser.text, false);
+}
+
+function visualNodeId(id: string): string {
+  if (id.startsWith('specialist:')) return id.split(':')[1] ?? id;
+  if (id.startsWith('guardian:')) return 'guardian';
+  return id;
+}
+
+function activityLabel(phase: GraphActivityEvent['phase']): string {
+  return phase === 'policycheck' ? 'Policy check' : phase ? phase[0].toUpperCase() + phase.slice(1) : 'Idle';
+}
+
+function activityDetail(phase: GraphActivityEvent['phase'], activeNodeIds: string[]): string {
+  const nodes = activeNodeIds.length ? ` · ${activeNodeIds.join(', ')}` : '';
+  switch (phase) {
+    case 'planning': return `Planner evaluating system requirements and tools${nodes}`;
+    case 'verifying': return `Verifier reviewing the plan${nodes}`;
+    case 'gathering': return `Broker gathering specialist evidence${nodes}`;
+    case 'composing': return `SurfaceComposer generating the presentation${nodes}`;
+    case 'policycheck': return `Broker consulting Guardian${nodes}`;
+    default: return 'Backend idle';
+  }
+}
+
+function applyGraphActivity(event: GraphActivityEvent): void {
+  const activeNodeIds = event.activeNodeIds.map(visualNodeId);
+  const phase = event.phase;
+  if (graphSnapshot) {
+    graphSnapshot = {
+      ...graphSnapshot,
+      phase,
+      activeNodeIds,
+      nodes: graphSnapshot.nodes.map((node) => ({
+        ...node,
+        active: activeNodeIds.includes(node.id),
+      })),
+    };
+  }
+  flightProgress = phase === 'idle'
+    ? null
+    : {
+        phase,
+        specialists: activeNodeIds.filter((id) => ['wifi', 'storage', 'network', 'drivers', 'graphics', 'memory', 'power', 'processes', 'security', 'boot', 'packages'].includes(id)),
+        label: activityLabel(phase),
+        detail: activityDetail(phase, activeNodeIds),
+        activeNodeIds,
+      };
   render();
+}
+
+async function runPrompt(text: string, pushUser: boolean): Promise<void> {
+  if (requestInFlight) return;
+  flightProgress = null;
+  requestInFlight = true;
+  if (pushUser) messages.push({ role: 'user', text, state: 'complete' });
+  chatScrollMode = 'end';
+  render();
+
   try {
     const response = await invoke<PromptResponse>('submit_prompt', { prompt: text });
-    messages.push({ role: 'assistant', text: response.answer, evidence: response.evidence });
+    const next: SidebarMessage = {
+      role: 'assistant',
+      text: response.answer,
+      evidence: response.evidence,
+      state: 'complete',
+    };
+    messages.push(next);
     surface = response.surface;
     widgets = response.widgets;
+    lastSurfacePresent = Boolean(response.surface || response.experimentalHtml);
     void refreshSidebarStatus();
+    void refreshGraph();
   } catch (error) {
-    messages.push({ role: 'assistant', text: `Backend unavailable: ${String(error)}` });
+    messages.push({
+      role: 'assistant',
+      text: `Backend unavailable: ${String(error)}`,
+      state: 'failed',
+    });
+  } finally {
+    flightProgress = null;
+    requestInFlight = false;
+    chatScrollMode = 'end';
+    render();
   }
-  render();
 }
 
 // --- Surface rendering (surface/v1) ---
@@ -346,9 +545,23 @@ if (isCanvasWindow) {
     }
     await updateInputRegion();
     await currentWindow.show();
+  }).catch((error) => {
+    console.error(`[Aios] canvas event listener failed: ${String(error)}`);
   });
 }
 
-if (!isCanvasWindow) void refreshSidebarStatus();
+if (!isCanvasWindow) {
+  void listen<GraphActivityEvent>('graph_activity', (event) => {
+    applyGraphActivity(event.payload);
+  }).catch((error) => {
+    graphSnapshotError = `Activity stream unavailable: ${String(error)}`;
+    render();
+  });
+  void refreshSidebarStatus();
+  void refreshGraph();
+  window.setInterval(() => {
+    if (!requestInFlight) void refreshGraph();
+  }, 8000);
+}
 
 render();

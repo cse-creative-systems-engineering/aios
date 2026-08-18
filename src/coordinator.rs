@@ -9,7 +9,11 @@ use crate::capability::{
 use crate::config::{AiosConfig, ConfigError, ModelConfig, ProviderConfig};
 use crate::drivers::DriversSpecialist;
 use crate::executor::StagedExecutor;
-use crate::graph::{NodeId, NodeMetadata, NodeType, ProvenanceSource, SystemGraph, TrustLevel};
+use crate::graph::{
+    EdgeId, EdgeMetadata, EdgeProvenance, EdgeType, NodeId, NodeMetadata, NodeType,
+    ProvenanceSource, SystemGraph, TrustLevel,
+};
+use crate::progress::{GraphActivity, GraphPhase, ProgressSink};
 use crate::graphics::GraphicsSpecialist;
 use crate::http::HttpBackend;
 use crate::local::LocalLlama;
@@ -32,6 +36,7 @@ use crate::tools::{ToolError, ToolRegistry, model_tool_instructions, resource_in
 use crate::verifier::Verifier;
 use crate::wifi::WifiSpecialist;
 use crate::wifi_driver::{MockDriverControl, WifiDriverResourceDriver};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc, RwLock,
@@ -69,6 +74,7 @@ pub struct Coordinator {
     security_specialist: Option<SecuritySpecialist>,
     boot_specialist: Option<BootRecoverySpecialist>,
     packages_specialist: Option<PackagesSpecialist>,
+    progress: Option<ProgressSink>,
 }
 
 pub struct ChatOutcome {
@@ -228,6 +234,7 @@ impl Coordinator {
             security_specialist: None,
             boot_specialist: None,
             packages_specialist: None,
+            progress: None,
         };
         coordinator.configure_read_only_broker();
         coordinator.ensure_control_plane_nodes();
@@ -1092,6 +1099,7 @@ impl Coordinator {
         coordinator
             .broker
             .set_executor(StagedExecutor::new(Box::new(store), Box::new(driver)));
+        coordinator.ensure_control_plane_edges();
         coordinator.record_audit("coordinator", "boot", "system", "ok");
         Ok(coordinator)
     }
@@ -1283,6 +1291,10 @@ impl Coordinator {
                 "The required specialist evidence has been gathered for this request. Do not ask for clarification about those domains. Answer using the returned evidence only.",
             ));
         }
+        self.report(
+            GraphPhase::Planning,
+            &["facade", "coordinator", "planner", "gateway"],
+        );
         let mut answer = self.planner.chat_with(messages.clone(), None)?;
 
         for turn in 0..MAX_TOOL_TURNS {
@@ -1322,6 +1334,10 @@ impl Coordinator {
                     "tool-call turn cap reached before a grounded answer".into(),
                 ));
             }
+            self.report(
+                GraphPhase::Planning,
+                &["facade", "coordinator", "planner", "gateway"],
+            );
             answer = self.planner.chat_with(messages.clone(), None)?;
         }
 
@@ -1459,6 +1475,30 @@ impl Coordinator {
             .ok_or_else(|| {
                 ToolError::Permission(format!("no session token for {operation:?} on {resource}"))
             })?;
+        let active_id = match resource.0.as_str() {
+            // Graph queries are served through the tool registry.
+            "system:graph" => "tools".to_string(),
+            other => other.to_string(),
+        };
+        let owner_id = {
+            let graph = self.graph.read().expect("graph lock");
+            graph
+                .get_owner(&NodeId(resource.0.clone()))
+                .map(|owner| owner.node_id.0)
+        };
+        let mut active_ids = vec![
+            "coordinator".to_string(),
+            "broker".to_string(),
+            "tools".to_string(),
+            active_id,
+        ];
+        if let Some(owner) = owner_id {
+            if !active_ids.contains(&owner) {
+                active_ids.push(owner);
+            }
+        }
+        let active_refs: Vec<&str> = active_ids.iter().map(String::as_str).collect();
+        self.report(GraphPhase::Gathering, &active_refs);
         let parameters = tool_parameters(operation, &call.arguments);
         let mut request = crate::protocol::ToolRequest::new(
             principal,
@@ -1597,6 +1637,9 @@ impl Coordinator {
         let mut graph = self.graph.write().expect("graph lock");
         let definitions: &[(&str, NodeType, &str)] = &[
             ("facade", NodeType::Facade, "Facade"),
+            ("coordinator", NodeType::Coordinator, "Coordinator"),
+            ("planner", NodeType::PlannerAgent, "Planner"),
+            ("verifier", NodeType::VerificationAgent, "Verifier"),
             ("broker", NodeType::Broker, "Broker"),
             ("gateway", NodeType::ModelGateway, "ModelGateway"),
             ("composer", NodeType::SurfaceComposer, "SurfaceComposer"),
@@ -1605,6 +1648,19 @@ impl Coordinator {
             ("staged", NodeType::StagedExecutor, "StagedExecutor"),
             ("audit", NodeType::AuditLog, "AuditLog"),
             ("tools", NodeType::ToolRegistry, "ToolRegistry"),
+            ("graph", NodeType::SystemGraph, "SystemGraph"),
+            ("guardian", NodeType::Guardian, "Guardian"),
+            ("wifi", NodeType::Specialist, "WiFi Specialist"),
+            ("storage", NodeType::Specialist, "Storage Specialist"),
+            ("network", NodeType::Specialist, "Network Specialist"),
+            ("drivers", NodeType::Specialist, "Drivers Specialist"),
+            ("graphics", NodeType::Specialist, "Graphics Specialist"),
+            ("memory", NodeType::Specialist, "Memory Specialist"),
+            ("power", NodeType::Specialist, "Power Specialist"),
+            ("processes", NodeType::Specialist, "Processes Specialist"),
+            ("security", NodeType::Specialist, "Security Specialist"),
+            ("boot", NodeType::Specialist, "Boot Specialist"),
+            ("packages", NodeType::Specialist, "Packages Specialist"),
         ];
         for (id, node_type, label) in definitions {
             if graph.get_node(&NodeId(id.to_string())).is_some() {
@@ -1620,9 +1676,139 @@ impl Coordinator {
                 t,
             );
             node.label = label.to_string();
-            node.health = HealthState::Healthy;
+            node.health = match node_type {
+                NodeType::Guardian | NodeType::Specialist => HealthState::Unknown,
+                _ => HealthState::Healthy,
+            };
             node.attributes.insert("package".into(), "aios.core".into());
             let _ = graph.add_node(node);
+        }
+    }
+
+    /// Declare the real control/data edges between control-plane components
+    /// so the sidebar topology reflects actual ownership and dispatch paths.
+    /// Runs after specialists are instantiated. Tolerant of partial graphs:
+    /// missing endpoints and duplicates are skipped, never invented.
+    fn ensure_control_plane_edges(&mut self) {
+        let t = now();
+        let mut graph = self.graph.write().expect("graph lock");
+        let specialist_ids: Vec<NodeId> = graph
+            .nodes()
+            .iter()
+            .filter(|(_, node)| node.node_type == NodeType::Specialist)
+            .map(|(id, _)| id.clone())
+            .collect();
+        let guardian_ids: Vec<NodeId> = graph
+            .nodes()
+            .iter()
+            .filter(|(_, node)| node.node_type == NodeType::Guardian)
+            .map(|(id, _)| id.clone())
+            .collect();
+        let link = |graph: &mut SystemGraph, from: &str, to: &NodeId, edge_type: EdgeType| {
+            let source = NodeId(from.to_string());
+            if graph.get_node(&source).is_none() || graph.get_node(to).is_none() {
+                return;
+            }
+            if graph.has_edge(&source, to, edge_type) {
+                return;
+            }
+            let edge = EdgeMetadata {
+                edge_id: EdgeId::new(),
+                edge_type,
+                source_node: source,
+                target_node: to.clone(),
+                provenance: EdgeProvenance::Declared {
+                    declared_by: PrincipalId::system("coordinator"),
+                    package: "aios.core".into(),
+                },
+                created_at: t,
+                last_observed: t,
+                expires_at: None,
+                attributes: HashMap::new(),
+            };
+            let _ = graph.add_edge(edge);
+        };
+        link(
+            &mut graph,
+            "facade",
+            &NodeId("coordinator".into()),
+            EdgeType::Owns,
+        );
+        for target in [
+            "planner",
+            "verifier",
+            "broker",
+            "gateway",
+            "staged",
+            "audit",
+            "tools",
+            "composer",
+            "graph",
+        ] {
+            link(
+                &mut graph,
+                "coordinator",
+                &NodeId(target.into()),
+                EdgeType::Controls,
+            );
+        }
+        for specialist in &specialist_ids {
+            link(&mut graph, "coordinator", specialist, EdgeType::Controls);
+            link(
+                &mut graph,
+                specialist.0.as_str(),
+                &NodeId("graph".into()),
+                EdgeType::Owns,
+            );
+            link(
+                &mut graph,
+                "broker",
+                specialist,
+                EdgeType::CommunicatesWith,
+            );
+        }
+        for guardian in &guardian_ids {
+            link(
+                &mut graph,
+                "broker",
+                guardian,
+                EdgeType::CommunicatesWith,
+            );
+        }
+        link(
+            &mut graph,
+            "gateway",
+            &NodeId("composer".into()),
+            EdgeType::CommunicatesWith,
+        );
+        link(
+            &mut graph,
+            "composer",
+            &NodeId("evidence".into()),
+            EdgeType::CommunicatesWith,
+        );
+        link(
+            &mut graph,
+            "evidence",
+            &NodeId("validator".into()),
+            EdgeType::CommunicatesWith,
+        );
+    }
+
+    /// Attach a sink that receives real activity events for the sidebar graph.
+    pub fn set_progress_reporter(&mut self, sink: ProgressSink) {
+        self.broker.set_progress_reporter(sink.clone());
+        self.progress = Some(sink);
+    }
+
+    /// Emit a real activity event. No-ops until a reporter is attached.
+    fn report(&self, phase: GraphPhase, active: &[&str]) {
+        if let Some(sink) = &self.progress {
+            sink.report(GraphActivity {
+                phase,
+                active_node_ids: active.iter().map(|s| s.to_string()).collect(),
+                timestamp_ms: crate::progress::now_ms(),
+            });
         }
     }
 
@@ -1645,6 +1831,10 @@ impl Coordinator {
                     )));
                 }
             }
+            self.report(
+                GraphPhase::Verifying,
+                &["coordinator", "verifier", "gateway"],
+            );
             let review = self.verifier.review(&plan)?;
             Ok((plan, review))
         })();

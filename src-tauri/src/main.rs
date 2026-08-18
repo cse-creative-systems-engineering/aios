@@ -1,4 +1,6 @@
 use aios::facade::Facade;
+use aios::graph::NodeType;
+use aios::progress::{GraphActivity, GraphPhase, ProgressReporter};
 use aios::surface::{Surface, SurfaceDensity, WidthClass};
 #[cfg(target_os = "linux")]
 use gdk::prelude::*;
@@ -32,7 +34,33 @@ struct AppState {
     requests: mpsc::Sender<BackendRequest>,
     status: Arc<Mutex<BackendStatus>>,
     sidebar_status: Arc<Mutex<Option<SidebarStatusResponse>>>,
+    graph_snapshot: Arc<Mutex<Option<SystemGraphSnapshot>>>,
     app: tauri::AppHandle,
+}
+
+struct TauriProgressReporter {
+    handle: tauri::AppHandle,
+}
+
+impl ProgressReporter for TauriProgressReporter {
+    fn report(&self, activity: GraphActivity) {
+        use tauri::Emitter;
+        if let Err(error) = self.handle.emit("graph_activity", activity) {
+            eprintln!("Aios graph: failed to emit activity: {error}");
+        }
+    }
+}
+
+fn emit_graph_activity(handle: &tauri::AppHandle, phase: GraphPhase, active_node_ids: &[&str]) {
+    use tauri::Emitter;
+    let activity = GraphActivity {
+        phase,
+        active_node_ids: active_node_ids.iter().map(|id| (*id).to_string()).collect(),
+        timestamp_ms: aios::progress::now_ms(),
+    };
+    if let Err(error) = handle.emit("graph_activity", activity) {
+        eprintln!("Aios graph: failed to emit activity: {error}");
+    }
 }
 
 enum BackendRequest {
@@ -104,6 +132,37 @@ struct SidebarProvider {
     retry_after: Option<u64>,
     credential_configured: bool,
     consent_scopes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SystemGraphSnapshot {
+    nodes: Vec<GraphNode>,
+    edges: Vec<GraphEdge>,
+    total_nodes: usize,
+    health_counts: Vec<(String, usize)>,
+    phase: String,
+    active_node_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GraphNode {
+    id: String,
+    label: String,
+    layer: String,
+    node_type: String,
+    health: String,
+    active: bool,
+    detail: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GraphEdge {
+    from: String,
+    to: String,
+    edge_type: String,
 }
 
 #[tauri::command]
@@ -205,6 +264,18 @@ fn sidebar_status(
         .map_err(|_| "sidebar status lock is poisoned".to_string())?
         .clone()
         .ok_or_else(|| "sidebar status is not ready".to_string())
+}
+
+#[tauri::command]
+fn system_graph(
+    state: tauri::State<'_, AppState>,
+) -> Result<SystemGraphSnapshot, String> {
+    state
+        .graph_snapshot
+        .lock()
+        .map_err(|_| "graph snapshot lock is poisoned".to_string())?
+        .clone()
+        .ok_or_else(|| "graph snapshot is not ready".to_string())
 }
 
 #[tauri::command]
@@ -329,25 +400,34 @@ fn main() {
                 let _ = window.hide();
             }
 
+            let worker_handle = app.handle().clone();
             let (requests_tx, requests_rx) = mpsc::channel();
             let status = Arc::new(Mutex::new(BackendStatus {
                 ready: false,
                 error: Some("backend is starting".to_string()),
             }));
             let sidebar_status = Arc::new(Mutex::new(None));
+            let graph_snapshot = Arc::new(Mutex::new(None));
             let worker_status = Arc::clone(&status);
             let worker_sidebar_status = Arc::clone(&sidebar_status);
+            let worker_graph_snapshot = Arc::clone(&graph_snapshot);
 
             thread::spawn(move || {
                 let mut facade = match Facade::boot() {
-                    Ok(facade) => {
+                    Ok(mut facade) => {
                         eprintln!("Aios backend: ready");
+                        facade.coordinator.set_progress_reporter(Arc::new(
+                            TauriProgressReporter {
+                                handle: worker_handle.clone(),
+                            },
+                        ));
                         let next_status = BackendStatus {
                             ready: true,
                             error: None,
                         };
                         set_status(&worker_status, next_status.clone());
                         refresh_sidebar_status(&worker_sidebar_status, &facade, next_status);
+                        refresh_graph_snapshot(&worker_graph_snapshot, &facade);
                         facade
                     }
                     Err(error) => {
@@ -391,6 +471,7 @@ fn main() {
                                 );
                                 (None, None)
                             } else {
+                                emit_graph_activity(&worker_handle, GraphPhase::Composing, &["composer"]);
                                 match facade.compose_unconstrained_html(
                                     &prompt,
                                     &evidence,
@@ -422,6 +503,7 @@ fn main() {
                     } else if answer.contains("failed:") || evidence.is_empty() {
                         (None, None)
                     } else {
+                        emit_graph_activity(&worker_handle, GraphPhase::Composing, &["composer"]);
                         match facade.compose_surface(&prompt, &answer, &evidence) {
                             Ok((surface, routing)) => {
                                 eprintln!(
@@ -470,7 +552,9 @@ fn main() {
                             &facade,
                             response.backend_status.clone(),
                         );
+                        refresh_graph_snapshot(&worker_graph_snapshot, &facade);
                     }
+                    emit_graph_activity(&worker_handle, GraphPhase::Idle, &[]);
                     let _ = response.send(result);
                 }
             });
@@ -479,6 +563,7 @@ fn main() {
                 requests: requests_tx,
                 status,
                 sidebar_status,
+                graph_snapshot,
                 app: app.handle().clone(),
             });
             Ok(())
@@ -489,7 +574,8 @@ fn main() {
             hide_canvas,
             sidebar_status,
             set_input_region,
-            submit_prompt
+            submit_prompt,
+            system_graph
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri app");
@@ -580,6 +666,329 @@ fn sidebar_status_snapshot(
             .map(|path| path.display().to_string()),
         providers,
     })
+}
+
+fn refresh_graph_snapshot(
+    target: &Arc<Mutex<Option<SystemGraphSnapshot>>>,
+    facade: &Facade,
+) {
+    let snapshot = build_graph_snapshot(facade);
+    if let Ok(mut current) = target.lock() {
+        *current = Some(snapshot);
+    }
+}
+
+fn build_graph_snapshot(facade: &Facade) -> SystemGraphSnapshot {
+    let coordinator = &facade.coordinator;
+    // Take the panel snapshot before holding the graph read guard; panel::snapshot
+    // reads the same lock internally.
+    let panel = aios::panel::snapshot(coordinator);
+    let graph = coordinator.graph.read().expect("graph lock");
+
+    let health_for_id = |id: &str| {
+        graph
+            .get_node(&aios::graph::NodeId(id.to_string()))
+            .map(|node| format!("{:?}", node.health))
+            .unwrap_or_else(|| "Unknown".into())
+    };
+
+    let mut nodes: Vec<GraphNode> = Vec::new();
+    let mut edges: Vec<GraphEdge> = Vec::new();
+
+    // Orchestration layer
+    nodes.push(GraphNode {
+        id: "facade".into(),
+        label: "Facade".into(),
+        layer: "orchestration".into(),
+        node_type: "Facade".into(),
+        health: health_for_id("facade"),
+        active: false,
+        detail: "Entry point".into(),
+    });
+    nodes.push(GraphNode {
+        id: "coordinator".into(),
+        label: "Coordinator".into(),
+        layer: "orchestration".into(),
+        node_type: "Coordinator".into(),
+        health: health_for_id("coordinator"),
+        active: false,
+        detail: format!("{} graph nodes", graph.nodes().len()),
+    });
+
+    edges.push(GraphEdge {
+        from: "facade".into(),
+        to: "coordinator".into(),
+        edge_type: "orchestrates".into(),
+    });
+
+    // Agent layer
+    let planner_nodes = graph.get_nodes_by_type(NodeType::PlannerAgent);
+    let verifier_nodes = graph.get_nodes_by_type(NodeType::VerificationAgent);
+    let guardian_nodes = graph.get_nodes_by_type(NodeType::Guardian);
+
+    let node_health = |nodes: &[aios::graph::NodeMetadata]| -> String {
+        nodes
+            .first()
+            .filter(|node| node.health != aios::protocol::HealthState::Unknown)
+            .or_else(|| nodes.iter().find(|node| node.health != aios::protocol::HealthState::Unknown))
+            .map(|n| format!("{:?}", n.health))
+            .unwrap_or_else(|| "Unknown".into())
+    };
+
+    nodes.push(GraphNode {
+        id: "planner".into(),
+        label: "Planner".into(),
+        layer: "agent".into(),
+        node_type: "PlannerAgent".into(),
+        health: node_health(&planner_nodes),
+        active: false,
+        detail: "Plan generation".into(),
+    });
+    nodes.push(GraphNode {
+        id: "verifier".into(),
+        label: "Verifier".into(),
+        layer: "agent".into(),
+        node_type: "VerificationAgent".into(),
+        health: node_health(&verifier_nodes),
+        active: false,
+        detail: "Plan review".into(),
+    });
+    nodes.push(GraphNode {
+        id: "broker".into(),
+        label: "Broker".into(),
+        layer: "agent".into(),
+        node_type: "Broker".into(),
+        health: health_for_id("broker"),
+        active: false,
+        detail: "Policy enforcement".into(),
+    });
+    nodes.push(GraphNode {
+        id: "guardian".into(),
+        label: "Guardian".into(),
+        layer: "agent".into(),
+        node_type: "Guardian".into(),
+        health: guardian_nodes
+            .first()
+            .map(|node| format!("{:?}", node.health))
+            .unwrap_or_else(|| health_for_id("guardian")),
+        active: false,
+        detail: "Invariant enforcement".into(),
+    });
+
+    for agent in &["planner", "verifier", "broker"] {
+        edges.push(GraphEdge {
+            from: "coordinator".into(),
+            to: (*agent).into(),
+            edge_type: "calls".into(),
+        });
+    }
+    edges.push(GraphEdge {
+        from: "broker".into(),
+        to: "guardian".into(),
+        edge_type: "consults".into(),
+    });
+
+    // Model gateway layer
+    let provider_nodes = graph.get_nodes_by_type(NodeType::InternetProvider);
+    let local_nodes = graph.get_nodes_by_type(NodeType::LocalModel);
+    let lan_nodes = graph.get_nodes_by_type(NodeType::LanGateway);
+
+    nodes.push(GraphNode {
+        id: "gateway".into(),
+        label: "Gateway".into(),
+        layer: "model".into(),
+        node_type: "ModelGateway".into(),
+        health: health_for_id("gateway"),
+        active: false,
+        detail: format!(
+            "{} providers",
+            provider_nodes.len() + local_nodes.len() + lan_nodes.len()
+        ),
+    });
+
+    for agent in &["planner", "verifier"] {
+        edges.push(GraphEdge {
+            from: (*agent).into(),
+            to: "gateway".into(),
+            edge_type: "calls".into(),
+        });
+    }
+
+    // Provider sub-nodes (max 3 to fit layout)
+    let mut provider_iter = provider_nodes.iter().chain(local_nodes.iter()).chain(lan_nodes.iter());
+    for (i, provider) in provider_iter.by_ref().take(3).enumerate() {
+        let pid = format!("provider:{i}");
+        nodes.push(GraphNode {
+            id: pid.clone(),
+            label: provider.label.clone(),
+            layer: "model".into(),
+            node_type: format!("{:?}", provider.node_type),
+            health: format!("{:?}", provider.health),
+            active: false,
+            detail: provider
+                .attributes
+                .get("model")
+                .cloned()
+                .unwrap_or_default(),
+        });
+        edges.push(GraphEdge {
+            from: "gateway".into(),
+            to: pid,
+            edge_type: "routes".into(),
+        });
+    }
+
+    // Specialists
+    let specialist_defs: &[(&str, &str, &str)] = &[
+        ("wifi", "WiFi", "wifi.specialist"),
+        ("storage", "Store", "storage.specialist"),
+        ("network", "Net", "network.specialist"),
+        ("drivers", "Drv", "drivers.specialist"),
+        ("graphics", "GFX", "graphics.specialist"),
+        ("memory", "Mem", "memory.specialist"),
+        ("power", "Pwr", "power.specialist"),
+        ("processes", "Proc", "processes.specialist"),
+        ("security", "Sec", "security.specialist"),
+        ("boot", "Boot", "boot.specialist"),
+        ("packages", "Pkg", "packages.specialist"),
+    ];
+
+    let specialist_nodes = graph.get_nodes_by_type(NodeType::Specialist);
+
+    for (id, label, package_id) in specialist_defs {
+        let matching = specialist_nodes.iter().find(|n| {
+            n.node_id.0.starts_with(&format!("specialist:{id}:"))
+                || n.label.contains(package_id)
+                || n.attributes.values().any(|v| v.contains(package_id))
+        });
+        let (health, detail) = if let Some(node) = matching {
+            (
+                format!("{:?}", node.health),
+                format!("{}: {:?}", package_id, node.health),
+            )
+        } else {
+            ("Unknown".into(), format!("{}: not instantiated", package_id))
+        };
+
+        nodes.push(GraphNode {
+            id: (*id).into(),
+            label: (*label).into(),
+            layer: "specialist".into(),
+            node_type: "Specialist".into(),
+            health,
+            active: false,
+            detail,
+        });
+
+        edges.push(GraphEdge {
+            from: "broker".into(),
+            to: (*id).into(),
+            edge_type: "routes".into(),
+        });
+        edges.push(GraphEdge {
+            from: (*id).into(),
+            to: "graph".into(),
+            edge_type: "owns".into(),
+        });
+    }
+
+    // Infrastructure
+    nodes.push(GraphNode {
+        id: "graph".into(),
+        label: "Graph".into(),
+        layer: "infrastructure".into(),
+        node_type: "SystemGraph".into(),
+        health: health_for_id("graph"),
+        active: false,
+        detail: format!(
+            "{} nodes, {} edges",
+            graph.nodes().len(),
+            graph.edges().len()
+        ),
+    });
+
+    // Surface pipeline
+    nodes.push(GraphNode {
+        id: "composer".into(),
+        label: "Composer".into(),
+        layer: "surface".into(),
+        node_type: "SurfaceComposer".into(),
+        health: health_for_id("composer"),
+        active: false,
+        detail: "Groundless surface generation".into(),
+    });
+
+    edges.push(GraphEdge {
+        from: "coordinator".into(),
+        to: "composer".into(),
+        edge_type: "calls".into(),
+    });
+    edges.push(GraphEdge {
+        from: "gateway".into(),
+        to: "composer".into(),
+        edge_type: "generates".into(),
+    });
+
+    for (id, label, detail) in [
+        ("staged", "Stage", "Checkpointed execution"),
+        ("audit", "Audit", "Append-only decision log"),
+        ("tools", "Tools", "Graph query registry"),
+    ] {
+        nodes.push(GraphNode {
+            id: id.into(),
+            label: label.into(),
+            layer: "infrastructure".into(),
+            node_type: id.to_string(),
+            health: health_for_id(id),
+            active: false,
+            detail: detail.into(),
+        });
+        edges.push(GraphEdge {
+            from: "coordinator".into(),
+            to: id.into(),
+            edge_type: "controls".into(),
+        });
+    }
+    for (id, label, detail) in [
+        ("evidence", "Evid", "Evidence index"),
+        ("validator", "Valid", "Surface value validation"),
+    ] {
+        nodes.push(GraphNode {
+            id: id.into(),
+            label: label.into(),
+            layer: "surface".into(),
+            node_type: id.to_string(),
+            health: health_for_id(id),
+            active: false,
+            detail: detail.into(),
+        });
+    }
+    edges.push(GraphEdge {
+        from: "composer".into(),
+        to: "evidence".into(),
+        edge_type: "indexes".into(),
+    });
+    edges.push(GraphEdge {
+        from: "evidence".into(),
+        to: "validator".into(),
+        edge_type: "validates".into(),
+    });
+
+    // Health counts from panel
+    let health_counts: Vec<(String, usize)> = panel
+        .health_counts
+        .iter()
+        .map(|(state, count)| (format!("{:?}", state), *count))
+        .collect();
+
+    SystemGraphSnapshot {
+        nodes,
+        edges,
+        total_nodes: panel.total_nodes,
+        health_counts,
+        phase: "idle".into(),
+        active_node_ids: vec![],
+    }
 }
 
 fn surface_window_size(surface: &Surface) -> (f64, f64) {

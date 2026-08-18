@@ -402,6 +402,7 @@ fn parse_node_type(needle: &str) -> Result<Option<NodeType>, ToolError> {
         "stagedexecutor" => Ok(Some(NodeType::StagedExecutor)),
         "auditlog" => Ok(Some(NodeType::AuditLog)),
         "toolregistry" => Ok(Some(NodeType::ToolRegistry)),
+        "systemgraph" | "graph" => Ok(Some(NodeType::SystemGraph)),
         other => Err(ToolError::Usage(format!(
             "unknown type '{other}' (device, service, driver, sensor, cpu, kernel, memory, bus, filesystem, firmware, package, facade, broker, gateway, composer, validator, all)"
         ))),

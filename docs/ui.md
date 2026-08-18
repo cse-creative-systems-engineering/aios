@@ -480,3 +480,28 @@ the bottom half.
 `src/facade.rs`, `src/tauri/src/main.rs`, and the frontend sidebar module. The
 generated-surface renderer, canvas geometry, and input-region handling are
 untouched.
+
+### Bespoke Graph Wiring (2026-08-18)
+
+The existing bespoke graph renderer is intentionally retained as the visual
+layer. It provides the compact topology, fixed positions, labels, health
+colors, edge treatment, and hover details that the first mermaid replacement
+did not match.
+
+Its data is now wired to the backend:
+
+- `Facade`, `Coordinator`, `Planner`, `Verifier`, `Broker`, `Gateway`,
+  `Composer`, `EvidenceIndex`, `SurfaceValidator`, `StagedExecutor`,
+  `AuditLog`, `ToolRegistry`, and `SystemGraph` are real graph nodes.
+- All eleven specialist slots and `Guardian` have stable nodes. A component
+  that is not instantiated on the machine remains a real `Unknown` node rather
+  than disappearing or being shown as healthy.
+- Snapshot health comes from the corresponding `SystemGraph` node. The
+  renderer no longer marks broker, graph, or composer healthy unconditionally.
+- The frontend listens to `graph_activity`. Planning, verifying, gathering,
+  composing, policy checks, and idle states come from backend seams; specialist
+  activity is resolved from the real resource-owner edge. `PolicyCheck` fires
+  immediately before the broker calls `Guardian::review()` for a risk level
+  that requires Guardian review.
+- The old frontend phase timers are removed. The 8-second refresh only refreshes
+  the real graph snapshot and does not invent activity.

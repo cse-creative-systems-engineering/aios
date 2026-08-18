@@ -51,6 +51,7 @@ pub enum NodeType {
     StagedExecutor,
     AuditLog,
     ToolRegistry,
+    SystemGraph,
 }
 
 impl NodeType {
@@ -93,6 +94,7 @@ impl NodeType {
             NodeType::StagedExecutor,
             NodeType::AuditLog,
             NodeType::ToolRegistry,
+            NodeType::SystemGraph,
         ]
     }
 }
