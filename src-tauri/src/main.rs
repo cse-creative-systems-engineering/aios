@@ -102,6 +102,7 @@ struct SidebarStatusResponse {
     backend_status: BackendStatus,
     connectivity: String,
     current_route: Option<SidebarRoute>,
+    chat_route: Option<SidebarRoute>,
     route_error: Option<String>,
     local_model: Option<String>,
     providers: Vec<SidebarProvider>,
@@ -601,18 +602,23 @@ fn sidebar_status_snapshot(
     backend_status: BackendStatus,
 ) -> Result<SidebarStatusResponse, String> {
     let coordinator = &facade.coordinator;
+    let to_sidebar_route = |route: aios::model::RoutingDecision| SidebarRoute {
+        provider: route.provider.to_string(),
+        model: route.model.to_string(),
+        connectivity: format!("{:?}", route.connectivity_state),
+        data_classification: format!("{:?}", route.data_classification),
+        reduced_confidence: route.reduced_confidence,
+    };
     let (current_route, route_error) = match coordinator.current_route() {
-        Ok(route) => (
-            Some(SidebarRoute {
-                provider: route.provider.to_string(),
-                model: route.model.to_string(),
-                connectivity: format!("{:?}", route.connectivity_state),
-                data_classification: format!("{:?}", route.data_classification),
-                reduced_confidence: route.reduced_confidence,
-            }),
-            None,
-        ),
+        Ok(route) => (Some(to_sidebar_route(route)), None),
         Err(error) => (None, Some(error.to_string())),
+    };
+    let chat_route = match coordinator.chat_route() {
+        Ok(route) => Some(to_sidebar_route(route)),
+        Err(error) => {
+            eprintln!("Aios sidebar: chat route unavailable: {error}");
+            None
+        }
     };
     let providers = coordinator
         .provider_entries()
@@ -660,6 +666,7 @@ fn sidebar_status_snapshot(
         backend_status,
         connectivity: format!("{:?}", coordinator.connectivity()),
         current_route,
+        chat_route,
         route_error,
         local_model: coordinator
             .local_model_path()

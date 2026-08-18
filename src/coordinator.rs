@@ -1186,6 +1186,11 @@ impl Coordinator {
         self.gateway.router().route(&task, &[])
     }
 
+    pub fn chat_route(&self) -> Result<RoutingDecision, RoutingError> {
+        let task = ModelTask::new(AgentRole::Planner, DataClassification::Public);
+        self.gateway.router().route(&task, &[])
+    }
+
     pub fn chat(&self, text: &str) -> Result<String, AgentError> {
         let result = self.planner.explain(text, self.local_context());
         match &result {

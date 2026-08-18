@@ -7,16 +7,19 @@ export type SidebarMessage = {
   state?: MessageState;
 };
 
+export type SidebarRoute = {
+  provider: string;
+  model: string;
+  connectivity: string;
+  dataClassification: string;
+  reducedConfidence: boolean;
+};
+
 export type SidebarStatus = {
   backendStatus: { ready: boolean; error: string | null };
   connectivity: string;
-  currentRoute: {
-    provider: string;
-    model: string;
-    connectivity: string;
-    dataClassification: string;
-    reducedConfidence: boolean;
-  } | null;
+  currentRoute: SidebarRoute | null;
+  chatRoute: SidebarRoute | null;
   routeError: string | null;
   localModel: string | null;
   providers: {
@@ -294,6 +297,7 @@ function renderInspector(section: SectionId, escapeHtml: (value: string) => stri
 function renderSystemFeedback(view: SidebarView, escapeHtml: (value: string) => string): string {
   const backendOk = view.status?.backendStatus.ready ?? false;
   const route = view.status?.currentRoute;
+  const chatRoute = view.status?.chatRoute;
   const connectivity = view.status?.connectivity ?? 'Unknown';
   const fault = Boolean(view.status?.backendStatus.error ?? view.status?.routeError ?? view.statusError);
   const phase = fault
@@ -326,7 +330,7 @@ function renderSystemFeedback(view: SidebarView, escapeHtml: (value: string) => 
       <span class="route-model">${escapeHtml(routeLabel)}</span>
      <span class="route-provider">${escapeHtml(routeDetail)}</span>
       ${route?.reducedConfidence ? '<span class="route-flag">reduced confidence</span>' : ''}
-      <span class="route-surface">${view.hasSurface ? 'surface active' : 'no surface'}</span>
+      ${chatRoute ? `<span class="route-model">${escapeHtml(chatRoute.model)}</span>` : ''}
     </div>
     ${renderGraph(view.graph, view.flightProgress, escapeHtml)}
     ${graphReadout(view.graph, view.flightProgress)}
