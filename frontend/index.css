@@ -83,7 +83,7 @@ html.canvas-document, html.canvas-document body { overflow: hidden; }
   flex-direction: column;
   flex: 1;
   min-width: 0;
-  padding: 0 16px 14px;
+  padding: 0 14px 14px;
   overflow: hidden;
 }
 
@@ -93,21 +93,21 @@ html.canvas-document, html.canvas-document body { overflow: hidden; }
   display: flex;
   flex-direction: column;
   align-items: center;
-  width: 56px;
-  min-width: 56px;
-  padding: 14px 0 12px;
+  width: 36px;
+  min-width: 36px;
+  padding: 12px 0 10px;
   border-right: 1px solid var(--line);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.015), transparent 40%),
     var(--bg-rail);
 }
-.rail-top { margin-bottom: 16px; }
+.rail-top { margin-bottom: 12px; }
 .rail-brand {
   display: grid;
   place-items: center;
-  width: 30px;
-  height: 30px;
-  border-radius: 9px;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
   color: #07120f;
   background: linear-gradient(145deg, var(--accent-bright), var(--accent) 55%, var(--accent-dim));
   box-shadow:
@@ -115,7 +115,7 @@ html.canvas-document, html.canvas-document body { overflow: hidden; }
     0 2px 8px rgba(16, 185, 129, 0.35),
     inset 0 1px 0 rgba(255, 255, 255, 0.35);
   font-weight: 800;
-  font-size: 15px;
+  font-size: 12px;
   letter-spacing: -0.02em;
 }
 .rail-sections {
@@ -128,19 +128,19 @@ html.canvas-document, html.canvas-document body { overflow: hidden; }
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
+  gap: 2px;
 }
 .rail-group + .rail-group {
-  margin-top: 10px;
-  padding-top: 10px;
+  margin-top: 8px;
+  padding-top: 8px;
   border-top: 1px solid var(--line-faint);
 }
 .rail-btn {
   position: relative;
   display: grid;
   place-items: center;
-  width: 38px;
-  height: 38px;
+  width: 28px;
+  height: 28px;
   padding: 0;
   border: 0;
   border-radius: var(--r-m);
@@ -151,7 +151,7 @@ html.canvas-document, html.canvas-document body { overflow: hidden; }
 .rail-btn::before {
   content: "";
   position: absolute;
-  left: -14px;
+  left: -9px;
   top: 50%;
   width: 3px;
   height: 0;
@@ -163,8 +163,8 @@ html.canvas-document, html.canvas-document body { overflow: hidden; }
 .rail-btn:hover { color: var(--ink-1); background: var(--bg-hover); }
 .rail-btn:active { transform: scale(0.94); }
 .rail-btn.active { color: var(--accent-bright); background: var(--bg-active); }
-.rail-btn.active::before { height: 18px; }
-.rail-btn svg { width: 18px; height: 18px; }
+.rail-btn.active::before { height: 14px; }
+.rail-btn svg { width: 14px; height: 14px; }
 .rail-bottom {
   display: flex;
   flex-direction: column;
@@ -311,7 +311,7 @@ html.canvas-document, html.canvas-document body { overflow: hidden; }
 .graph-layer-labels text {
   fill: var(--ink-3);
   font-family: var(--font-inst);
-  font-size: 7px;
+  font-size: 8px;
   font-weight: 650;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -327,7 +327,7 @@ html.canvas-document, html.canvas-document body { overflow: hidden; }
 .graph-node-label {
   fill: var(--ink-2);
   font-family: var(--font-inst);
-  font-size: 7.5px;
+  font-size: 8.5px;
   font-weight: 600;
   letter-spacing: 0.04em;
   pointer-events: none;

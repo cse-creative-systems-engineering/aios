@@ -83,17 +83,17 @@ export type SidebarView = {
 };
 
 const GRAPH_LAYER_Y: Record<string, number> = {
-  orchestration: 16,
-  agent: 52,
-  model: 92,
-  specialist: 140,
-  infrastructure: 210,
-  surface: 248,
+  orchestration: 22,
+  agent: 72,
+  model: 122,
+  specialist: 172,
+  infrastructure: 232,
+  surface: 278,
 };
-const GRAPH_W = 340;
-const GRAPH_H = 270;
-const NODE_W = 46;
-const NODE_H = 18;
+const GRAPH_W = 420;
+const GRAPH_H = 310;
+const NODE_W = 56;
+const NODE_H = 22;
 
 const RAIL_ICONS: Record<SectionId, string> = {
   chat: `<svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2 13V4a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H6l-3 3z"/><path d="M5 6h8M5 9h5"/></svg>`,
@@ -160,7 +160,7 @@ function layoutGraphNodes(nodes: GraphNode[]): Map<string, { x: number; y: numbe
   specNodes.forEach((n, i) => { (i < 6 ? specialistRow1 : specialistRow2).push(n); });
 
   const layoutRow = (rowNodes: GraphNode[], y: number) => {
-    const gap = 6;
+    const gap = 8;
     const totalW = rowNodes.length * NODE_W + (rowNodes.length - 1) * gap;
     const startX = (GRAPH_W - totalW) / 2;
     rowNodes.forEach((n, i) => {
@@ -174,7 +174,7 @@ function layoutGraphNodes(nodes: GraphNode[]): Map<string, { x: number; y: numbe
     layoutRow(layerNodes, y);
   }
   if (specialistRow1.length) layoutRow(specialistRow1, GRAPH_LAYER_Y.specialist);
-  if (specialistRow2.length) layoutRow(specialistRow2, GRAPH_LAYER_Y.specialist + 28);
+  if (specialistRow2.length) layoutRow(specialistRow2, GRAPH_LAYER_Y.specialist + 34);
   return positions;
 }
 
@@ -228,25 +228,10 @@ function renderGraph(graph: SystemGraphSnapshot | null, flight: FlightProgress |
     </g>`;
   }).filter(Boolean);
 
-  const layerLabels = [
-    { id: 'orchestration', label: 'ORCH' },
-    { id: 'agent', label: 'AGENT' },
-    { id: 'model', label: 'MODEL' },
-    { id: 'specialist', label: 'SPEC' },
-    { id: 'infrastructure', label: 'INFRA' },
-    { id: 'surface', label: 'SURFACE' },
-  ].filter((l) => graph.nodes.some((n) => n.layer === l.id));
-
-  const labelEls = layerLabels.map((l) => {
-    const y = GRAPH_LAYER_Y[l.id] ?? 140;
-    return `<text class="graph-layer-label" x="4" y="${y + 1}">${l.label}</text>`;
-  });
-
   const phaseClass = isFlight ? ' graph-active' : '';
 
   return `<svg class="system-graph${phaseClass}" viewBox="0 0 ${GRAPH_W} ${GRAPH_H}" role="group" aria-label="Aios system topology">
     <g class="graph-edges" aria-hidden="true">${edgeEls.join('')}</g>
-    <g class="graph-layer-labels">${labelEls.join('')}</g>
     <g class="graph-nodes">${nodeEls.join('')}</g>
   </svg>`;
 }

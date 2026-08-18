@@ -364,7 +364,7 @@ fn main() {
             if let Some(window) = app.get_webview_window("canvas") {
                 if let Ok(Some(monitor)) = window.primary_monitor() {
                     let work_area = monitor.work_area();
-                    let sidebar_right = monitor.position().x.saturating_add(420);
+                    let sidebar_right = monitor.position().x.saturating_add(476);
                     let canvas_x = work_area.position.x.max(sidebar_right);
                     let work_area_right = work_area
                         .position
@@ -1100,8 +1100,8 @@ fn configure_x11_dock(window: &tauri::WebviewWindow) {
     let (work_x, work_y, work_width, work_height) =
         x11_work_area(&connection, screen_number, geometry);
 
-    gtk_window.set_default_size(420, work_height as i32);
-    gtk_window.resize(420, work_height as i32);
+    gtk_window.set_default_size(476, work_height as i32);
+    gtk_window.resize(476, work_height as i32);
     if let Err(error) = window.set_position(Position::Logical(LogicalPosition {
         x: geometry.x() as f64,
         y: work_y as f64,
@@ -1153,7 +1153,7 @@ fn configure_x11_dock(window: &tauri::WebviewWindow) {
     let height = work_height.max(1);
     let start_y = work_y.max(0) as u32;
     let end_y = start_y.saturating_add(height).saturating_sub(1);
-    let strut = [420_u32, 0, 0, 0, start_y, end_y, 0, 0, 0, 0, 0, 0];
+    let strut = [476_u32, 0, 0, 0, start_y, end_y, 0, 0, 0, 0, 0, 0];
 
     let _ = connection.change_property32(
         PropMode::REPLACE,
@@ -1174,7 +1174,7 @@ fn configure_x11_dock(window: &tauri::WebviewWindow) {
         xid,
         strut_legacy_atom.atom,
         cardinal_atom.atom,
-        &[420_u32, 0, 0, 0],
+        &[476_u32, 0, 0, 0],
     );
     let _ = connection.flush();
     eprintln!(
@@ -1272,10 +1272,10 @@ fn configure_sidebar_layer_shell(window: &tauri::WebviewWindow) -> bool {
     gtk_window.set_anchor(Edge::Left, true);
     gtk_window.set_anchor(Edge::Top, true);
     gtk_window.set_anchor(Edge::Bottom, true);
-    gtk_window.set_exclusive_zone(420);
+    gtk_window.set_exclusive_zone(476);
     // With top and bottom anchors, GTK Layer Shell assigns the height. The
     // width request is the only dimension the sidebar needs to own.
-    gtk_window.set_size_request(420, -1);
+    gtk_window.set_size_request(476, -1);
     if !gtk_window.is_layer_window() {
         eprintln!("Aios sidebar: Layer Shell setup did not create a layer surface");
         return false;

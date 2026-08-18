@@ -113,9 +113,9 @@ The original sidebar direction was a single-column layout with a status rail,
 chat, and prompt form. During design discussion we changed direction for three
 reasons:
 
-1. **Screen space is precious.** The sidebar is 420px. A single-column layout
+1. **Screen space is precious.** The sidebar is 476px. A single-column layout
    wastes width on navigation and status that could serve the chat or system
-   feedback. An icon rail at 56px gives permanent navigation without consuming
+   feedback. An icon rail at 36px gives permanent navigation without consuming
    width.
 
 2. **Chat must always be visible.** The original design treated chat as one
@@ -136,7 +136,7 @@ The new layout uses a three-zone sidebar plus a slide-out panel:
 ```
 ┌─────────┬──────────────────────────┐
 │  Rail   │  System Feedback Block   │
-│  56px   │  (reserved per system)   │
+│  36px   │  (reserved per system)   │
 │         │  ──────────────────────  │
 │         │  Chat Interface          │
 │         │  (messages + composer)   │
@@ -148,7 +148,7 @@ The new layout uses a three-zone sidebar plus a slide-out panel:
                                     └──────────────┘
 ```
 
-**Icon rail** (56px, always visible): permanent navigation skeleton with
+**Icon rail** (36px, always visible): permanent navigation skeleton with
 grouped section icons (Chat, Providers, Roles, Surfaces, Audit, Settings).
 The rail never hides. The rail is purely navigational; all system feedback
 lives in the live system graph above chat.
@@ -168,7 +168,7 @@ current phase, active route, provider health, and surface status.
 sidebar, directly below the system feedback block. Messages, composer,
 evidence. The primary control interface. Never replaced by another view.
 
-**Slide-out panel** (right edge, separate Tauri window): appears at x=420,
+**Slide-out panel** (right edge, separate Tauri window): appears at x=476,
 same z-level as sidebar (always on top). Shows detailed admin views for
 Providers, Roles, Surfaces, Audit, Settings. Overlays the canvas. Nothing
 shifts. Click icon again or click outside to close.
@@ -178,7 +178,7 @@ Design principles:
   right design is the one that serves Aios, regardless of complexity.
 - The UI must convey that Aios is a deep system, not a generic chatbot.
 - Chat is always visible. It is never replaced by another view.
-- Screen space is precious. The rail is fixed at 56px. The system feedback
+- Screen space is precious. The rail is fixed at 36px. The system feedback
    block owns the top half of the sidebar for visualization, system feedback,
    and controls; the chat interface owns the bottom half. The slide-out panel
    appears on demand.
@@ -238,8 +238,8 @@ The backend contains these confirmed runtime components:
 
 #### Graph Layout
 
-The graph occupies the system feedback block (364px wide, between the
-56px rail and the right edge; the block spans the top half of the sidebar
+The graph occupies the system feedback block (440px wide, between the
+36px rail and the right edge; the block spans the top half of the sidebar
 height). Nodes are arranged in layers matching the architecture:
 
 ```
