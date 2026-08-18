@@ -147,16 +147,18 @@ The new layout uses a three-zone sidebar plus a slide-out panel:
 ```
 
 **Icon rail** (56px, always visible): permanent navigation skeleton with
-grouped section icons (Chat, Providers, Roles, Surfaces, Audit, Settings)
-and feedback indicator dots (backend readiness, connectivity, specialist
-activity, pending alerts). The rail never hides.
+grouped section icons (Chat, Providers, Roles, Surfaces, Audit, Settings).
+The rail never hides. The rail is purely navigational; all system feedback
+lives in the live system graph above chat.
 
-**System feedback block** (above chat): substantial area showing Aios's
-full system state. Every system, sub-system, specialist, and model has
-reserved real estate. The user sees Aios working while waiting for a
-response. Expands when active, contracts when idle. Displays: Planner
-status, Broker state, Specialist activity, Model assignments, Surface
-lifecycle, System readiness.
+**System feedback block** (above chat): a live, animated SVG graph
+visualization of the Aios runtime topology. Every node represents a real
+runtime component (see Live System Graph section below). The graph shows
+Planner, Verifier, Broker, Guardian, ModelGateway, all 11 specialists,
+SystemGraph, and the surface pipeline. Nodes pulse when active, edges glow
+when data flows, health states shift in real time. Expands when active,
+contracts when idle. Below the graph, a compact text readout shows the
+current phase, active route, provider health, and surface status.
 
 **Chat interface** (always visible): sits below the system feedback block.
 Messages, composer, evidence. The primary control interface. Never replaced
@@ -175,6 +177,142 @@ Design principles:
 - Screen space is precious. The rail is fixed. The system feedback block
   takes what it needs. The chat fills remaining space. The slide-out panel
   appears on demand.
+
+### Live System Graph (2026-08-17)
+
+The system feedback block is a live, animated SVG graph visualization of
+the Aios runtime topology. It is not a decorative diagram. Every node
+represents a real runtime component confirmed in the source. The graph
+comes alive as the system runs: nodes pulse when active, edges glow when
+data flows, health states shift in real time.
+
+#### Runtime Topology (from code)
+
+The backend contains these confirmed runtime components:
+
+**Orchestration layer:**
+- Facade (`src/facade.rs`) — top-level entry, owns Coordinator
+- Coordinator (`src/coordinator.rs`) — central hub, owns all subsystems
+
+**Agent layer:**
+- Planner (`src/planner.rs`) — generates plans via ModelGateway
+- Verifier (`src/verifier.rs`) — reviews plans via ModelGateway
+- Broker (`src/broker.rs`) — policy enforcement + async specialist message bus
+- Guardian (`src/guardian.rs`) — invariant enforcement, invoked at risk >= 3
+
+**Model gateway:**
+- ModelGateway (`src/model.rs`) → ModelRouter → ModelRegistry
+- Backends: HttpBackend (OpenAI-compatible) + LocalLlama (gguf)
+- Connectivity states: Offline / LanOnly / Internet
+- Provider tiers: Local / Lan / Internet
+
+**11 domain specialists** (Option<T> on Coordinator, None if no matching resources):
+- WifiSpecialist (`src/wifi.rs`) — owns wireless devices
+- StorageSpecialist (`src/storage.rs`) — owns block devices + filesystems
+- NetworkSpecialist (`src/network.rs`) — owns wired interfaces + bluetooth
+- DriversSpecialist (`src/drivers.rs`) — owns unclaimed PCI/USB + firmware + modules
+- GraphicsSpecialist (`src/graphics.rs`) — owns GPUs + displays + sessions
+- MemorySpecialist (`src/memory.rs`) — owns memory nodes + ECC sensors
+- PowerSpecialist (`src/power.rs`) — owns thermal + power sensors
+- ProcessesSpecialist (`src/processes.rs`) — owns process nodes
+- SecuritySpecialist (`src/security.rs`) — owns Guardian/Capability/Policy nodes
+- BootRecoverySpecialist (`src/boot.rs`) — owns boot images + snapshots + watchdogs
+- PackagesSpecialist (`src/packages.rs`) — owns package nodes
+
+**Infrastructure:**
+- SystemGraph (`src/graph.rs`) — 27 node types, 8 edge types, health on every node
+- SysfsDiscovery + ServiceDiscovery — scans /sys, /proc, systemctl
+- AuditLog (`src/audit.rs`) — SHA-256 chained append-only log
+- StagedExecutor (`src/executor.rs`) — checkpoint → stage → health → commit/rollback
+- ToolRegistry (`src/tools.rs`) — 6 cross-cutting graph query tools
+
+**Surface pipeline:**
+- SurfaceComposer (`src/surface/composer.rs`) — model call producing typed Surface JSON
+- EvidenceIndex (`src/surface/evidence.rs`) — value-presence verification
+- SurfaceValidator (`src/surface/validator.rs`) — value fidelity check
+
+#### Graph Layout
+
+The graph occupies the system feedback block (364px wide, between the
+56px rail and the right edge). Nodes are arranged in layers matching
+the architecture:
+
+```
+┌──────────────────────────────────────────────┐
+│  Orchestration  [Facade] ─── [Coordinator]   │
+│                    │                          │
+│  Agents    [Planner] [Verifier] [Broker]      │
+│                       │            │          │
+│  Control       [Guardian]  [StagedExecutor]   │
+│                    │                          │
+│  Gateway       [ModelGateway]                 │
+│              [Http] [Local] [Providers]       │
+│                    │                          │
+│  Specialists  [wifi][storage][network]        │
+│               [drivers][graphics][memory]     │
+│               [power][processes][security]    │
+│               [boot][packages]                │
+│                    │                          │
+│  Infrastructure  [SystemGraph]                │
+│               [AuditLog][ToolRegistry]        │
+│                    │                          │
+│  Surface       [Composer] → [Validator]       │
+└──────────────────────────────────────────────┘
+```
+
+Edges connect layers: Facade→Coordinator→Planner/Verifier→Gateway→
+Specialists→SystemGraph. The Broker fans out to all specialists.
+
+#### Visual Language
+
+**Health states** (from `src/protocol.rs`):
+- Healthy — node color: muted green glow
+- Degraded — amber pulse
+- Unhealthy — red pulse, more urgent
+- Unknown — gray, dim
+- Stale — yellow, faded
+
+**Active state:** When a request is in flight, the nodes involved in the
+current phase pulse with a breathing animation. The phase is visible:
+- Idle: no animation, static graph
+- Planning: Planner node pulses, edge to Gateway glows
+- Verifying: Verifier node pulses
+- Gathering: active specialist(s) pulse, edges to SystemGraph glow
+- Composing: Composer node pulses
+- Policy check: Broker node pulses
+
+**Node shape:** Small rounded rectangles with a 2-3 letter label. The
+label is the component name (e.g. "Pln" for Planner, "Brok" for Broker,
+"WiFi" for WifiSpecialist). On hover, a tooltip shows the full name,
+health, and current detail.
+
+**Edge style:** Thin lines connecting nodes. When data flows along an
+edge, the line animates with a subtle directional pulse.
+
+#### Text Readout
+
+Below the graph, a compact text readout shows the most important system
+details that don't fit in the graph:
+- Current phase (idle/planning/verifying/gathering/composing)
+- Active route (provider / model)
+- Provider health summary
+- Total graph nodes and health distribution
+- Surface status (present/none)
+
+#### Data Source
+
+The graph is driven by a `system_graph` IPC command that returns a
+frontend-friendly projection of the backend's `SystemGraph` plus
+`PanelSnapshot`. The backend already computes all necessary data. The
+IPC command exposes:
+- All graph nodes with type, label, health, and layer
+- All edges with type and direction
+- Current phase (inferred from request state)
+- Active node IDs (which nodes are involved in the current request)
+- Aggregated health counts and subsystem rollups
+
+The graph data refreshes after each prompt completion and can be polled
+periodically during idle state.
 
 ## Provider and Model Administration
 
@@ -286,3 +424,48 @@ be presented as a working dock.
 - Do not add silent widget or surface fallbacks during development.
 - Report IPC, native-window, and generation errors at their boundary.
 - Keep all mutating actions on the existing broker and approval path.
+
+### Live System Graph — Implementation Decisions (2026-08-17)
+
+This section records binding design decisions made while implementing the
+system feedback block. It overrides the softer wording above where they differ.
+Full restart context: `docs/grounding/project_grounding_2026-08-17_18-05-00.md`.
+
+**The "animated SVG graph" described earlier is implemented as a mermaid
+diagram driven by real backend events.** The prior agent misread "mermaid" as
+"homemade SVG" and built a decorative renderer with hardcoded `"Healthy"`
+health (broker, graph, composer) and a fake frontend timer for activity. That
+is being replaced entirely — no trickery.
+
+**Core decision: every `ui.md` component is a real `SystemGraph` node.**
+The earlier "Options A/B" framing (derived state vs. only-real-nodes) was
+rejected. Instead, `src/graph.rs` `NodeType` is extended with real variants for
+the control plane: `Facade`, `Broker`, `ModelGateway`, `SurfaceComposer`,
+`EvidenceIndex`, `SurfaceValidator`, `StagedExecutor`, `AuditLog`,
+`ToolRegistry`. Each gets real health from a named backend signal; a missing
+signal renders `Unknown`, never a silent green.
+
+**Activity is real and event-driven.** A `graph_activity` Tauri event carries
+`phase` + `active_node_ids`. It is emitted from genuine seams: `Planning`
+before each planner call (`coordinator.rs:1285`/`:1324`), `Verifying` in
+`plan_and_review` (`:1609`), `Gathering` in `run_tool_as` (`:1361`, active node
+derived from the tool's resource), `Composing` in the worker before each
+surface compose (`main.rs:443`/`:474`), `PolicyCheck` when the broker consults
+Guardian, and `Idle` when a request settles. The fake `flightProgress` timer
+(`main.ts:333`) and the 8s `refreshGraph` poll (`main.ts:216`/`:576`) are
+deleted.
+
+**A node that is expected to fire in a phase but does not is treated as a
+possible bug, not hidden.** This diagnostic property is intentional.
+
+**Renderer choice:** mermaid (user's explicit request). The frontend
+`GraphState` is decoupled from the renderer so it can later be swapped for a
+custom SVG without touching the backend event/data plumbing.
+
+**Activity latch:** v1 lights a node only while it is genuinely active. Keeping
+a node lit after activation is deferred to a later discussion.
+
+**Firewall:** changes are confined to `src/graph.rs`, `src/coordinator.rs`,
+`src/facade.rs`, `src/tauri/src/main.rs`, and the frontend sidebar module. The
+generated-surface renderer, canvas geometry, and input-region handling are
+untouched.
