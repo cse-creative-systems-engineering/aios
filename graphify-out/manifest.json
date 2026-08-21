@@ -1,9 +1,9 @@
 {
   ".opencode/opencode.json": {
-    "mtime": 1787343496.1090932,
-    "seen": 1787344438.5728114,
-    "ast_hash": "abcc8b9dcd80bca5f9dde6d9f0c3ae79",
-    "semantic_hash": "abcc8b9dcd80bca5f9dde6d9f0c3ae79"
+    "mtime": 1787344707.470573,
+    "seen": 1787344802.8910906,
+    "ast_hash": "a77780b6d468c52874b175e91eebae0b",
+    "semantic_hash": ""
   },
   ".opencode/plugins/graphify.js": {
     "mtime": 1787343496.1090462,
@@ -748,5 +748,215 @@
     "seen": 1787344438.5729542,
     "ast_hash": "6239a961898c347be8247856bb21dc64",
     "semantic_hash": "6239a961898c347be8247856bb21dc64"
+  },
+  ".github/ISSUE_TEMPLATE/bug_report.yml": {
+    "mtime": 1786331867.6344416,
+    "seen": 1787344642.394254,
+    "ast_hash": "a346ca4ccbb1cfd80cae74825cf88bca",
+    "semantic_hash": ""
+  },
+  ".github/ISSUE_TEMPLATE/config.yml": {
+    "mtime": 1786331892.728965,
+    "seen": 1787344642.394256,
+    "ast_hash": "9a3d7579ad6125121959b3c2246971d0",
+    "semantic_hash": ""
+  },
+  ".github/ISSUE_TEMPLATE/feature_request.yml": {
+    "mtime": 1786331883.447936,
+    "seen": 1787344642.3942573,
+    "ast_hash": "331e14da0f05d707def1c3423fa5f103",
+    "semantic_hash": ""
+  },
+  ".github/workflows/ci.yml": {
+    "mtime": 1786331833.45778,
+    "seen": 1787344642.3942585,
+    "ast_hash": "203b9b3f6315d22e4cac811bc07fba13",
+    "semantic_hash": ""
+  },
+  "AGENTS.md": {
+    "mtime": 1787343496.1088717,
+    "seen": 1787344642.3942595,
+    "ast_hash": "3746b3d747f13e20466f1561c53ea99f",
+    "semantic_hash": ""
+  },
+  "CONTRIBUTING.md": {
+    "mtime": 1787000508.6338923,
+    "seen": 1787344642.3942602,
+    "ast_hash": "f6791050114c530aa67ae6f08a5b65cd",
+    "semantic_hash": ""
+  },
+  "PROJECT_GROUNDING.md": {
+    "mtime": 1787343067.7205079,
+    "seen": 1787344642.394261,
+    "ast_hash": "763fe400d8a4af9cd6aa5bc711aefe33",
+    "semantic_hash": ""
+  },
+  "README.md": {
+    "mtime": 1787003242.9832811,
+    "seen": 1787344642.3942623,
+    "ast_hash": "f34ccf7821d98938412360a4e7e853a4",
+    "semantic_hash": ""
+  },
+  "SECURITY.md": {
+    "mtime": 1786331856.7028525,
+    "seen": 1787344642.394263,
+    "ast_hash": "ac8f694ccd9d452a28be27e48fb4936b",
+    "semantic_hash": ""
+  },
+  "docs/README.md": {
+    "mtime": 1787003211.1351497,
+    "seen": 1787344642.3942637,
+    "ast_hash": "f9853c51c8483ebef386c1d471cfea8a",
+    "semantic_hash": ""
+  },
+  "docs/action-state-machine.md": {
+    "mtime": 1786330270.7011752,
+    "seen": 1787344642.3942645,
+    "ast_hash": "539f75f53d6750b5e5a153f6f3881611",
+    "semantic_hash": ""
+  },
+  "docs/agent-packages.md": {
+    "mtime": 1786401120.8973236,
+    "seen": 1787344642.3942654,
+    "ast_hash": "7d76dd440edbc98846757a5ffe63a5b6",
+    "semantic_hash": ""
+  },
+  "docs/architecture.md": {
+    "mtime": 1786575995.1651542,
+    "seen": 1787344642.3942661,
+    "ast_hash": "03faa6c2ce33405187d5be2c54cd53b4",
+    "semantic_hash": ""
+  },
+  "docs/capability-model.md": {
+    "mtime": 1786401147.733151,
+    "seen": 1787344642.3942754,
+    "ast_hash": "929255d060dd9539dd3312bbca00e874",
+    "semantic_hash": ""
+  },
+  "docs/doc-progress.md": {
+    "mtime": 1787001739.9200466,
+    "seen": 1787344642.3942833,
+    "ast_hash": "b7e86830220521af7936d33b7d99270c",
+    "semantic_hash": ""
+  },
+  "docs/glossary.md": {
+    "mtime": 1786401120.8958876,
+    "seen": 1787344642.3942842,
+    "ast_hash": "980b830c0027c65401a379c76182c3ae",
+    "semantic_hash": ""
+  },
+  "docs/grounding/project_grounding_2026-08-18_00-33-45.md": {
+    "mtime": 1787343067.7206569,
+    "seen": 1787344642.3942873,
+    "ast_hash": "2aef9e4cf2ffbcca252e95ae55998f36",
+    "semantic_hash": ""
+  },
+  "docs/human-interaction.md": {
+    "mtime": 1786401120.8858876,
+    "seen": 1787344642.394288,
+    "ast_hash": "18042a61b5f8aab6f02c6a3b3a19d1a4",
+    "semantic_hash": ""
+  },
+  "docs/modules/drivers.md": {
+    "mtime": 1786576374.4898605,
+    "seen": 1787344642.394299,
+    "ast_hash": "23ad17ad46c28a715625ff9c5790faf8",
+    "semantic_hash": ""
+  },
+  "docs/modules/files-data.md": {
+    "mtime": 1786575995.1651542,
+    "seen": 1787344642.3943,
+    "ast_hash": "115a76ec5af0def25f75d340bf105053",
+    "semantic_hash": ""
+  },
+  "docs/modules/filesystem.md": {
+    "mtime": 1786575995.1651542,
+    "seen": 1787344642.394301,
+    "ast_hash": "7a2d85a1a85d9deeb7f123fc0d051653",
+    "semantic_hash": ""
+  },
+  "docs/modules/gpu.md": {
+    "mtime": 1786575995.1651542,
+    "seen": 1787344642.3943014,
+    "ast_hash": "cf5778081ec5cf2a5dda4dc52e4cd280",
+    "semantic_hash": ""
+  },
+  "docs/modules/graphics.md": {
+    "mtime": 1786575995.1651542,
+    "seen": 1787344642.3943021,
+    "ast_hash": "b9031ba313d7fe29538a2a90da2b3d72",
+    "semantic_hash": ""
+  },
+  "docs/modules/memory.md": {
+    "mtime": 1787000508.6368923,
+    "seen": 1787344642.394303,
+    "ast_hash": "73f633090c096ebb71363a3d7fc29084",
+    "semantic_hash": ""
+  },
+  "docs/modules/network.md": {
+    "mtime": 1786575995.1651542,
+    "seen": 1787344642.3943038,
+    "ast_hash": "a8710d99a60308f91f18c2a83d02c7df",
+    "semantic_hash": ""
+  },
+  "docs/modules/packages.md": {
+    "mtime": 1786575995.1651542,
+    "seen": 1787344642.3943045,
+    "ast_hash": "90189a8a2913186587ed2729cb47f090",
+    "semantic_hash": ""
+  },
+  "docs/modules/power-thermal.md": {
+    "mtime": 1786575995.1651542,
+    "seen": 1787344642.3943052,
+    "ast_hash": "d6fbfc0f0cd12964a85eaca569d6d7b2",
+    "semantic_hash": ""
+  },
+  "docs/modules/processes.md": {
+    "mtime": 1786575995.1651542,
+    "seen": 1787344642.3943057,
+    "ast_hash": "5a8fd12d7f1f2c904747b9f7cba1c6aa",
+    "semantic_hash": ""
+  },
+  "docs/modules/security.md": {
+    "mtime": 1786575995.1651542,
+    "seen": 1787344642.3943067,
+    "ast_hash": "98184c7fc3445b4a35a202c32414aa81",
+    "semantic_hash": ""
+  },
+  "docs/modules/session.md": {
+    "mtime": 1786575995.1651542,
+    "seen": 1787344642.3943074,
+    "ast_hash": "cd96198fe91e7edf25080d02d982c902",
+    "semantic_hash": ""
+  },
+  "docs/modules/storage.md": {
+    "mtime": 1787000508.6368923,
+    "seen": 1787344642.394308,
+    "ast_hash": "0befbd0cb60b57dde9d5cb1b390b4e93",
+    "semantic_hash": ""
+  },
+  "docs/modules/wifi.md": {
+    "mtime": 1786575995.1651542,
+    "seen": 1787344642.3943088,
+    "ast_hash": "04d3fb80583d50e5603b5aa381c88dc0",
+    "semantic_hash": ""
+  },
+  "docs/modules/wired-lan.md": {
+    "mtime": 1786575995.1651542,
+    "seen": 1787344642.3943093,
+    "ast_hash": "2540a56cd82290bcd4a12fc58b591133",
+    "semantic_hash": ""
+  },
+  "docs/testing-strategy.md": {
+    "mtime": 1786330251.5141213,
+    "seen": 1787344642.3943164,
+    "ast_hash": "4c0b2d50bc4114e8083e808304c4b204",
+    "semantic_hash": ""
+  },
+  "frontend/index.html": {
+    "mtime": 1786672295.1888,
+    "seen": 1787344642.3943183,
+    "ast_hash": "fa12fe33d5228eedda6e8c09db37d7bc",
+    "semantic_hash": ""
   }
 }
