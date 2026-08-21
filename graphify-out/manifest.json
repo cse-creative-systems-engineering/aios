@@ -1,9 +1,9 @@
 {
   ".opencode/opencode.json": {
-    "mtime": 1787345046.9197333,
-    "seen": 1787345054.2560225,
-    "ast_hash": "17b241bb449042cf0706916dea8dc43f",
-    "semantic_hash": ""
+    "mtime": 1787347044.389005,
+    "seen": 1787347547.6984591,
+    "ast_hash": "1e0e50a95129efa869fc3712f7a7a9d7",
+    "semantic_hash": "1e0e50a95129efa869fc3712f7a7a9d7"
   },
   ".opencode/plugins/graphify.js": {
     "mtime": 1787343496.1090462,
@@ -786,15 +786,15 @@
     "semantic_hash": ""
   },
   "PROJECT_GROUNDING.md": {
-    "mtime": 1787343067.7205079,
-    "seen": 1787344642.394261,
-    "ast_hash": "763fe400d8a4af9cd6aa5bc711aefe33",
+    "mtime": 1787347337.6223676,
+    "seen": 1787347346.5092003,
+    "ast_hash": "f5f0a4bc0256c03322f1a82062662182",
     "semantic_hash": ""
   },
   "README.md": {
-    "mtime": 1787003242.9832811,
-    "seen": 1787344642.3942623,
-    "ast_hash": "f34ccf7821d98938412360a4e7e853a4",
+    "mtime": 1787346874.7602167,
+    "seen": 1787346882.845158,
+    "ast_hash": "e342a71c77281d055431a4f05a5aed29",
     "semantic_hash": ""
   },
   "SECURITY.md": {
@@ -811,27 +811,27 @@
   },
   "docs/action-state-machine.md": {
     "mtime": 1786330270.7011752,
-    "seen": 1787344642.3942645,
+    "seen": 1787347547.6996982,
     "ast_hash": "539f75f53d6750b5e5a153f6f3881611",
-    "semantic_hash": ""
+    "semantic_hash": "539f75f53d6750b5e5a153f6f3881611"
   },
   "docs/agent-packages.md": {
     "mtime": 1786401120.8973236,
-    "seen": 1787344642.3942654,
+    "seen": 1787347547.6997008,
     "ast_hash": "7d76dd440edbc98846757a5ffe63a5b6",
-    "semantic_hash": ""
+    "semantic_hash": "7d76dd440edbc98846757a5ffe63a5b6"
   },
   "docs/architecture.md": {
     "mtime": 1786575995.1651542,
-    "seen": 1787344642.3942661,
+    "seen": 1787347547.6997018,
     "ast_hash": "03faa6c2ce33405187d5be2c54cd53b4",
-    "semantic_hash": ""
+    "semantic_hash": "03faa6c2ce33405187d5be2c54cd53b4"
   },
   "docs/capability-model.md": {
     "mtime": 1786401147.733151,
-    "seen": 1787344642.3942754,
+    "seen": 1787347547.6997023,
     "ast_hash": "929255d060dd9539dd3312bbca00e874",
-    "semantic_hash": ""
+    "semantic_hash": "929255d060dd9539dd3312bbca00e874"
   },
   "docs/doc-progress.md": {
     "mtime": 1787001739.9200466,
@@ -847,134 +847,140 @@
   },
   "docs/grounding/project_grounding_2026-08-18_00-33-45.md": {
     "mtime": 1787343067.7206569,
-    "seen": 1787344642.3942873,
+    "seen": 1787347547.6997042,
     "ast_hash": "2aef9e4cf2ffbcca252e95ae55998f36",
-    "semantic_hash": ""
+    "semantic_hash": "2aef9e4cf2ffbcca252e95ae55998f36"
   },
   "docs/human-interaction.md": {
     "mtime": 1786401120.8858876,
-    "seen": 1787344642.394288,
+    "seen": 1787347547.6997085,
     "ast_hash": "18042a61b5f8aab6f02c6a3b3a19d1a4",
-    "semantic_hash": ""
+    "semantic_hash": "18042a61b5f8aab6f02c6a3b3a19d1a4"
   },
   "docs/modules/drivers.md": {
     "mtime": 1786576374.4898605,
-    "seen": 1787344642.394299,
+    "seen": 1787347547.699709,
     "ast_hash": "23ad17ad46c28a715625ff9c5790faf8",
-    "semantic_hash": ""
+    "semantic_hash": "23ad17ad46c28a715625ff9c5790faf8"
   },
   "docs/modules/files-data.md": {
     "mtime": 1786575995.1651542,
-    "seen": 1787344642.3943,
+    "seen": 1787347547.6997097,
     "ast_hash": "115a76ec5af0def25f75d340bf105053",
-    "semantic_hash": ""
+    "semantic_hash": "115a76ec5af0def25f75d340bf105053"
   },
   "docs/modules/filesystem.md": {
     "mtime": 1786575995.1651542,
-    "seen": 1787344642.394301,
+    "seen": 1787347547.6997101,
     "ast_hash": "7a2d85a1a85d9deeb7f123fc0d051653",
-    "semantic_hash": ""
+    "semantic_hash": "7a2d85a1a85d9deeb7f123fc0d051653"
   },
   "docs/modules/gpu.md": {
     "mtime": 1786575995.1651542,
-    "seen": 1787344642.3943014,
+    "seen": 1787347547.699711,
     "ast_hash": "cf5778081ec5cf2a5dda4dc52e4cd280",
-    "semantic_hash": ""
+    "semantic_hash": "cf5778081ec5cf2a5dda4dc52e4cd280"
   },
   "docs/modules/graphics.md": {
     "mtime": 1786575995.1651542,
-    "seen": 1787344642.3943021,
+    "seen": 1787347547.6997118,
     "ast_hash": "b9031ba313d7fe29538a2a90da2b3d72",
-    "semantic_hash": ""
+    "semantic_hash": "b9031ba313d7fe29538a2a90da2b3d72"
   },
   "docs/modules/memory.md": {
     "mtime": 1787000508.6368923,
-    "seen": 1787344642.394303,
+    "seen": 1787347547.6997125,
     "ast_hash": "73f633090c096ebb71363a3d7fc29084",
-    "semantic_hash": ""
+    "semantic_hash": "73f633090c096ebb71363a3d7fc29084"
   },
   "docs/modules/network.md": {
     "mtime": 1786575995.1651542,
-    "seen": 1787344642.3943038,
+    "seen": 1787347547.6997137,
     "ast_hash": "a8710d99a60308f91f18c2a83d02c7df",
-    "semantic_hash": ""
+    "semantic_hash": "a8710d99a60308f91f18c2a83d02c7df"
   },
   "docs/modules/packages.md": {
     "mtime": 1786575995.1651542,
-    "seen": 1787344642.3943045,
+    "seen": 1787347547.6997147,
     "ast_hash": "90189a8a2913186587ed2729cb47f090",
-    "semantic_hash": ""
+    "semantic_hash": "90189a8a2913186587ed2729cb47f090"
   },
   "docs/modules/power-thermal.md": {
     "mtime": 1786575995.1651542,
-    "seen": 1787344642.3943052,
+    "seen": 1787347547.6997156,
     "ast_hash": "d6fbfc0f0cd12964a85eaca569d6d7b2",
-    "semantic_hash": ""
+    "semantic_hash": "d6fbfc0f0cd12964a85eaca569d6d7b2"
   },
   "docs/modules/processes.md": {
     "mtime": 1786575995.1651542,
-    "seen": 1787344642.3943057,
+    "seen": 1787347547.6997163,
     "ast_hash": "5a8fd12d7f1f2c904747b9f7cba1c6aa",
-    "semantic_hash": ""
+    "semantic_hash": "5a8fd12d7f1f2c904747b9f7cba1c6aa"
   },
   "docs/modules/security.md": {
     "mtime": 1786575995.1651542,
-    "seen": 1787344642.3943067,
+    "seen": 1787347547.6997175,
     "ast_hash": "98184c7fc3445b4a35a202c32414aa81",
-    "semantic_hash": ""
+    "semantic_hash": "98184c7fc3445b4a35a202c32414aa81"
   },
   "docs/modules/session.md": {
     "mtime": 1786575995.1651542,
-    "seen": 1787344642.3943074,
+    "seen": 1787347547.6997185,
     "ast_hash": "cd96198fe91e7edf25080d02d982c902",
-    "semantic_hash": ""
+    "semantic_hash": "cd96198fe91e7edf25080d02d982c902"
   },
   "docs/modules/storage.md": {
     "mtime": 1787000508.6368923,
-    "seen": 1787344642.394308,
+    "seen": 1787347547.699719,
     "ast_hash": "0befbd0cb60b57dde9d5cb1b390b4e93",
-    "semantic_hash": ""
+    "semantic_hash": "0befbd0cb60b57dde9d5cb1b390b4e93"
   },
   "docs/modules/wifi.md": {
     "mtime": 1786575995.1651542,
-    "seen": 1787344642.3943088,
+    "seen": 1787347547.6997197,
     "ast_hash": "04d3fb80583d50e5603b5aa381c88dc0",
-    "semantic_hash": ""
+    "semantic_hash": "04d3fb80583d50e5603b5aa381c88dc0"
   },
   "docs/modules/wired-lan.md": {
     "mtime": 1786575995.1651542,
-    "seen": 1787344642.3943093,
+    "seen": 1787347547.6997201,
     "ast_hash": "2540a56cd82290bcd4a12fc58b591133",
-    "semantic_hash": ""
+    "semantic_hash": "2540a56cd82290bcd4a12fc58b591133"
   },
   "docs/testing-strategy.md": {
     "mtime": 1786330251.5141213,
-    "seen": 1787344642.3943164,
+    "seen": 1787347547.6997218,
     "ast_hash": "4c0b2d50bc4114e8083e808304c4b204",
-    "semantic_hash": ""
+    "semantic_hash": "4c0b2d50bc4114e8083e808304c4b204"
   },
   "frontend/index.html": {
     "mtime": 1786672295.1888,
-    "seen": 1787344642.3943183,
+    "seen": 1787347547.6997225,
     "ast_hash": "fa12fe33d5228eedda6e8c09db37d7bc",
-    "semantic_hash": ""
+    "semantic_hash": "fa12fe33d5228eedda6e8c09db37d7bc"
   },
   "scripts/graphify-refresh.sh": {
     "mtime": 1787346313.7410603,
-    "seen": 1787346369.9415305,
+    "seen": 1787347547.6987505,
     "ast_hash": "82613f520df98e1c03107cb645c8e167",
-    "semantic_hash": ""
+    "semantic_hash": "82613f520df98e1c03107cb645c8e167"
   },
   "scripts/install-graphify-hooks.sh": {
-    "mtime": 1787346315.6530666,
-    "seen": 1787346369.941533,
-    "ast_hash": "ca56b9c50c2dd9b7eddd0bdf0a2169f2",
-    "semantic_hash": ""
+    "mtime": 1787347307.4092274,
+    "seen": 1787347547.6987514,
+    "ast_hash": "39e333edfbf8398ed7a81319fc165f4e",
+    "semantic_hash": "39e333edfbf8398ed7a81319fc165f4e"
   },
   ".github/copilot-instructions.md": {
     "mtime": 1787346324.0177124,
     "seen": 1787346369.9416244,
     "ast_hash": "ec2dc0dc7bef63488889f34de2f5584d",
     "semantic_hash": ""
+  },
+  "docs/grounding/project_grounding_2026-08-21_17-21-55.md": {
+    "mtime": 1787347331.196338,
+    "seen": 1787347547.6997066,
+    "ast_hash": "8ed99e6b71a9b10fb2fde286bdb7d79e",
+    "semantic_hash": "8ed99e6b71a9b10fb2fde286bdb7d79e"
   }
 }

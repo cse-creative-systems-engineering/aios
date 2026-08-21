@@ -1,8 +1,8 @@
 {
   ".opencode/opencode.json": {
-    "mtime": 1787345046.9197333,
-    "seen": 1787345054.2560225,
-    "ast_hash": "17b241bb449042cf0706916dea8dc43f",
+    "mtime": 1787347044.389005,
+    "seen": 1787347057.7651646,
+    "ast_hash": "1e0e50a95129efa869fc3712f7a7a9d7",
     "semantic_hash": ""
   },
   ".opencode/plugins/graphify.js": {
@@ -774,9 +774,9 @@
     "semantic_hash": ""
   },
   "AGENTS.md": {
-    "mtime": 1787343496.1088717,
-    "seen": 1787344642.3942595,
-    "ast_hash": "3746b3d747f13e20466f1561c53ea99f",
+    "mtime": 1787346272.127918,
+    "seen": 1787346369.941628,
+    "ast_hash": "8b2692947843e0f1c25df2d34cf6b3a4",
     "semantic_hash": ""
   },
   "CONTRIBUTING.md": {
@@ -786,15 +786,15 @@
     "semantic_hash": ""
   },
   "PROJECT_GROUNDING.md": {
-    "mtime": 1787343067.7205079,
-    "seen": 1787344642.394261,
-    "ast_hash": "763fe400d8a4af9cd6aa5bc711aefe33",
+    "mtime": 1787347337.6223676,
+    "seen": 1787347346.5092003,
+    "ast_hash": "f5f0a4bc0256c03322f1a82062662182",
     "semantic_hash": ""
   },
   "README.md": {
-    "mtime": 1787003242.9832811,
-    "seen": 1787344642.3942623,
-    "ast_hash": "f34ccf7821d98938412360a4e7e853a4",
+    "mtime": 1787346874.7602167,
+    "seen": 1787346882.845158,
+    "ast_hash": "e342a71c77281d055431a4f05a5aed29",
     "semantic_hash": ""
   },
   "SECURITY.md": {
@@ -957,6 +957,30 @@
     "mtime": 1786672295.1888,
     "seen": 1787344642.3943183,
     "ast_hash": "fa12fe33d5228eedda6e8c09db37d7bc",
+    "semantic_hash": ""
+  },
+  "scripts/graphify-refresh.sh": {
+    "mtime": 1787346313.7410603,
+    "seen": 1787346369.9415305,
+    "ast_hash": "82613f520df98e1c03107cb645c8e167",
+    "semantic_hash": ""
+  },
+  "scripts/install-graphify-hooks.sh": {
+    "mtime": 1787347307.4092274,
+    "seen": 1787347346.5091584,
+    "ast_hash": "39e333edfbf8398ed7a81319fc165f4e",
+    "semantic_hash": ""
+  },
+  ".github/copilot-instructions.md": {
+    "mtime": 1787346324.0177124,
+    "seen": 1787346369.9416244,
+    "ast_hash": "ec2dc0dc7bef63488889f34de2f5584d",
+    "semantic_hash": ""
+  },
+  "docs/grounding/project_grounding_2026-08-21_17-21-55.md": {
+    "mtime": 1787347331.196338,
+    "seen": 1787347346.509216,
+    "ast_hash": "8ed99e6b71a9b10fb2fde286bdb7d79e",
     "semantic_hash": ""
   }
 }
