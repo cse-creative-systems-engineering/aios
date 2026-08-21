@@ -7,20 +7,23 @@ directory, `src/coordinator/`, split along capability lines: routing, providers,
 chat, planning, consent, and surface. The public `aios::coordinator::*` API is
 unchanged, so callers were not touched.
 
-The generative surface has real plumbing now, not just a design doc:
+The generative surface is groundless-only now, not just a design doc:
 
-- `src/surface/` holds the widget schema (`schema.rs`), the composer that emits
-  surface-composition instructions (`composer.rs`), the evidence/value validator
-  (`validator.rs` plus `evidence.rs`), a renderer (`render.rs`), and a stub
-  server for harnessing. Note: this is the typed surface/v1 path — see the
-  correction below before treating it as the intended architecture.
-- `src/bin/surface_harness.rs` boots surfaces standalone.
+- `src/surface/` holds the relay call to the separate surface model
+  (`composer.rs`), and the evidence index (`evidence.rs`). The typed
+  surface/v1 widget IR (`schema.rs`, `validator.rs`, `render.rs`, `stub.rs`)
+  was removed this same day after the owner confirmed it contradicted the
+  architecture: Aios never designs surfaces, it relays request plus specialist
+  data to a groundless model and verifies value fidelity on the result.
+- `src/bin/stub_provider.rs` is a standalone stub that plays both the planner
+  and the surface model for end-to-end runs, serving themed HTML whose values
+  are marked `data-aios`.
 - `src/harness.rs` is a deterministic campaign harness: it replays prompt plans,
   enforces capability and clearance at each step, quarantines steps whose
-  approval is denied, and records the run. This is the "groundless generation,
-  second-opinion verification" loop made testable.
+  approval is denied, and records the run.
 - `tests/ui_e2e.rs` drives the real app: spawns the binary, opens a surface,
-  loops prompts, and asserts on the resulting surface.
+  loops prompts, and asserts each theme's generated HTML appears with marked
+  values.
 
 A Tauri desktop shell wraps the core. `src-tauri/src/main.rs` bridges the Rust
 core to a webview: chat prompts, model discovery, provider and role management,
@@ -35,35 +38,33 @@ background on changed files only. Agents use it through an MCP server named
 `graphify` (opencode) or `graphify-mcp-server` (VS Code), or the `graphify` CLI.
 The full capability list and rules are in `AGENTS.md`.
 
-Test baseline: `cargo test --lib` is 432 passing tests (was 438). One real-model
-test stays ignored.
+Test baseline: `cargo test --lib` is 391 passing tests (was 432 before the
+typed surface IR and its tests were removed). One real-model test stays
+ignored.
 
-## Surface Path Correction (2026-08-21)
+## Surface Path Correction (2026-08-21, resolved)
 
 The owner restated the architecture rule: every surface is generated on the fly
 by a groundless model call working from gathered specialist evidence, then
 checked for value fidelity before anything renders. Nothing is predetermined —
-no CPU, RAM, or dashboard widget types. This matches milestone 0001 ("a
-separate groundless generation call produces a surface from the verified
-evidence") and the 0002 target model (`SurfaceRecord.generated_html`).
+no CPU, RAM, or dashboard widget types, and no widget vocabulary at all.
 
-The code drifted from that rule. The free-form generator,
-`Coordinator::compose_unconstrained_html`, works but is gated behind
-`AIOS_UNCONSTRAINED_SURFACE=1` (`src-tauri/src/main.rs:890`). The default path
-is instead a typed surface/v1 IR — fixed metric/gauge/status/chart/notice
-widget renderers in `src/surface/schema.rs` and `frontend/src/main.ts` — added
-in commit `6bcefc6`, one commit after the working groundless foundation
-`8afcded`. That typed path contradicts the stated design. Restoring
-generated-on-the-fly surfaces as the only path is the top open item; until
-then, treat the IR as legacy rather than architecture.
+The code had drifted from that rule: a typed surface/v1 IR (fixed
+metric/gauge/status/chart/notice renderers) added in commit `6bcefc6` had taken
+over as the default, pushing the free-form generator behind
+`AIOS_UNCONSTRAINED_SURFACE=1`. Resolved the same day: the typed IR was
+deleted (`schema.rs`, `validator.rs`, `render.rs`, `stub.rs`,
+`surface_harness`), the groundless relay is now the only path, and `src/tools.rs`
+health roll-ups carry a machine-parsable summary line so the fidelity gate can
+bind roll-up numbers.
 
 ## Relevant Paths
 
 - `src/coordinator/` — `mod.rs`, `routing.rs`, `providers.rs`, `chat.rs`,
   `planning.rs`, `consent.rs`, `surface.rs`, `tests.rs`.
-- `src/surface/` — `schema.rs`, `composer.rs`, `validator.rs`, `evidence.rs`,
-  `render.rs`, `stub.rs`, `mod.rs`.
-- `src/bin/surface_harness.rs` — standalone surface boot.
+- `src/surface/` — `composer.rs` (relay + coverage + fidelity gates),
+  `evidence.rs`, `mod.rs`.
+- `src/bin/stub_provider.rs` — standalone stub planner + surface model.
 - `src/harness.rs` — deterministic campaign harness (quarantine, deny, record).
 - `tests/ui_e2e.rs` — end-to-end UI driver.
 - `src-tauri/src/main.rs` — chat, model discovery, provider/role management,
@@ -90,9 +91,6 @@ then, treat the IR as legacy rather than architecture.
 
 ## Open Work
 
-- Restore on-the-fly surface generation as the only surface path: make
-  `compose_unconstrained_html` the default and retire the typed surface/v1 IR
-  (see the correction above).
 - M8 lifecycle stages: a real surface manager, multiple surfaces at once, and
   persistent editing. There is no manager yet and the frontend holds a single
   slot, so a second request replaces the first surface. Plans:

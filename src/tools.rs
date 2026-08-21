@@ -536,6 +536,16 @@ impl SpecialistTool for GraphHealth {
                 .or_default() += 1;
         }
         let mut lines = vec![format!("{} nodes total", graph.nodes().len())];
+        // Machine-parsable summary so the surface fidelity gate can bind
+        // roll-up numbers even though the prose below is not key=value.
+        // Captured before `counts` is consumed into the prose roll-up.
+        let state_count = |name: &str| counts.get(name).copied().unwrap_or(0);
+        let summary = format!(
+            "summary: nodes_total={} healthy_nodes={} unknown_nodes={}",
+            graph.nodes().len(),
+            state_count("Healthy"),
+            state_count("Unknown"),
+        );
         let mut health: Vec<(String, usize)> = counts.into_iter().collect();
         health.sort();
         lines.push(
@@ -559,6 +569,9 @@ impl SpecialistTool for GraphHealth {
                     .join(", ")
             ));
         }
+        // Machine-parsable summary so the surface fidelity gate can bind
+        // roll-up numbers even though the prose above is not key=value.
+        lines.push(summary);
         Ok(ToolResult {
             tool: self.name(),
             text: lines.join("\n"),

@@ -94,7 +94,7 @@ There is now also a runnable core. `cargo run` drives the in-process demo
 hardware). `cargo run -- shell` boots the interactive shell: it loads
 `~/.aios/config.toml`, runs a local Qwen model through llama.cpp, and routes
 chat through the model gateway, with discovery, provider status, consent, and
-a plan-and-verify flow. The current library baseline is 432 passing tests with
+a plan-and-verify flow. The current library baseline is 391 passing tests with
 one ignored real-model test.
 
 The orchestration core was recently modularized: `src/coordinator` is split into
@@ -109,19 +109,16 @@ sidebar as an X11 layer-shell dock. The frontend in `frontend/` renders the
 surface canvas, draggable widgets, and input regions, plus the sidebar (icon
 rail, inspector, composer, alerts) and the settings and chat panels.
 
-Surfaces follow one rule: they are never templates. Every surface is generated
-at request time by a groundless model call working from gathered specialist
-evidence, then checked for value fidelity against that evidence before anything
-renders. There are no predetermined CPU, RAM, or dashboard widgets — the model
-draws what the question needs, fresh each time. That free-form generator exists
-(`compose_unconstrained_html`) but currently sits behind
-`AIOS_UNCONSTRAINED_SURFACE=1`, while a typed surface/v1 schema with fixed
-metric/gauge/status/chart/notice renderers became the default path instead.
-That inversion was never the design; putting generated-on-the-fly surfaces back
-as the only path is the first item under "What I need help with". A
-`surface_harness` binary boots surfaces, and a deterministic campaign harness
+Surfaces follow one rule: they are never templates. Aios relays the user's
+request plus gathered specialist evidence to a separate groundless surface
+model, which authors a self-contained HTML fragment; Aios then checks every
+marked value against the evidence before anything renders. There are no
+predetermined CPU, RAM, or dashboard widgets — the model draws what the
+question needs, fresh each time, and a typed widget IR that briefly took over
+as the default path has been removed. A deterministic campaign harness
 (`src/harness.rs`) replays prompt plans, quarantines denied steps, and records
-each run. End-to-end UI tests live in `tests/ui_e2e.rs`.
+each run. End-to-end UI tests live in `tests/ui_e2e.rs`, driven by a stub
+surface model (`src/bin/stub_provider.rs`).
 
 Milestones, briefly:
 
@@ -162,13 +159,6 @@ Milestones, briefly:
 
 ## What I need help with
 
-- **Restore on-the-fly surface generation as the only path.** All surfaces are
-  supposed to be generated live by a groundless model from gathered evidence
-  and validated for value fidelity — nothing predetermined. The free-form
-  generator (`compose_unconstrained_html`) works but is gated behind
-  `AIOS_UNCONSTRAINED_SURFACE=1`, while a typed widget IR with fixed
-  metric/gauge/status/chart/notice renderers (`src/surface/schema.rs`) took
-  over as the default. Flip the paths back and retire the IR.
 - **Finish M8's lifecycle stages.** Multi-surface management and persistent
   editing are still open: there is no surface manager yet and the frontend
   holds a single slot, so a second request replaces the first surface.
@@ -259,7 +249,7 @@ model-routing → human-interaction. Takes an afternoon.
 
 ```bash
 cargo build          # compile everything
-cargo test           # run the test suite (432 library tests)
+cargo test           # run the test suite (391 library tests)
 cargo run            # in-process demo: broker, guardian, mock agents
 cargo run -- shell   # interactive shell against your real config and models
 ```

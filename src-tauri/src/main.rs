@@ -1,7 +1,6 @@
 use aios::facade::Facade;
 use aios::graph::NodeType;
 use aios::progress::{GraphActivity, GraphPhase, ProgressReporter};
-use aios::surface::{Surface, SurfaceDensity, WidthClass};
 #[cfg(target_os = "linux")]
 use gdk::prelude::*;
 #[cfg(target_os = "linux")]
@@ -18,9 +17,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 #[cfg(target_os = "linux")]
 use tauri::AppHandle;
-use tauri::{
-    LogicalPosition, LogicalSize, Manager, PhysicalPosition, PhysicalSize, Position, Size,
-};
+use tauri::{LogicalPosition, Manager, PhysicalPosition, PhysicalSize, Position, Size};
 #[cfg(target_os = "linux")]
 use x11rb::CURRENT_TIME;
 #[cfg(target_os = "linux")]
@@ -121,9 +118,8 @@ struct BackendStatus {
 struct PromptResponse {
     answer: String,
     evidence: Vec<EvidenceItem>,
-    /// Composed generative surface (`surface/v1`). `None` means the request
-    /// failed and the canvas must not be shown.
-    surface: Option<Surface>,
+    /// HTML authored by the separate groundless surface model after passing
+    /// the value-fidelity gate. `None` means nothing may be displayed.
     experimental_html: Option<String>,
     backend_status: BackendStatus,
 }
@@ -572,28 +568,20 @@ async fn submit_prompt(
             .recv()
             .map_err(|_| "backend worker closed the response channel".to_string())?;
             if let Ok(ref payload) = response {
-            if payload.surface.is_some() || payload.experimental_html.is_some() {
-                if let Some(surface) = payload.surface.as_ref() {
-                    if let Some(window) = app.get_webview_window("canvas") {
-                        let (width, height) = surface_window_size(surface);
-                        let _ = window.set_size(Size::Logical(LogicalSize { width, height }));
-                        let _ = window.show();
-                    }
-                } else if payload.experimental_html.is_some() {
-                    if let Err(error) = set_input_region(app.clone(), 0.0, 0.0, 0.0, 0.0) {
-                        eprintln!("Aios canvas: failed to clear input region: {error}");
-                    }
-                    if let Some(window) = app.get_webview_window("canvas") {
-                        // Showing first keeps hidden WebKitGTK views from missing
-                        // the event listener. The input region is empty until the
-                        // frontend measures the generated surface.
-                        let _ = window.show();
-                    }
+            if payload.experimental_html.is_some() {
+                if let Err(error) = set_input_region(app.clone(), 0.0, 0.0, 0.0, 0.0) {
+                    eprintln!("Aios canvas: failed to clear input region: {error}");
                 }
-                use tauri::Emitter;
-                if let Err(error) = app.emit_to("canvas", "canvas_response", payload) {
-                    eprintln!("Aios canvas: failed to emit response: {error}");
+                if let Some(window) = app.get_webview_window("canvas") {
+                    // Showing first keeps hidden WebKitGTK views from missing
+                    // the event listener. The input region is empty until the
+                    // frontend measures the generated surface.
+                    let _ = window.show();
                 }
+            }
+            use tauri::Emitter;
+            if let Err(error) = app.emit_to("canvas", "canvas_response", payload) {
+                eprintln!("Aios canvas: failed to emit response: {error}");
             }
         }
         response
@@ -887,65 +875,61 @@ fn handle_prompt(
     };
     let answer = facade.run_line(&prompt);
     let evidence = facade.take_tool_results();
-    let unconstrained = std::env::var("AIOS_UNCONSTRAINED_SURFACE").as_deref() == Ok("1");
-    let (surface, experimental_html) = if unconstrained {
-        if evidence.is_empty() {
-            eprintln!("Aios canvas: no specialist evidence gathered; no surface");
-            (None, None)
+    // Groundless generation (ADR-0007): Aios relays the prompt and specialist
+    // data to the surface model, then verifies value fidelity before display.
+    // There is no other surface path and no widget vocabulary.
+    let experimental_html = if evidence.is_empty() {
+        eprintln!("Aios canvas: no specialist evidence gathered; no surface");
+        None
+    } else {
+        let gaps = aios::surface::coverage_gaps(&prompt, &evidence);
+        if !gaps.is_empty() {
+            eprintln!("Aios canvas: coverage gap for {}; no surface", gaps.join(", "));
+            None
         } else {
-            let gaps = aios::surface::coverage_gaps(&prompt, &evidence);
-            if !gaps.is_empty() {
-                eprintln!("Aios canvas: coverage gap for {}; no surface", gaps.join(", "));
-                (None, None)
-            } else {
-                emit_graph_activity(worker_handle, GraphPhase::Composing, &["composer"]);
-                match facade.compose_unconstrained_html(
-                    &prompt,
-                    &evidence,
-                    previous_experimental_html.as_deref(),
-                ) {
-                    Ok((html, routing)) => {
-                        match aios::surface::verify_value_fidelity(&html, &evidence) {
-                            Ok(()) => {
-                                eprintln!(
-                                    "Aios unconstrained surface: provider={} model={} bytes={}",
-                                    routing.provider,
-                                    routing.model,
-                                    html.len()
-                                );
-                                *previous_experimental_html = Some(html.clone());
-                                (None, Some(html))
-                            }
-                            Err(error) => {
-                                eprintln!("Aios canvas: fidelity check failed: {error}");
-                                (None, None)
-                            }
+            emit_graph_activity(worker_handle, GraphPhase::Composing, &["composer"]);
+            match facade.compose_unconstrained_html(
+                &prompt,
+                &evidence,
+                previous_experimental_html.as_deref(),
+            ) {
+                Ok((html, routing)) => {
+                    match aios::surface::verify_value_fidelity(&html, &evidence) {
+                        Ok(()) => {
+                            eprintln!(
+                                "Aios surface: provider={} model={} bytes={}",
+                                routing.provider,
+                                routing.model,
+                                html.len()
+                            );
+                            write_surface_trace(
+                                &prompt,
+                                &answer,
+                                &evidence,
+                                Some((&routing, html.len())),
+                                None,
+                            );
+                            *previous_experimental_html = Some(html.clone());
+                            Some(html)
+                        }
+                        Err(error) => {
+                            eprintln!("Aios canvas: fidelity check failed: {error}");
+                            write_surface_trace(
+                                &prompt,
+                                &answer,
+                                &evidence,
+                                None,
+                                Some(&error),
+                            );
+                            None
                         }
                     }
-                    Err(error) => {
-                        eprintln!("Aios unconstrained composition failed: {error}");
-                        (None, None)
-                    }
                 }
-            }
-        }
-    } else if answer.contains("failed:") || evidence.is_empty() {
-        (None, None)
-    } else {
-        emit_graph_activity(worker_handle, GraphPhase::Composing, &["composer"]);
-        match facade.compose_surface(&prompt, &answer, &evidence) {
-            Ok((surface, routing)) => {
-                eprintln!(
-                    "Aios surface: provider={} model={} title={:?}",
-                    routing.provider, routing.model, surface.title
-                );
-                write_surface_trace(&prompt, &answer, &evidence, Some((&routing, &surface)), None);
-                (Some(surface), None)
-            }
-            Err(error) => {
-                eprintln!("Aios canvas: composition failed: {error}");
-                write_surface_trace(&prompt, &answer, &evidence, None, Some(&error.to_string()));
-                (None, None)
+                Err(error) => {
+                    eprintln!("Aios canvas: composition failed: {error}");
+                    write_surface_trace(&prompt, &answer, &evidence, None, Some(&error.to_string()));
+                    None
+                }
             }
         }
     };
@@ -959,7 +943,6 @@ fn handle_prompt(
     let result = Ok(PromptResponse {
         answer,
         evidence,
-        surface,
         experimental_html,
         backend_status: status,
     });
@@ -1396,37 +1379,11 @@ fn build_graph_snapshot(facade: &Facade) -> SystemGraphSnapshot {
     }
 }
 
-fn surface_window_size(surface: &Surface) -> (f64, f64) {
-    let width = match surface.placement.width {
-        Some(WidthClass::Narrow) => 320.0,
-        Some(WidthClass::Medium) => 380.0,
-        Some(WidthClass::Wide) => 520.0,
-        None if surface.layout.density == SurfaceDensity::Compact => 320.0,
-        None if surface.layout.density == SurfaceDensity::Detailed => 600.0,
-        None => 420.0,
-    };
-    let compact_rows = surface
-        .widgets
-        .iter()
-        .filter_map(|widget| match widget {
-            aios::surface::SurfaceWidget::StatusList { items, .. } => Some(items.len()),
-            _ => None,
-        })
-        .max()
-        .unwrap_or(0);
-    let height = match surface.layout.density {
-        SurfaceDensity::Compact => (190.0 + compact_rows as f64 * 18.0).min(320.0),
-        SurfaceDensity::Comfortable => 320.0,
-        SurfaceDensity::Detailed => 520.0,
-    };
-    (width, height)
-}
-
 fn write_surface_trace(
     prompt: &str,
     answer: &str,
     evidence: &[aios::tools::ToolResult],
-    generated: Option<(&aios::model::RoutingDecision, &Surface)>,
+    generated: Option<(&aios::model::RoutingDecision, usize)>,
     error: Option<&str>,
 ) {
     let Ok(path) = std::env::var("AIOS_SURFACE_TRACE") else {
@@ -1436,13 +1393,13 @@ fn write_surface_trace(
         .iter()
         .map(|result| json!({ "tool": result.tool, "text": result.text }))
         .collect::<Vec<_>>();
-    let generated = generated.map(|(routing, surface)| {
+    let generated = generated.map(|(routing, bytes)| {
         json!({
             "source": "model",
             "validated": true,
             "provider": routing.provider.to_string(),
             "model": routing.model.to_string(),
-            "surface": surface,
+            "html_bytes": bytes,
         })
     });
     let record = json!({

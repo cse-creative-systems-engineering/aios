@@ -4,36 +4,11 @@ import { listen } from '@tauri-apps/api/event';
 import { currentMonitor, getCurrentWindow } from '@tauri-apps/api/window';
 import { PhysicalPosition } from '@tauri-apps/api/dpi';
 import { isSectionId, providerCatalog, renderSidebar, roleState, rolesCatalog, settingsForm, updateProviderCatalog, updateRolesCatalog, updateSettingsProviders, type EvidenceItem, type FlightProgress, type SectionId, type SidebarMessage, type SidebarStatus, type SystemGraphSnapshot } from './sidebar';
-type UiWidget =
-  | { type: 'metricCard'; label: string; value: string; unit: string; status: string }
-  | { type: 'statusList'; title: string; items: string[] }
-  | { type: 'notice'; title: string; body: string };
-
-// Mirrors src/surface/schema.rs (surface/v1), camelCase + type tags.
+// The only dock edge type still shared with the sidebar renderer.
 type DockEdge = 'left' | 'right' | 'top' | 'bottom';
-type WidthClass = 'narrow' | 'medium' | 'wide';
-type LayoutMode = 'grid' | 'stack' | 'row';
-type RegionPriority = 'primary' | 'secondary' | 'tertiary';
-type Widget =
-  | { type: 'metricCard'; id: string; title: string; value: string; unit: string | null; status: string | null; evidence: string[] }
-  | { type: 'sensorGauge'; id: string; title: string; value: number; min: number | null; max: number | null; unit: string | null; evidence: string[] }
-  | { type: 'statusList'; id: string; title: string; items: { label: string; status: string; detail: string | null }[]; evidence: string[] }
-  | { type: 'chart'; id: string; title: string; data: { label: string; value: number }[]; evidence: string[] }
-  | { type: 'notice'; id: string; title: string; body: string; evidence: string[] };
-type Surface = {
-  intent: string;
-  title: string;
-  subtitle: string | null;
-  placement: { edge: DockEdge | null; width: WidthClass | null; float: boolean };
-  layout: { mode: LayoutMode; columns: number };
-  regions: { id: string; span: number; priority: RegionPriority; widgets: string[] }[];
-  widgets: Widget[];
-};
 type PromptResponse = {
   answer: string;
   evidence: EvidenceItem[];
-  widgets: UiWidget[];
-  surface: Surface | null;
   experimentalHtml: string | null;
 };
 type BackendStatus = { ready: boolean; error: string | null };
@@ -46,8 +21,6 @@ type GraphActivityEvent = {
 const currentWindow = getCurrentWindow();
 const isCanvasWindow = currentWindow.label === 'canvas';
 if (isCanvasWindow) document.documentElement.classList.add('canvas-document');
-let widgets: UiWidget[] = [];
-let surface: Surface | null = null;
 let experimentalHtml: string | null = null;
 let sidebarStatus: SidebarStatus | null = null;
 let sidebarStatusError: string | null = null;
@@ -557,16 +530,8 @@ async function refreshGraph(): Promise<void> {
 }
 
 function renderCanvas(): string {
-  if (experimentalHtml) {
-    return `<div id="surface-host" class="surface-host" style="left:${surfacePosition.x}px;top:${surfacePosition.y}px">${experimentalHtml}</div>`;
-  }
-  const heading = surface
-    ? `<div class="eyebrow">Generative surface</div><h1>${escapeHtml(surface.title)}</h1>${surface.subtitle ? `<div class="canvas-subtitle">${escapeHtml(surface.subtitle)}</div>` : ''}`
-    : `<div class="eyebrow">Live evidence</div><h1>System overview</h1>`;
-  const body = surface
-    ? renderSurface(surface)
-    : `<div class="widget-grid">${widgets.map(renderWidgetLegacy).join('')}</div>`;
-  return `<main class="canvas-window"><header class="canvas-header"><div>${heading}</div><div><div class="connection-state"><span class="status-dot"></span> Verified backend evidence</div><nav class="dock-actions" aria-label="Dock panel"><button data-dock="left">Left</button><button data-dock="right">Right</button><button data-dock="top">Top</button><button data-dock="bottom">Bottom</button></nav></div></header>${body}</main>`;
+  if (!experimentalHtml) return '';
+  return `<div id="surface-host" class="surface-host" style="left:${surfacePosition.x}px;top:${surfacePosition.y}px">${experimentalHtml}</div>`;
 }
 
 async function dockPanel(edge: DockEdge): Promise<void> {
@@ -680,9 +645,8 @@ async function runPrompt(text: string, pushUser: boolean): Promise<void> {
       state: 'complete',
     };
     messages.push(next);
-    surface = response.surface;
-    widgets = response.widgets;
-    lastSurfacePresent = Boolean(response.surface || response.experimentalHtml);
+    experimentalHtml = response.experimentalHtml;
+    lastSurfacePresent = Boolean(response.experimentalHtml);
     void refreshSidebarStatus();
     void refreshGraph();
   } catch (error) {
@@ -699,83 +663,10 @@ async function runPrompt(text: string, pushUser: boolean): Promise<void> {
   }
 }
 
-// --- Surface rendering (surface/v1) ---
-
-const PRIORITY_ORDER: Record<RegionPriority, number> = { primary: 0, secondary: 1, tertiary: 2 };
-
-function renderSurface(s: Surface): string {
-  const widgetById = new Map(s.widgets.map((widget) => [widget.id, widget]));
-  const regions = [...s.regions].sort(
-    (a, b) => (PRIORITY_ORDER[a.priority] ?? 3) - (PRIORITY_ORDER[b.priority] ?? 3),
-  );
-  const modeClass = s.layout.mode === 'stack' ? 'surface-stack' : s.layout.mode === 'row' ? 'surface-row' : 'surface-grid';
-  const columns = Math.max(1, s.layout.columns || 12);
-  const gridStyle = s.layout.mode === 'grid' ? `style="grid-template-columns:repeat(${columns},minmax(0,1fr))"` : '';
-  return `<div class="surface ${modeClass}" ${gridStyle}>${regions
-    .map((region) => {
-      const regionWidgets = region.widgets
-        .map((id) => widgetById.get(id))
-        .filter((widget): widget is Widget => Boolean(widget))
-        .map(renderWidget);
-      const span = s.layout.mode === 'grid' ? ` style="grid-column:span ${Math.max(1, Math.min(region.span, columns))}"` : '';
-      return `<section class="surface-region region-${escapeHtml(region.priority)}"${span}><div class="region-label">${escapeHtml(region.id)}</div>${regionWidgets.join('')}</section>`;
-    })
-    .join('')}</div>`;
-}
-
-function renderWidget(widget: Widget): string {
-  switch (widget.type) {
-    case 'metricCard':
-      return `<article class="surface-widget metric-widget"><div class="widget-label">${escapeHtml(widget.title)}</div><div class="metric-value">${escapeHtml(widget.value)} ${widget.unit ? `<small>${escapeHtml(widget.unit)}</small>` : ''}</div>${widget.status ? `<div class="widget-state">${escapeHtml(widget.status)}</div>` : ''}${evidenceChips(widget.evidence)}</article>`;
-    case 'sensorGauge':
-      return `<article class="surface-widget gauge-widget"><div class="widget-label">${escapeHtml(widget.title)}</div><div class="gauge-row"><div class="gauge-track"><div class="gauge-fill" style="width:${gaugePercent(widget)}%"></div></div><div class="gauge-value">${formatNumber(widget.value)}${widget.unit ? `<small> ${escapeHtml(widget.unit)}</small>` : ''}</div></div>${evidenceChips(widget.evidence)}</article>`;
-    case 'statusList':
-      return `<article class="surface-widget status-widget"><h2>${escapeHtml(widget.title)}</h2><ul>${widget.items.map((item) => `<li><span class="status-item-label">${escapeHtml(item.label)}</span><span class="status-item-value">${escapeHtml(item.status)}</span>${item.detail ? `<small class="status-item-detail">${escapeHtml(item.detail)}</small>` : ''}</li>`).join('')}</ul>${evidenceChips(widget.evidence)}</article>`;
-    case 'chart':
-      return `<article class="surface-widget chart-widget"><h2>${escapeHtml(widget.title)}</h2><div class="chart-bars">${renderChartBars(widget)}</div>${evidenceChips(widget.evidence)}</article>`;
-    case 'notice':
-      return `<article class="surface-widget notice-widget"><h2>${escapeHtml(widget.title)}</h2><p>${escapeHtml(widget.body)}</p>${evidenceChips(widget.evidence)}</article>`;
-  }
-}
-
-function gaugePercent(widget: Widget & { type: 'sensorGauge' }): number {
-  const min = widget.min ?? 0;
-  const max = widget.max ?? 100;
-  const span = max - min;
-  if (span <= 0) return 0;
-  const pct = ((widget.value - min) / span) * 100;
-  return Math.max(0, Math.min(100, pct));
-}
-
-function renderChartBars(widget: Widget & { type: 'chart' }): string {
-  const max = Math.max(1, ...widget.data.map((point) => Math.abs(point.value)));
-  return widget.data
-    .map((point) => {
-      const height = Math.max(2, (Math.abs(point.value) / max) * 100);
-      return `<div class="chart-col"><div class="chart-bar" style="height:${height}%"></div><div class="chart-label">${escapeHtml(point.label)}</div><div class="chart-value">${formatNumber(point.value)}</div></div>`;
-    })
-    .join('');
-}
-
-function evidenceChips(keys: string[]): string {
-  if (!keys.length) return '';
-  return `<div class="evidence-chips">${keys.map((key) => `<span class="evidence-chip">${escapeHtml(key)}</span>`).join('')}</div>`;
-}
-
-function formatNumber(value: number): string {
-  return new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(value);
-}
-
-function renderWidgetLegacy(widget: UiWidget): string {
-  switch (widget.type) {
-    case 'metricCard':
-      return `<article class="widget metric-widget"><div class="widget-label">${escapeHtml(widget.label)}</div><div class="metric-value">${escapeHtml(widget.value)} <small>${escapeHtml(widget.unit)}</small></div><div class="widget-state">${escapeHtml(widget.status)}</div></article>`;
-    case 'statusList':
-      return `<article class="widget"><h2>${escapeHtml(widget.title)}</h2><ul>${widget.items.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul></article>`;
-    case 'notice':
-      return `<article class="widget notice-widget"><h2>${escapeHtml(widget.title)}</h2><p>${escapeHtml(widget.body)}</p></article>`;
-  }
-}
+// --- Generated surface host ---
+// The HTML comes verbatim from the groundless surface model (already passed
+// the fidelity gate in the backend). The frontend only hosts, drags, and
+// measures it.
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>'"]/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[character] ?? character);
@@ -866,8 +757,6 @@ function wireSurfaceDrag(): void {
 if (isCanvasWindow) {
   void listen<PromptResponse>('canvas_response', async (event) => {
     experimentalHtml = event.payload.experimentalHtml ?? null;
-    surface = event.payload.surface;
-    widgets = event.payload.widgets;
     render();
     if (experimentalHtml) {
       // Wait for WebKitGTK to finish layout, then expose only the widget area

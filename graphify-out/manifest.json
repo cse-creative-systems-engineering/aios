@@ -792,9 +792,9 @@
     "semantic_hash": ""
   },
   "README.md": {
-    "mtime": 1787346874.7602167,
-    "seen": 1787346882.845158,
-    "ast_hash": "e342a71c77281d055431a4f05a5aed29",
+    "mtime": 1787349379.6115932,
+    "seen": 1787349456.9262774,
+    "ast_hash": "00dab76a953bf4cebf8881ba9ff83e70",
     "semantic_hash": ""
   },
   "SECURITY.md": {
@@ -978,9 +978,9 @@
     "semantic_hash": ""
   },
   "docs/grounding/project_grounding_2026-08-21_17-21-55.md": {
-    "mtime": 1787347331.196338,
-    "seen": 1787347547.6997066,
-    "ast_hash": "8ed99e6b71a9b10fb2fde286bdb7d79e",
-    "semantic_hash": "8ed99e6b71a9b10fb2fde286bdb7d79e"
+    "mtime": 1787349438.450872,
+    "seen": 1787349456.9262927,
+    "ast_hash": "7c36679471c3b884a2b3d5c29cb6f57e",
+    "semantic_hash": ""
   }
 }

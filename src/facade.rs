@@ -226,7 +226,7 @@ impl Facade {
 
         let mut messages = vec![crate::model::ModelMessage::new(
             crate::model::ModelRole::System,
-            "You are Aios, the assistant for a Linux system. Answer concisely in plain text. You never emit HTML, CSS, code, or markdown fences in your answer; Aios renders any presentation surface itself from your grounded answer and the tool evidence.",
+            "You are Aios, the assistant for a Linux system. Answer concisely in plain text. You never emit HTML, CSS, code, or markdown fences in your answer; a separate surface model renders any presentation surface from your grounded answer and the tool evidence.",
         )];
         for turn in &self.history {
             let (role, content) = turn.split_once(':').unwrap_or(("user", turn));
@@ -261,22 +261,10 @@ impl Facade {
         std::mem::take(&mut self.last_tool_results)
     }
 
-    /// Compose a generative surface from the last chat answer and its
-    /// evidence, plus the routing decision the gateway used. Returns `Err`
-    /// when the model reply was not a usable surface; callers must surface the
-    /// error and must not render a replacement surface.
-    pub fn compose_surface(
-        &self,
-        intent: &str,
-        answer: &str,
-        evidence: &[crate::tools::ToolResult],
-    ) -> Result<
-        (crate::surface::Surface, crate::model::RoutingDecision),
-        crate::surface::SurfaceComposeError,
-    > {
-        self.coordinator.compose_surface_with_meta(intent, answer, evidence)
-    }
-
+    /// Relay the user intent and specialist evidence to the groundless
+    /// surface model, returning the generated HTML fragment plus the routing
+    /// decision the gateway used. Aios does not design the surface; the model
+    /// does. Callers must verify value fidelity before displaying anything.
     pub fn compose_unconstrained_html(
         &self,
         intent: &str,

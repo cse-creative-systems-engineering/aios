@@ -1,9 +1,12 @@
 //! End-to-end UI test that drives the real desktop app the way a user does:
 //! type a prompt in the sidebar, wait for the canvas window to open, verify
-//! the composed surface, close the window, repeat across many metric themes.
+//! the generated surface, then repeat across many metric themes.
 //!
-//! No fallbacks are tolerated. The surface must appear; a legacy widget-grid
-//! render or a missing canvas is a hard failure.
+//! The stub provider plays the groundless surface model: each theme gets an
+//! HTML fragment whose values are marked `data-aios` and trace back to the
+//! specialist evidence, so the fidelity gate stays exercised end to end. No
+//! fallbacks are tolerated: a missing canvas or unmarked surface is a hard
+//! failure.
 //!
 //! Requires a display, the debug app binary, `tauri-driver`, and
 //! `WebKitWebDriver` on PATH. Run via `scripts/ui-e2e.sh` (or
@@ -24,35 +27,29 @@ const POLL_PERIOD: Duration = Duration::from_millis(200);
 
 struct Theme {
     prompt: &'static str,
-    title: &'static str,
-    widget_classes: &'static [&'static str],
+    key: &'static str,
 }
 
 const THEMES: &[Theme] = &[
     Theme {
         prompt: "generate a surface displaying the disk usage please",
-        title: "Disk health",
-        widget_classes: &["status-widget", "notice-widget"],
+        key: "disk",
     },
     Theme {
         prompt: "generate a surface displaying the memory usage please",
-        title: "Memory",
-        widget_classes: &["status-widget", "notice-widget"],
+        key: "memory",
     },
     Theme {
         prompt: "generate a surface displaying the cpu usage please",
-        title: "CPU",
-        widget_classes: &["status-widget", "chart-widget"],
+        key: "cpu",
     },
     Theme {
         prompt: "generate a surface for network status please",
-        title: "Network",
-        widget_classes: &["status-widget", "notice-widget"],
+        key: "network",
     },
     Theme {
         prompt: "how healthy is the system graph",
-        title: "System health",
-        widget_classes: &["metric-widget", "gauge-widget", "status-widget"],
+        key: "health",
     },
 ];
 
@@ -186,7 +183,7 @@ async fn submit_and_open_surface(
     sidebar: &fantoccini::wd::WindowHandle,
     canvas: &mut Option<fantoccini::wd::WindowHandle>,
     prompt: &str,
-    expected_title: &str,
+    expected_key: &str,
 ) {
     client.switch_to_window(sidebar.clone()).await.expect("switch to sidebar");
     let input = client
@@ -209,6 +206,7 @@ async fn submit_and_open_surface(
         .await
         .expect("clear prompt");
 
+    let selector = format!("[data-aios-theme=\"{expected_key}\"]");
     let deadline = Instant::now() + PROMPT_TIMEOUT;
     loop {
         let windows = client.windows().await.expect("list windows");
@@ -219,14 +217,7 @@ async fn submit_and_open_surface(
             .collect();
         for handle in &candidates {
             client.switch_to_window(handle.clone()).await.expect("switch candidate");
-            if client.find(Locator::Css(".surface")).await.is_err() {
-                continue;
-            }
-            let title = match client.find(Locator::Css(".canvas-header h1")).await {
-                Ok(heading) => heading.text().await.ok(),
-                Err(_) => None,
-            };
-            if title.as_deref() == Some(expected_title) {
+            if client.find(Locator::Css(&selector)).await.is_ok() {
                 *canvas = Some(handle.clone());
                 return;
             }
@@ -234,7 +225,7 @@ async fn submit_and_open_surface(
         if Instant::now() > deadline {
             dump_windows(client, &windows).await;
             panic!(
-                "canvas never showed a surface titled {expected_title:?} within {PROMPT_TIMEOUT:?}"
+                "canvas never showed a {expected_key:?} surface within {PROMPT_TIMEOUT:?}"
             );
         }
         tokio::time::sleep(POLL_PERIOD).await;
@@ -244,47 +235,34 @@ async fn submit_and_open_surface(
 async fn assert_surface(client: &Client, canvas: &fantoccini::wd::WindowHandle, theme: &Theme) {
     client.switch_to_window(canvas.clone()).await.expect("switch to canvas");
 
-    let surfaces = client.find_all(Locator::Css(".surface")).await.expect("find .surface");
+    let surfaces = client
+        .find_all(Locator::Css(".aios-surface"))
+        .await
+        .expect("find .aios-surface");
     assert_eq!(
         surfaces.len(),
         1,
-        "expected exactly one composed surface, found {}",
+        "expected exactly one generated surface, found {}",
         surfaces.len()
     );
 
-    let grid = client.find_all(Locator::Css(".widget-grid")).await.expect("find .widget-grid");
+    let legacy = client.find_all(Locator::Css(".widget-grid")).await.expect("find .widget-grid");
     assert!(
-        grid.is_empty(),
-        "legacy widget-grid fallback rendered; composition did not produce a surface"
+        legacy.is_empty(),
+        "legacy widget-grid fallback rendered; generation did not produce a surface"
     );
 
-    for class in theme.widget_classes {
-        let selector = format!(".surface-widget.{}", class);
-        let widgets = client.find_all(Locator::Css(&selector)).await.expect("find widgets");
-        assert!(
-            !widgets.is_empty(),
-            "theme {:?} expected at least one {class}, found none",
-            theme.prompt
-        );
-    }
-
-    let chips = client
-        .find_all(Locator::Css(".surface-widget .evidence-chip"))
+    // The surface model must mark its values so the fidelity gate can bind
+    // them to specialist evidence; the host must show those marks.
+    let markers = client
+        .find_all(Locator::Css("[data-aios]"))
         .await
-        .expect("find evidence chips");
+        .expect("find data-aios markers");
     assert!(
-        !chips.is_empty(),
-        "surface widgets must bind evidence; found no evidence chips"
+        !markers.is_empty(),
+        "theme {:?} rendered a surface with no data-aios-marked values",
+        theme.prompt
     );
-}
-
-async fn close_canvas(client: &Client, canvas: &fantoccini::wd::WindowHandle) {
-    client.switch_to_window(canvas.clone()).await.expect("switch to canvas");
-    let close = client
-        .find(Locator::Css("[data-close]"))
-        .await
-        .expect("canvas close button");
-    close.click().await.expect("click canvas close");
 }
 
 async fn dump_windows(client: &Client, windows: &[fantoccini::wd::WindowHandle]) {
@@ -321,10 +299,9 @@ async fn user_loops_prompts_and_verifies_surfaces() {
 
     for theme in THEMES {
         eprintln!("--- prompt: {:?}", theme.prompt);
-        submit_and_open_surface(&client, &sidebar, &mut canvas, theme.prompt, theme.title).await;
+        submit_and_open_surface(&client, &sidebar, &mut canvas, theme.prompt, theme.key).await;
         let canvas_handle = canvas.as_ref().expect("canvas handle discovered");
         assert_surface(&client, canvas_handle, theme).await;
-        close_canvas(&client, canvas_handle).await;
     }
 
     client.close().await.expect("close webdriver session");
