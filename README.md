@@ -101,6 +101,23 @@ The orchestration core was recently modularized: `src/coordinator` is split into
 routing, providers, chat, planning, consent, and surface modules behind the same
 public `aios::coordinator::*` API.
 
+There is also a real desktop surface now, not just a design doc. `src-tauri/`
+hosts a Tauri backend (`src-tauri/src/main.rs`) that bridges the Rust core to a
+webview: it handles chat prompts, discovers models, manages providers and role
+assignments, builds live System Graph snapshots, and configures the resident
+sidebar as an X11 layer-shell dock. The frontend in `frontend/` renders the
+surface canvas, draggable widgets, and input regions, plus the sidebar (icon
+rail, inspector, composer, alerts) and the settings and chat panels.
+
+The surface itself is more than a window. `src/surface/` defines the widget
+schema (`Surface`, `SurfaceWidget`, placement, layout, density) and a composer
+that emits surface-composition instructions, with a validator that enforces
+evidence-backed, value-checked generation. A `surface_harness` binary boots
+surfaces, and a deterministic campaign harness (`src/harness.rs`) replays prompt
+plans, quarantines denied steps, and records the whole run — the basis for the
+"groundless generation, second-opinion verification" loop. End-to-end UI tests
+live in `tests/ui_e2e.rs`.
+
 Milestones, briefly:
 
 - **M0 — Design foundation.** Done.
@@ -127,16 +144,24 @@ Milestones, briefly:
   broker.
 - **M8 — Generative surface desktop foundation.** The resident sidebar, live
   specialist evidence path, groundless surface generation, value validation,
-  transparent canvas, click-through, and widget movement are working. The
-  next lifecycle work is documented in
-  `docs/milestones/0002-multi-surface-lifecycle-plan.md`.
+  transparent canvas, click-through, and widget movement are working. The next
+  lifecycle work is documented in
+  `docs/milestones/0002-multi-surface-lifecycle-plan.md`: multi-surface
+  management, persistent surface editing, and composing surfaces across multiple
+  specialists. The surface schema, composer, and evidence validator
+  (`src/surface/`) are in place, as is the `surface_harness` boot binary and a
+  deterministic campaign harness that quarantines denied steps and records each
+  run; end-to-end UI tests are in `tests/ui_e2e.rs`.
 
 ## What I need help with
 
-- **Finish M8.** Add multi-surface lifecycle, surface editing, multi-specialist
-  composition, and the premium sidebar workstream. The current order and
-  acceptance gates are in
-  `docs/milestones/0002-multi-surface-lifecycle-plan.md`.
+- **Finish M8.** The surface generation, validation, and campaign-harness
+  plumbing exist; what's left is the lifecycle around them: multi-surface
+  management, persistent surface editing (rearranged and moved widgets that
+  stick), multi-specialist composition (one surface drawing from several
+  specialists), and the premium sidebar workstream. The order and acceptance
+  gates are in `docs/milestones/0002-multi-surface-lifecycle-plan.md`; the
+  sidebar administration plan is `docs/milestones/0003-sidebar-administration-panel.md`.
 - **Find the flaw.** The docs are "frozen" in the sense that changing them is
   deliberately annoying, not forbidden. When the first real code contradicts
   them, the code wins. If you read something and it's wrong, an issue is the
