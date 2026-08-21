@@ -12,7 +12,8 @@ The generative surface has real plumbing now, not just a design doc:
 - `src/surface/` holds the widget schema (`schema.rs`), the composer that emits
   surface-composition instructions (`composer.rs`), the evidence/value validator
   (`validator.rs` plus `evidence.rs`), a renderer (`render.rs`), and a stub
-  server for harnessing.
+  server for harnessing. Note: this is the typed surface/v1 path — see the
+  correction below before treating it as the intended architecture.
 - `src/bin/surface_harness.rs` boots surfaces standalone.
 - `src/harness.rs` is a deterministic campaign harness: it replays prompt plans,
   enforces capability and clearance at each step, quarantines steps whose
@@ -36,6 +37,25 @@ The full capability list and rules are in `AGENTS.md`.
 
 Test baseline: `cargo test --lib` is 432 passing tests (was 438). One real-model
 test stays ignored.
+
+## Surface Path Correction (2026-08-21)
+
+The owner restated the architecture rule: every surface is generated on the fly
+by a groundless model call working from gathered specialist evidence, then
+checked for value fidelity before anything renders. Nothing is predetermined —
+no CPU, RAM, or dashboard widget types. This matches milestone 0001 ("a
+separate groundless generation call produces a surface from the verified
+evidence") and the 0002 target model (`SurfaceRecord.generated_html`).
+
+The code drifted from that rule. The free-form generator,
+`Coordinator::compose_unconstrained_html`, works but is gated behind
+`AIOS_UNCONSTRAINED_SURFACE=1` (`src-tauri/src/main.rs:890`). The default path
+is instead a typed surface/v1 IR — fixed metric/gauge/status/chart/notice
+widget renderers in `src/surface/schema.rs` and `frontend/src/main.ts` — added
+in commit `6bcefc6`, one commit after the working groundless foundation
+`8afcded`. That typed path contradicts the stated design. Restoring
+generated-on-the-fly surfaces as the only path is the top open item; until
+then, treat the IR as legacy rather than architecture.
 
 ## Relevant Paths
 
@@ -70,10 +90,17 @@ test stays ignored.
 
 ## Open Work
 
-- M8 finish line: multi-surface lifecycle, persistent surface editing (widgets
-  that stay where you put them), multi-specialist composition, and the premium
-  sidebar. Plans: `docs/milestones/0002-multi-surface-lifecycle-plan.md`,
-  `docs/milestones/0003-sidebar-administration-panel.md`.
+- Restore on-the-fly surface generation as the only surface path: make
+  `compose_unconstrained_html` the default and retire the typed surface/v1 IR
+  (see the correction above).
+- M8 lifecycle stages: a real surface manager, multiple surfaces at once, and
+  persistent editing. There is no manager yet and the frontend holds a single
+  slot, so a second request replaces the first surface. Plans:
+  `docs/milestones/0002-multi-surface-lifecycle-plan.md`. Multi-specialist
+  composition already works, and the sidebar administration backend
+  (providers, model role assignment, status snapshots) exists; the remaining
+  sidebar work is visual polish and the full chat experience
+  (`docs/milestones/0003-sidebar-administration-panel.md`).
 - Verify the desktop UI visually after a rebuild; the bespoke sidebar graph
   renderer should show real node health and backend activity.
 - The semantic-refresh hook depends on an OpenRouter key in `~/.aios/config.toml`

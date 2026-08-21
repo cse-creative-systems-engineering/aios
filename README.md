@@ -109,14 +109,19 @@ sidebar as an X11 layer-shell dock. The frontend in `frontend/` renders the
 surface canvas, draggable widgets, and input regions, plus the sidebar (icon
 rail, inspector, composer, alerts) and the settings and chat panels.
 
-The surface itself is more than a window. `src/surface/` defines the widget
-schema (`Surface`, `SurfaceWidget`, placement, layout, density) and a composer
-that emits surface-composition instructions, with a validator that enforces
-evidence-backed, value-checked generation. A `surface_harness` binary boots
-surfaces, and a deterministic campaign harness (`src/harness.rs`) replays prompt
-plans, quarantines denied steps, and records the whole run — the basis for the
-"groundless generation, second-opinion verification" loop. End-to-end UI tests
-live in `tests/ui_e2e.rs`.
+Surfaces follow one rule: they are never templates. Every surface is generated
+at request time by a groundless model call working from gathered specialist
+evidence, then checked for value fidelity against that evidence before anything
+renders. There are no predetermined CPU, RAM, or dashboard widgets — the model
+draws what the question needs, fresh each time. That free-form generator exists
+(`compose_unconstrained_html`) but currently sits behind
+`AIOS_UNCONSTRAINED_SURFACE=1`, while a typed surface/v1 schema with fixed
+metric/gauge/status/chart/notice renderers became the default path instead.
+That inversion was never the design; putting generated-on-the-fly surfaces back
+as the only path is the first item under "What I need help with". A
+`surface_harness` binary boots surfaces, and a deterministic campaign harness
+(`src/harness.rs`) replays prompt plans, quarantines denied steps, and records
+each run. End-to-end UI tests live in `tests/ui_e2e.rs`.
 
 Milestones, briefly:
 
@@ -144,24 +149,33 @@ Milestones, briefly:
   broker.
 - **M8 — Generative surface desktop foundation.** The resident sidebar, live
   specialist evidence path, groundless surface generation, value validation,
-  transparent canvas, click-through, and widget movement are working. The next
-  lifecycle work is documented in
-  `docs/milestones/0002-multi-surface-lifecycle-plan.md`: multi-surface
-  management, persistent surface editing, and composing surfaces across multiple
-  specialists. The surface schema, composer, and evidence validator
-  (`src/surface/`) are in place, as is the `surface_harness` boot binary and a
-  deterministic campaign harness that quarantines denied steps and records each
-  run; end-to-end UI tests are in `tests/ui_e2e.rs`.
+  transparent canvas, click-through, and widget movement are working.
+  Multi-specialist composition works too: one surface can draw evidence from
+  several specialists at once (deterministic coverage tests prove the CPU plus
+  RAM case), and the sidebar administration backend from milestone 0003
+  (provider registry, model role assignment, status snapshots) is implemented,
+  though its visual polish and full chat experience are not. What remains of
+  the lifecycle is in `docs/milestones/0002-multi-surface-lifecycle-plan.md`:
+  a real surface manager, several surfaces at once, and persistent editing —
+  today a second request still replaces the first because the renderer holds a
+  single slot.
 
 ## What I need help with
 
-- **Finish M8.** The surface generation, validation, and campaign-harness
-  plumbing exist; what's left is the lifecycle around them: multi-surface
-  management, persistent surface editing (rearranged and moved widgets that
-  stick), multi-specialist composition (one surface drawing from several
-  specialists), and the premium sidebar workstream. The order and acceptance
-  gates are in `docs/milestones/0002-multi-surface-lifecycle-plan.md`; the
-  sidebar administration plan is `docs/milestones/0003-sidebar-administration-panel.md`.
+- **Restore on-the-fly surface generation as the only path.** All surfaces are
+  supposed to be generated live by a groundless model from gathered evidence
+  and validated for value fidelity — nothing predetermined. The free-form
+  generator (`compose_unconstrained_html`) works but is gated behind
+  `AIOS_UNCONSTRAINED_SURFACE=1`, while a typed widget IR with fixed
+  metric/gauge/status/chart/notice renderers (`src/surface/schema.rs`) took
+  over as the default. Flip the paths back and retire the IR.
+- **Finish M8's lifecycle stages.** Multi-surface management and persistent
+  editing are still open: there is no surface manager yet and the frontend
+  holds a single slot, so a second request replaces the first surface.
+  Composition across specialists already works. Order and acceptance gates are
+  in `docs/milestones/0002-multi-surface-lifecycle-plan.md`; the remaining
+  sidebar polish and full chat experience are in
+  `docs/milestones/0003-sidebar-administration-panel.md`.
 - **Find the flaw.** The docs are "frozen" in the sense that changing them is
   deliberately annoying, not forbidden. When the first real code contradicts
   them, the code wins. If you read something and it's wrong, an issue is the
