@@ -43,6 +43,7 @@ pub fn submit(
         max_tokens,
         temperature: 0.3,
         seed: None,
+        model: None,
     };
     let response = gateway.submit(&task, &request)?;
     let text = strip_think(response.response.text.trim());

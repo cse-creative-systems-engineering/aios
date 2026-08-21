@@ -369,9 +369,9 @@ pub fn help_text() -> &'static str {
      \x20 plan <intent>    plan steps then verify them\n\
      \x20 model <text>     ask the model directly, no agent framing\n\
      \x20 route            show the current model route\n\
-     \x20 tools            list read-only specialist tools\n\
+     \x20 tools            list specialist tools\n\
      \x20 harness run [--seed N] [--enforce] [--quarantine a,b] [--tool PREFIX] [--json]\n\
-     \x20 harness list-tools   deterministic read-only observation campaign\n\
+     \x20 harness list-tools   deterministic observation campaign\n\
      \x20 observe <t>      node details (id, label, or attribute value)\n\
      \x20 diagnose <t>     health and dependency summary for a node\n\
      \x20 query <type>     list nodes of a type (device, service, driver, ...)\n\
@@ -446,6 +446,7 @@ mod tests {
         let config = AiosConfig {
             model: None,
             shell: None,
+            roles: None,
             provider: vec![ProviderConfig {
                 id: "stub".into(),
                 kind: "openai-compatible".into(),
@@ -461,6 +462,26 @@ mod tests {
         let coordinator =
             Coordinator::boot_with_probe(config, Box::new(FakeProbe(ConnectivityState::Internet)))
                 .expect("boot");
+        // No tier-ranking fallback: assign the stub provider the way the
+        // settings panel would.
+        coordinator
+            .gateway
+            .router()
+            .set_assignment(
+                "chat",
+                crate::model::ProviderId::new("stub"),
+                crate::model::ModelId::new("stub-model"),
+            )
+            .expect("chat assignment");
+        coordinator
+            .gateway
+            .router()
+            .set_assignment(
+                "verification",
+                crate::model::ProviderId::new("stub"),
+                crate::model::ModelId::new("stub-model"),
+            )
+            .expect("verification assignment");
         Facade::new(coordinator)
     }
 

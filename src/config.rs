@@ -1,14 +1,17 @@
 use crate::model::{ModelCapability, ProviderTier};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct AiosConfig {
     pub model: Option<ModelConfig>,
     #[serde(default)]
     pub provider: Vec<ProviderConfig>,
     #[serde(default)]
     pub shell: Option<ShellConfig>,
+    #[serde(default)]
+    pub roles: Option<RolesConfig>,
 }
 
 impl Default for AiosConfig {
@@ -17,6 +20,7 @@ impl Default for AiosConfig {
             model: None,
             provider: Vec::new(),
             shell: None,
+            roles: None,
         }
     }
 }
@@ -63,11 +67,47 @@ impl AiosConfig {
             }
             provider.validate()?;
         }
+        if let Some(roles) = &self.roles {
+            roles.validate(&self.provider)?;
+        }
         Ok(())
     }
 
     pub fn provider(&self, id: &str) -> Option<&ProviderConfig> {
         self.provider.iter().find(|p| p.id == id)
+    }
+
+    pub fn provider_mut(&mut self, id: &str) -> Option<&mut ProviderConfig> {
+        self.provider.iter_mut().find(|p| p.id == id)
+    }
+
+    /// Persist the config to `path`. Used by the settings panel so provider
+    /// and role changes survive a restart. The write is atomic (temp file +
+    /// rename) so a crash mid-write cannot leave a truncated config.
+    pub fn save_to(&self, path: &PathBuf) -> Result<(), ConfigError> {
+        let text = toml::to_string_pretty(self).map_err(|e| ConfigError::Parse {
+            path: path.display().to_string(),
+            reason: e.to_string(),
+        })?;
+        let tmp = path.with_extension("toml.tmp");
+        std::fs::write(&tmp, text).map_err(|e| ConfigError::Io {
+            path: tmp.display().to_string(),
+            reason: e.to_string(),
+        })?;
+        std::fs::rename(&tmp, path).map_err(|e| ConfigError::Io {
+            path: path.display().to_string(),
+            reason: e.to_string(),
+        })?;
+        Ok(())
+    }
+
+    /// Path of the config file this instance was loaded from (or the default
+    /// path for a fresh config).
+    pub fn source_path(&self) -> PathBuf {
+        match std::env::var("AIOS_CONFIG") {
+            Ok(p) => PathBuf::from(p),
+            Err(_) => Self::default_path(),
+        }
     }
 }
 
@@ -77,7 +117,7 @@ fn dirs_home() -> PathBuf {
         .unwrap_or_else(std::env::temp_dir)
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ModelConfig {
     pub path: Option<PathBuf>,
     #[serde(default = "default_ctx")]
@@ -111,7 +151,7 @@ const fn default_max_tokens() -> u32 {
     1024
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ProviderConfig {
     pub id: String,
     pub kind: String,
@@ -146,6 +186,10 @@ impl ProviderConfig {
         }
     }
 
+    pub fn validate_pub(&self) -> Result<(), ConfigError> {
+        self.validate()
+    }
+
     fn validate(&self) -> Result<(), ConfigError> {
         match self.kind.as_str() {
             "local" => {
@@ -169,12 +213,10 @@ impl ProviderConfig {
                         self.id
                     )));
                 }
-                if self.model.is_none() {
-                    return Err(ConfigError::InvalidProvider(format!(
-                        "provider '{}' (openai-compatible) needs a model name",
-                        self.id
-                    )));
-                }
+                // No model requirement: models come from live /models
+                // discovery, and roles pick from that list in the settings
+                // panel. The optional `model` field is only a fallback id for
+                // registry seeding.
                 let both_keys = self.api_key.is_some() && self.api_key_env.is_some();
                 if both_keys {
                     return Err(ConfigError::InvalidProvider(format!(
@@ -231,7 +273,7 @@ impl ProviderConfig {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ShellConfig {
     #[serde(default = "default_history_len")]
     pub history_len: usize,
@@ -243,12 +285,78 @@ const fn default_history_len() -> usize {
     20
 }
 
+/// Explicit provider/model assignment for one agent role. Both fields are
+/// required: an assignment that names a provider but not a model (or vice
+/// versa) is ambiguous and rejected at load (ADR-0003).
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct RoleAssignment {
+    pub provider: String,
+    pub model: String,
+}
+
+/// The `[roles]` config section. Each entry pins one role to one
+/// provider/model pair chosen in the settings panel. Unlisted roles are
+/// simply unassigned; nothing routes until the user picks a model.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct RolesConfig {
+    /// Generative surface composition (the canvas widget model).
+    pub surface: Option<RoleAssignment>,
+    /// Conversational chat, served by the planner agent.
+    pub chat: Option<RoleAssignment>,
+    /// Plan verification before execution.
+    #[serde(default)]
+    pub verification: Option<RoleAssignment>,
+    /// Per-specialist assignments keyed by domain ("wifi", "storage", ...).
+    /// Specialists are pure Rust tools today; these slots are where their
+    /// model calls will land.
+    #[serde(default)]
+    pub specialists: HashMap<String, RoleAssignment>,
+}
+
+impl RolesConfig {
+    fn validate(&self, providers: &[ProviderConfig]) -> Result<(), ConfigError> {
+        let named = [
+            ("surface", &self.surface),
+            ("chat", &self.chat),
+            ("verification", &self.verification),
+        ];
+        for (role, assignment) in named {
+            Self::check_provider(providers, role, assignment.as_ref())?;
+        }
+        for (domain, assignment) in &self.specialists {
+            Self::check_provider(providers, &format!("specialist:{domain}"), Some(assignment))?;
+        }
+        Ok(())
+    }
+
+    fn check_provider(
+        providers: &[ProviderConfig],
+        role: &str,
+        assignment: Option<&RoleAssignment>,
+    ) -> Result<(), ConfigError> {
+        let Some(assignment) = assignment else {
+            return Ok(());
+        };
+        providers
+            .iter()
+            .find(|p| p.id == assignment.provider)
+            .map(|_| ())
+            .ok_or_else(|| {
+                ConfigError::InvalidRole(format!(
+                    "roles.{role}: provider '{}' is not configured",
+                    assignment.provider
+                ))
+            })
+    }
+}
+
 #[derive(Debug)]
 pub enum ConfigError {
     Io { path: String, reason: String },
     Parse { path: String, reason: String },
     DuplicateProvider(String),
     InvalidProvider(String),
+    InvalidRole(String),
 }
 
 impl std::fmt::Display for ConfigError {
@@ -264,6 +372,7 @@ impl std::fmt::Display for ConfigError {
                 write!(f, "provider declared twice in config: {id}")
             }
             ConfigError::InvalidProvider(reason) => write!(f, "invalid provider: {reason}"),
+            ConfigError::InvalidRole(reason) => write!(f, "invalid role assignment: {reason}"),
         }
     }
 }

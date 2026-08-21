@@ -89,6 +89,7 @@ pub fn compose_surface_with_meta(
             max_tokens,
             temperature: 0.2,
             seed: None,
+            model: None,
         };
         let response = gateway.submit(&task, &request)?;
         let surface = parse_surface(&response.response.text)?;
@@ -139,6 +140,7 @@ pub fn compose_unconstrained_html(
         max_tokens,
         temperature: 0.7,
         seed: None,
+        model: None,
     };
     let response = gateway.submit(&task, &request)?;
     let html = strip_think(response.response.text.trim());

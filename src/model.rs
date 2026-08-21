@@ -163,7 +163,7 @@ pub enum ModelCapability {
     Multimodal,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum AgentRole {
     Planner,
     Verification,
@@ -185,12 +185,27 @@ impl AgentRole {
             AgentRole::SpecialistReadOnly => vec![ModelCapability::TextGeneration],
         }
     }
+
+    /// The default assignment role id for this agent role. Specialist work
+    /// overrides this with a per-domain id ("specialist:wifi", ...) via
+    /// `ModelTask::with_role_id`.
+    pub fn id(&self) -> &'static str {
+        match self {
+            AgentRole::Planner => "chat",
+            AgentRole::Verification => "verification",
+            AgentRole::SurfaceComposition => "surface",
+            AgentRole::SpecialistReadOnly | AgentRole::SpecialistDiagnosis => "specialist",
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct ModelTask {
     pub task_id: Uuid,
     pub role: AgentRole,
+    /// Assignment role id override. When set, the gateway looks up the
+    /// assignment under this id instead of the agent role's default.
+    pub role_id: Option<String>,
     pub data_classification: DataClassification,
     pub required_capabilities: Vec<ModelCapability>,
     pub safety_critical: bool,
@@ -201,6 +216,7 @@ impl ModelTask {
         Self {
             task_id: Uuid::new_v4(),
             role,
+            role_id: None,
             data_classification,
             required_capabilities: role.required_capabilities(),
             safety_critical: false,
@@ -215,6 +231,17 @@ impl ModelTask {
         let mut task = Self::new(role, data_classification);
         task.required_capabilities = capabilities;
         task
+    }
+
+    /// Override the assignment role id, e.g. "specialist:wifi".
+    pub fn with_role_id(mut self, role_id: impl Into<String>) -> Self {
+        self.role_id = Some(role_id.into());
+        self
+    }
+
+    /// The assignment role id this task resolves against.
+    pub fn assignment_role(&self) -> &str {
+        self.role_id.as_deref().unwrap_or(self.role.id())
     }
 }
 
@@ -365,7 +392,10 @@ impl std::error::Error for RegistryError {}
 #[derive(Default)]
 pub struct ModelRegistry {
     entries: Vec<ModelEntry>,
-    index: HashMap<ModelId, usize>,
+    /// Keyed by (provider, model): the same model id may legitimately exist
+    /// on two providers (e.g. surface and chat roles pointing at one
+    /// OpenRouter model through separate provider entries).
+    index: HashMap<(ProviderId, ModelId), usize>,
 }
 
 impl ModelRegistry {
@@ -374,17 +404,17 @@ impl ModelRegistry {
     }
 
     pub fn register(&mut self, entry: ModelEntry) -> Result<(), RegistryError> {
-        if self.index.contains_key(&entry.model_id) {
+        let key = (entry.provider.clone(), entry.model_id.clone());
+        if self.index.contains_key(&key) {
             return Err(RegistryError::DuplicateModel(entry.model_id.clone()));
         }
-        let model_id = entry.model_id.clone();
         self.entries.push(entry);
-        self.index.insert(model_id, self.entries.len() - 1);
+        self.index.insert(key, self.entries.len() - 1);
         Ok(())
     }
 
     pub fn get(&self, model_id: &ModelId) -> Option<&ModelEntry> {
-        self.index.get(model_id).map(|i| &self.entries[*i])
+        self.entries.iter().find(|e| &e.model_id == model_id)
     }
 
     pub fn len(&self) -> usize {
@@ -463,46 +493,9 @@ impl ModelRegistry {
     }
 }
 
-/// Cooldown (seconds) before an unhealthy provider may be re-probed and
-/// returned to the routing pool (model-routing §3.5).
+/// Cooldown (seconds) before an unhealthy provider may be re-probed
+/// (model-routing §3.5).
 const HEALTH_RETRY_SECONDS: u64 = 30;
-
-#[derive(Clone, Debug)]
-pub struct Pin {
-    pub provider: ProviderId,
-    pub model: ModelId,
-}
-
-#[derive(Default)]
-pub struct TaskPinner {
-    pins: HashMap<Uuid, Pin>,
-}
-
-impl TaskPinner {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn pin(&mut self, task_id: Uuid, provider: ProviderId, model: ModelId) {
-        self.pins.insert(task_id, Pin { provider, model });
-    }
-
-    pub fn get(&self, task_id: &Uuid) -> Option<&Pin> {
-        self.pins.get(task_id)
-    }
-
-    pub fn unpin(&mut self, task_id: &Uuid) {
-        self.pins.remove(task_id);
-    }
-
-    pub fn len(&self) -> usize {
-        self.pins.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.pins.is_empty()
-    }
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RoutingDecision {
@@ -515,23 +508,24 @@ pub struct RoutingDecision {
 
 #[derive(Debug)]
 pub enum RoutingError {
-    NoEligibleProvider,
+    NoAssignmentForRole(String),
     ProviderUnhealthy(ProviderId),
-    DataClassificationBlocked(DataClassification),
     NoConsent(DataClassification),
-    InsufficientResources,
+    UnknownAssignment(ProviderId, ModelId),
 }
 
 impl std::fmt::Display for RoutingError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            RoutingError::NoEligibleProvider => write!(f, "no eligible provider"),
+            RoutingError::NoAssignmentForRole(role) => write!(
+                f,
+                "no model assigned for role '{role}'. Open Settings and assign a provider and model."
+            ),
             RoutingError::ProviderUnhealthy(p) => write!(f, "provider unhealthy: {p}"),
-            RoutingError::DataClassificationBlocked(c) => {
-                write!(f, "data classification blocked: {c:?}")
-            }
             RoutingError::NoConsent(c) => write!(f, "no consent for data class: {c:?}"),
-            RoutingError::InsufficientResources => write!(f, "insufficient resources"),
+            RoutingError::UnknownAssignment(p, m) => {
+                write!(f, "role assignment names unknown model {m} on provider {p}")
+            }
         }
     }
 }
@@ -542,6 +536,11 @@ pub struct ModelRouter {
     registry: Arc<RwLock<ModelRegistry>>,
     consent: Arc<RwLock<HashMap<ProviderId, ConsentRecord>>>,
     connectivity: Arc<RwLock<ConnectivityState>>,
+    /// Explicit per-role assignments set from the settings panel. There is
+    /// no fallback routing: an unassigned role fails loudly at submit time.
+    /// Keys are role ids ("chat", "verification", "surface",
+    /// "specialist:wifi", ...).
+    assignments: Arc<RwLock<HashMap<String, (ProviderId, ModelId)>>>,
 }
 
 impl ModelRouter {
@@ -550,7 +549,40 @@ impl ModelRouter {
             registry,
             consent: Arc::new(RwLock::new(HashMap::new())),
             connectivity: Arc::new(RwLock::new(ConnectivityState::Offline)),
+            assignments: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    /// Store the assignment for one role. Pair validation against the live
+    /// discovery catalogue happens in the coordinator before this is called;
+    /// the router is the source of truth for what is assigned, not what
+    /// exists.
+    pub fn set_assignment(
+        &self,
+        role: &str,
+        provider: ProviderId,
+        model: ModelId,
+    ) -> Result<(), RoutingError> {
+        self.assignments
+            .write()
+            .expect("assignments lock")
+            .insert(role.to_string(), (provider, model));
+        Ok(())
+    }
+
+    pub fn assignment(&self, role: &str) -> Option<(ProviderId, ModelId)> {
+        self.assignments
+            .read()
+            .expect("assignments lock")
+            .get(role)
+            .cloned()
+    }
+
+    pub fn clear_assignment(&self, role: &str) {
+        self.assignments
+            .write()
+            .expect("assignments lock")
+            .remove(role);
     }
 
     pub fn connectivity_handle(&self) -> Arc<RwLock<ConnectivityState>> {
@@ -591,89 +623,6 @@ impl ModelRouter {
             .get(provider)
             .cloned()
     }
-
-    pub fn route(
-        &self,
-        task: &ModelTask,
-        exclude: &[ProviderId],
-    ) -> Result<RoutingDecision, RoutingError> {
-        let state = self.connectivity();
-        let consent = self.consent.read().expect("consent lock");
-        let registry = self.registry.read().expect("registry lock");
-        let tiers = tiers_for(state);
-
-        let mut eligible: Vec<&ModelEntry> = Vec::new();
-        let mut unhealthy: Vec<ProviderId> = Vec::new();
-        let mut no_consent = false;
-        let mut blocked = false;
-        let mut no_capability = false;
-
-        for entry in registry.iter() {
-            if exclude.contains(&entry.provider) {
-                continue;
-            }
-            if !tiers.contains(&entry.tier) {
-                continue;
-            }
-            if entry.health.state == HealthState::Unhealthy {
-                // model-routing §3.5: an unhealthy provider is re-checked
-                // periodically and returns to the pool once its cooldown has
-                // passed. It is re-probed via is_healthy() on selection.
-                let cooldown_elapsed = entry
-                    .health
-                    .retry_after
-                    .map(|t| now() >= t)
-                    .unwrap_or(false);
-                if !cooldown_elapsed {
-                    unhealthy.push(entry.provider.clone());
-                    continue;
-                }
-            }
-            let consent_ok = consent
-                .get(&entry.provider)
-                .map(|c| c.is_active_for(task.data_classification))
-                .unwrap_or(false);
-            if !tier_allows(entry.tier, task.data_classification, consent_ok) {
-                if needs_consent(entry.tier, task.data_classification) {
-                    no_consent = true;
-                } else {
-                    blocked = true;
-                }
-                continue;
-            }
-            if !has_all_capabilities(&entry.capabilities, &task.required_capabilities) {
-                no_capability = true;
-                continue;
-            }
-            eligible.push(entry);
-        }
-
-        if eligible.is_empty() {
-            return Err(diagnose_routing_error(
-                unhealthy,
-                no_consent,
-                blocked,
-                no_capability,
-                task.data_classification,
-            ));
-        }
-
-        let mut best = eligible[0];
-        for entry in &eligible[1..] {
-            if entry.tier.rank() > best.tier.rank() {
-                best = entry;
-            }
-        }
-
-        let reduced_confidence = state == ConnectivityState::Offline || eligible.len() == 1;
-        Ok(RoutingDecision {
-            provider: best.provider.clone(),
-            model: best.model_id.clone(),
-            connectivity_state: state,
-            data_classification: task.data_classification,
-            reduced_confidence,
-        })
-    }
 }
 
 fn tier_allows(tier: ProviderTier, classification: DataClassification, consent_ok: bool) -> bool {
@@ -686,43 +635,6 @@ fn tier_allows(tier: ProviderTier, classification: DataClassification, consent_o
             _ => consent_ok,
         },
     }
-}
-
-fn needs_consent(tier: ProviderTier, classification: DataClassification) -> bool {
-    match tier {
-        ProviderTier::Local => false,
-        ProviderTier::Lan => !matches!(classification, DataClassification::Public),
-        ProviderTier::Internet => matches!(
-            classification,
-            DataClassification::PersonalMemory | DataClassification::SystemConfig
-        ),
-    }
-}
-
-fn has_all_capabilities(model: &[ModelCapability], required: &[ModelCapability]) -> bool {
-    required.iter().all(|cap| model.contains(cap))
-}
-
-fn diagnose_routing_error(
-    unhealthy: Vec<ProviderId>,
-    no_consent: bool,
-    blocked: bool,
-    no_capability: bool,
-    classification: DataClassification,
-) -> RoutingError {
-    if let Some(provider) = unhealthy.first() {
-        return RoutingError::ProviderUnhealthy(provider.clone());
-    }
-    if no_consent {
-        return RoutingError::NoConsent(classification);
-    }
-    if blocked {
-        return RoutingError::DataClassificationBlocked(classification);
-    }
-    if no_capability {
-        return RoutingError::NoEligibleProvider;
-    }
-    RoutingError::NoEligibleProvider
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -754,6 +666,10 @@ pub struct GenerationRequest {
     pub max_tokens: u32,
     pub temperature: f32,
     pub seed: Option<u64>,
+    /// The model the request should run on. Set by the gateway from the
+    /// role assignment; backends fall back to their registered default when
+    /// absent.
+    pub model: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -796,6 +712,7 @@ impl std::error::Error for GenerationError {}
 
 pub trait ModelBackend: Send + Sync {
     fn provider_id(&self) -> &ProviderId;
+    fn tier(&self) -> ProviderTier;
     fn is_healthy(&self) -> bool;
     fn generate(&self, request: &GenerationRequest) -> Result<GenerationResponse, GenerationError>;
 }
@@ -804,6 +721,7 @@ pub trait ModelBackend: Send + Sync {
 pub enum GatewayError {
     Routing(RoutingError),
     ProviderUnavailable(ProviderId),
+    ProviderOffline(ProviderId),
     Generation {
         provider: ProviderId,
         message: String,
@@ -814,7 +732,7 @@ impl GatewayError {
     pub fn provider(&self) -> Option<&ProviderId> {
         match self {
             GatewayError::Routing(_) => None,
-            GatewayError::ProviderUnavailable(p) => Some(p),
+            GatewayError::ProviderUnavailable(p) | GatewayError::ProviderOffline(p) => Some(p),
             GatewayError::Generation { provider, .. } => Some(provider),
         }
     }
@@ -823,8 +741,12 @@ impl GatewayError {
 impl std::fmt::Display for GatewayError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            GatewayError::Routing(e) => write!(f, "routing failed: {e}"),
+            GatewayError::Routing(e) => write!(f, "{e}"),
             GatewayError::ProviderUnavailable(p) => write!(f, "provider unavailable: {p}"),
+            GatewayError::ProviderOffline(p) => write!(
+                f,
+                "provider {p} needs internet but the system is offline"
+            ),
             GatewayError::Generation { provider, message } => {
                 write!(f, "generation failed on {provider}: {message}")
             }
@@ -843,7 +765,6 @@ pub struct GatewayResponse {
 pub struct ModelGateway {
     registry: Arc<RwLock<ModelRegistry>>,
     router: ModelRouter,
-    pinner: Arc<RwLock<TaskPinner>>,
     backends: RwLock<HashMap<ProviderId, Arc<dyn ModelBackend>>>,
 }
 
@@ -853,7 +774,6 @@ impl ModelGateway {
         Self {
             registry,
             router,
-            pinner: Arc::new(RwLock::new(TaskPinner::new())),
             backends: RwLock::new(HashMap::new()),
         }
     }
@@ -878,111 +798,104 @@ impl ModelGateway {
             .mark_provider_healthy(&provider);
     }
 
+    /// Run one request on the role's assigned provider/model. There is no
+    /// fallback routing: an unassigned role fails loudly, and a failing
+    /// assignment surfaces its error to the caller.
     pub fn submit(
         &self,
         task: &ModelTask,
         request: &GenerationRequest,
     ) -> Result<GatewayResponse, GatewayError> {
-        self.submit_inner(task, request, &[])
-    }
+        let (provider, model) = self
+            .router
+            .assignment(task.assignment_role())
+            .ok_or_else(|| {
+                GatewayError::Routing(RoutingError::NoAssignmentForRole(
+                    task.assignment_role().to_string(),
+                ))
+            })?;
 
-    fn submit_inner(
-        &self,
-        task: &ModelTask,
-        request: &GenerationRequest,
-        exclude: &[ProviderId],
-    ) -> Result<GatewayResponse, GatewayError> {
-        let pinned = self
-            .pinner
-            .read()
-            .expect("pinner lock")
-            .get(&task.task_id)
-            .cloned();
-
-        let (pin, decision) = match pinned {
-            Some(pin) => {
-                let decision = RoutingDecision {
-                    provider: pin.provider.clone(),
-                    model: pin.model.clone(),
-                    connectivity_state: self.router.connectivity(),
-                    data_classification: task.data_classification,
-                    reduced_confidence: self.router.connectivity() == ConnectivityState::Offline,
-                };
-                (pin, decision)
-            }
-            None => {
-                let decision = self
-                    .router
-                    .route(task, exclude)
-                    .map_err(GatewayError::Routing)?;
-                self.pinner.write().expect("pinner lock").pin(
-                    task.task_id,
-                    decision.provider.clone(),
-                    decision.model.clone(),
-                );
-                let pin = Pin {
-                    provider: decision.provider.clone(),
-                    model: decision.model.clone(),
-                };
-                (pin, decision)
-            }
-        };
-
-        match self.generate_on(&pin, request) {
-            Ok(response) => Ok(GatewayResponse { decision, response }),
-            Err(err) => {
-                self.pinner.write().expect("pinner lock").unpin(&task.task_id);
-                Err(err)
-            }
-        }
-    }
-
-    fn generate_on(
-        &self,
-        pin: &Pin,
-        request: &GenerationRequest,
-    ) -> Result<GenerationResponse, GatewayError> {
         let backend = self
             .backends
             .read()
             .expect("backends lock")
-            .get(&pin.provider)
+            .get(&provider)
             .cloned()
-            .ok_or_else(|| GatewayError::ProviderUnavailable(pin.provider.clone()))?;
+            .ok_or_else(|| GatewayError::ProviderUnavailable(provider.clone()))?;
 
         if !backend.is_healthy() {
             self.registry
                 .write()
                 .expect("registry lock")
-                .mark_provider_unhealthy(&pin.provider);
-            return Err(GatewayError::ProviderUnavailable(pin.provider.clone()));
+                .mark_provider_unhealthy(&provider);
+            return Err(GatewayError::ProviderUnavailable(provider.clone()));
         }
 
+        // Policy gates that used to live in tier ranking: an internet
+        // provider is unusable offline, and consent still applies to the
+        // assigned provider's tier.
+        let tier = backend.tier();
+        if tier == ProviderTier::Internet
+            && self.router.connectivity() == ConnectivityState::Offline
+        {
+            return Err(GatewayError::ProviderOffline(provider.clone()));
+        }
+        let classification = task.data_classification;
+        let consent_ok = self
+            .router
+            .consent_for(&provider)
+            .map(|c| c.is_active_for(classification))
+            .unwrap_or(false);
+        if !tier_allows(tier, classification, consent_ok) {
+            return Err(GatewayError::Routing(RoutingError::NoConsent(
+                classification,
+            )));
+        }
+
+        let mut request = request.clone();
+        request.model = Some(model.to_string());
+
         let started = Instant::now();
-        let result = backend.generate(request);
+        let mut result = backend.generate(&request);
+        // Recoverable failures (upstream provider blips, transport drops) get
+        // one immediate retry: they are usually transient and a single bad
+        // response should not fail the task or cool the provider down.
+        if matches!(&result, Err(error) if error.recoverable) {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            result = backend.generate(&request);
+        }
         let latency_ms = started.elapsed().as_millis() as u64;
 
-        match result {
+        let response = match result {
             Ok(response) => {
                 self.registry
                     .write()
                     .expect("registry lock")
-                    .record_success(&pin.provider, latency_ms);
-                Ok(response)
+                    .record_success(&provider, latency_ms);
+                response
             }
             Err(error) => {
                 if error.recoverable {
                     self.registry
                         .write()
                         .expect("registry lock")
-                        .mark_provider_unhealthy(&pin.provider);
+                        .mark_provider_unhealthy(&provider);
                 }
-                Err(GatewayError::Generation {
-                    provider: pin.provider.clone(),
+                return Err(GatewayError::Generation {
+                    provider: provider.clone(),
                     message: error.message,
-                })
+                });
             }
-        }
+        };
+
+        let decision = RoutingDecision {
+            provider,
+            model,
+            connectivity_state: self.router.connectivity(),
+            data_classification: task.data_classification,
+            reduced_confidence: self.router.connectivity() == ConnectivityState::Offline,
+        };
+        Ok(GatewayResponse { decision, response })
     }
 }
 
@@ -1037,10 +950,6 @@ mod tests {
         Arc::new(RwLock::new(registry))
     }
 
-    fn router(entries: Vec<ModelEntry>) -> ModelRouter {
-        ModelRouter::new(registry_with(entries))
-    }
-
     fn public_task() -> ModelTask {
         ModelTask::new(AgentRole::SpecialistReadOnly, DataClassification::Public)
     }
@@ -1073,249 +982,6 @@ mod tests {
     }
 
     #[test]
-    fn offline_routes_local() {
-        let r = router(vec![
-            internet_model("qwen", &reasoning()),
-            local_model("qwen-local", &reasoning()),
-        ]);
-        r.set_connectivity(ConnectivityState::Offline);
-        let decision = r.route(&public_task(), &[]).expect("route");
-        assert_eq!(decision.provider, ProviderId::local());
-        assert_eq!(decision.model, ModelId::new("qwen-local"));
-        assert!(decision.reduced_confidence);
-    }
-
-    #[test]
-    fn offline_excludes_internet() {
-        let r = router(vec![internet_model("qwen", &reasoning())]);
-        r.set_connectivity(ConnectivityState::Offline);
-        assert!(matches!(
-            r.route(&public_task(), &[]),
-            Err(RoutingError::NoEligibleProvider)
-        ));
-    }
-
-    #[test]
-    fn tier_priority_by_connectivity() {
-        let entries = vec![
-            local_model("local-a", &reasoning()),
-            lan_model("lan-a", &reasoning()),
-            internet_model("net-a", &reasoning()),
-        ];
-
-        let r = router(entries.clone());
-        r.set_connectivity(ConnectivityState::Internet);
-        let d = r.route(&public_task(), &[]).expect("route");
-        assert_eq!(d.provider, ProviderId::new("openrouter"));
-
-        let r = router(entries.clone());
-        r.set_connectivity(ConnectivityState::LanOnly);
-        let d = r.route(&public_task(), &[]).expect("route");
-        assert_eq!(d.provider, ProviderId::new("lan-gpu-01"));
-
-        let r = router(entries);
-        r.set_connectivity(ConnectivityState::Offline);
-        let d = r.route(&public_task(), &[]).expect("route");
-        assert_eq!(d.provider, ProviderId::local());
-    }
-
-    #[test]
-    fn registration_order_is_tiebreak() {
-        let r = router(vec![
-            internet_model("net-a", &reasoning()),
-            internet_model("net-b", &reasoning()),
-        ]);
-        r.set_connectivity(ConnectivityState::Internet);
-        let d = r.route(&public_task(), &[]).expect("route");
-        assert_eq!(d.model, ModelId::new("net-a"));
-    }
-
-    #[test]
-    fn protected_never_internet() {
-        let entries = vec![
-            internet_model("net-a", &reasoning()),
-            local_model("local-a", &reasoning()),
-        ];
-        let r = router(entries);
-        r.set_connectivity(ConnectivityState::Internet);
-        let task = ModelTask::new(AgentRole::SpecialistReadOnly, DataClassification::Protected);
-        let d = r.route(&task, &[]).expect("route");
-        assert_eq!(d.provider, ProviderId::local());
-    }
-
-    #[test]
-    fn protected_blocked_with_only_internet() {
-        let r = router(vec![internet_model("net-a", &reasoning())]);
-        r.set_connectivity(ConnectivityState::Internet);
-        let task = ModelTask::new(AgentRole::SpecialistReadOnly, DataClassification::Protected);
-        assert!(matches!(
-            r.route(&task, &[]),
-            Err(RoutingError::DataClassificationBlocked(DataClassification::Protected))
-        ));
-    }
-
-    #[test]
-    fn personal_memory_needs_consent() {
-        let entries = vec![internet_model("net-a", &reasoning())];
-        let r = router(entries);
-        r.set_connectivity(ConnectivityState::Internet);
-        let task = ModelTask::new(
-            AgentRole::SpecialistReadOnly,
-            DataClassification::PersonalMemory,
-        );
-        assert!(matches!(
-            r.route(&task, &[]),
-            Err(RoutingError::NoConsent(DataClassification::PersonalMemory))
-        ));
-
-        let record = ConsentRecord::new(
-            ProviderId::new("openrouter"),
-            vec![DataClassification::PersonalMemory],
-        );
-        r.grant_consent(record).expect("grant");
-        let d = r.route(&task, &[]).expect("route");
-        assert_eq!(d.provider, ProviderId::new("openrouter"));
-    }
-
-    #[test]
-    fn public_needs_no_consent() {
-        let r = router(vec![internet_model("net-a", &reasoning())]);
-        r.set_connectivity(ConnectivityState::Internet);
-        let d = r.route(&public_task(), &[]).expect("route");
-        assert_eq!(d.provider, ProviderId::new("openrouter"));
-    }
-
-    #[test]
-    fn lan_requires_consent_for_non_public() {
-        let entries = vec![lan_model("lan-a", &reasoning())];
-        let r = router(entries);
-        r.set_connectivity(ConnectivityState::LanOnly);
-        let task = ModelTask::new(AgentRole::SpecialistReadOnly, DataClassification::SystemConfig);
-        assert!(matches!(
-            r.route(&task, &[]),
-            Err(RoutingError::NoConsent(DataClassification::SystemConfig))
-        ));
-    }
-
-    #[test]
-    fn revoked_consent_blocks_routing() {
-        let r = router(vec![internet_model("net-a", &reasoning())]);
-        r.set_connectivity(ConnectivityState::Internet);
-        let provider = ProviderId::new("openrouter");
-        r.grant_consent(ConsentRecord::new(
-            provider.clone(),
-            vec![DataClassification::PersonalMemory],
-        ))
-        .expect("grant");
-        r.revoke_consent(&provider);
-        let task = ModelTask::new(
-            AgentRole::SpecialistReadOnly,
-            DataClassification::PersonalMemory,
-        );
-        assert!(matches!(r.route(&task, &[]), Err(RoutingError::NoConsent(_))));
-    }
-
-    #[test]
-    fn unhealthy_provider_excluded() {
-        let registry = registry_with(vec![
-            internet_model("net-a", &reasoning()),
-            lan_model("lan-a", &reasoning()),
-        ]);
-        registry
-            .write()
-            .expect("lock")
-            .mark_provider_unhealthy(&ProviderId::new("openrouter"));
-        let r = ModelRouter::new(registry);
-        r.set_connectivity(ConnectivityState::Internet);
-        let d = r.route(&public_task(), &[]).expect("route");
-        assert_eq!(d.provider, ProviderId::new("lan-gpu-01"));
-    }
-
-    #[test]
-    fn all_unhealthy_reports_provider() {
-        let registry = registry_with(vec![internet_model("net-a", &reasoning())]);
-        registry
-            .write()
-            .expect("lock")
-            .mark_provider_unhealthy(&ProviderId::new("openrouter"));
-        let r = ModelRouter::new(registry);
-        r.set_connectivity(ConnectivityState::Internet);
-        assert!(matches!(
-            r.route(&public_task(), &[]),
-            Err(RoutingError::ProviderUnhealthy(p)) if p == ProviderId::new("openrouter")
-        ));
-    }
-
-    #[test]
-    fn unhealthy_provider_returns_after_cooldown() {
-        let registry = registry_with(vec![
-            internet_model("net-a", &reasoning()),
-            lan_model("lan-a", &reasoning()),
-        ]);
-        registry
-            .write()
-            .expect("lock")
-            .mark_provider_unhealthy(&ProviderId::new("openrouter"));
-        let r = ModelRouter::new(registry.clone());
-        r.set_connectivity(ConnectivityState::Internet);
-
-        // Immediately after the failure the provider is still in cooldown and
-        // is excluded (model-routing §3.5: unhealthy providers excluded until
-        // re-checked).
-        let d = r.route(&public_task(), &[]).expect("route while cooling down");
-        assert_eq!(d.provider, ProviderId::new("lan-gpu-01"));
-
-        // Simulate the cooldown elapsing. The provider becomes eligible again
-        // and, being the higher tier, is selected so it can be re-probed.
-        registry
-            .write()
-            .expect("lock")
-            .expire_cooldown(&ProviderId::new("openrouter"));
-        let d = r.route(&public_task(), &[]).expect("route after cooldown");
-        assert_eq!(d.provider, ProviderId::new("openrouter"));
-    }
-
-    #[test]
-    fn capability_filter_applied() {
-        let r = router(vec![internet_model("net-a", &text_only())]);
-        r.set_connectivity(ConnectivityState::Internet);
-        let task = ModelTask::new(AgentRole::Planner, DataClassification::Public);
-        assert!(matches!(
-            r.route(&task, &[]),
-            Err(RoutingError::NoEligibleProvider)
-        ));
-    }
-
-    #[test]
-    fn diagnosis_role_requires_tool_use() {
-        let r = router(vec![internet_model("net-a", &tool_use())]);
-        r.set_connectivity(ConnectivityState::Internet);
-        let task = ModelTask::new(AgentRole::SpecialistDiagnosis, DataClassification::Public);
-        let d = r.route(&task, &[]).expect("route");
-        assert_eq!(d.provider, ProviderId::new("openrouter"));
-    }
-
-    #[test]
-    fn single_eligible_provider_reduces_confidence() {
-        let r = router(vec![internet_model("net-a", &reasoning())]);
-        r.set_connectivity(ConnectivityState::Internet);
-        let d = r.route(&public_task(), &[]).expect("route");
-        assert!(d.reduced_confidence);
-    }
-
-    #[test]
-    fn fallback_excludes_failed_provider() {
-        let r = router(vec![
-            internet_model("net-a", &reasoning()),
-            lan_model("lan-a", &reasoning()),
-        ]);
-        r.set_connectivity(ConnectivityState::Internet);
-        let excluded = [ProviderId::new("openrouter")];
-        let d = r.route(&public_task(), &excluded).expect("route");
-        assert_eq!(d.provider, ProviderId::new("lan-gpu-01"));
-    }
-
-    #[test]
     fn registry_rejects_duplicate_model() {
         let mut registry = ModelRegistry::new();
         registry
@@ -1328,41 +994,79 @@ mod tests {
     }
 
     #[test]
-    fn pinner_pin_get_unpin() {
-        let mut pinner = TaskPinner::new();
-        let id = Uuid::new_v4();
-        pinner.pin(id, ProviderId::local(), ModelId::new("qwen-local"));
-        let pin = pinner.get(&id).expect("pin");
-        assert_eq!(pin.provider, ProviderId::local());
-        pinner.unpin(&id);
-        assert!(pinner.get(&id).is_none());
-        assert!(pinner.is_empty());
+    fn same_model_on_two_providers_registers() {
+        // The surface and chat roles may point at one OpenRouter model
+        // through separate provider entries; the registry must key on the
+        // (provider, model) pair, not the model id alone.
+        let mut surface = internet_model("openrouter/stealth/ox-alpha", &reasoning());
+        surface.provider = ProviderId::new("surface-openrouter-openai");
+        let mut chat = internet_model("openrouter/stealth/ox-alpha", &reasoning());
+        chat.provider = ProviderId::new("chat-openrouter");
+        let mut registry = ModelRegistry::new();
+        registry.register(surface).expect("surface entry");
+        registry.register(chat).expect("chat entry");
+        assert_eq!(registry.len(), 2);
     }
 
     struct MockBackend {
         provider: ProviderId,
+        tier: ProviderTier,
         healthy: std::sync::atomic::AtomicBool,
         fail: bool,
+        /// Number of further calls that fail before succeeding (transient
+        /// failure simulation for the gateway retry path).
+        remaining_failures: std::sync::atomic::AtomicU32,
         label: &'static str,
+        last_model: std::sync::Mutex<Option<String>>,
     }
 
     impl MockBackend {
-        fn ok(provider: ProviderId, label: &'static str) -> Arc<Self> {
+        fn ok(provider: ProviderId, tier: ProviderTier, label: &'static str) -> Arc<Self> {
             Arc::new(Self {
                 provider,
+                tier,
                 healthy: std::sync::atomic::AtomicBool::new(true),
                 fail: false,
+                remaining_failures: std::sync::atomic::AtomicU32::new(0),
                 label,
+                last_model: std::sync::Mutex::new(None),
             })
         }
 
-        fn failing(provider: ProviderId, label: &'static str) -> Arc<Self> {
+        fn failing(provider: ProviderId, tier: ProviderTier, label: &'static str) -> Arc<Self> {
             Arc::new(Self {
                 provider,
+                tier,
                 healthy: std::sync::atomic::AtomicBool::new(true),
                 fail: true,
+                remaining_failures: std::sync::atomic::AtomicU32::new(0),
                 label,
+                last_model: std::sync::Mutex::new(None),
             })
+        }
+
+        fn flaky(
+            provider: ProviderId,
+            tier: ProviderTier,
+            label: &'static str,
+            failures: u32,
+        ) -> Arc<Self> {
+            Arc::new(Self {
+                provider,
+                tier,
+                healthy: std::sync::atomic::AtomicBool::new(true),
+                fail: false,
+                remaining_failures: std::sync::atomic::AtomicU32::new(failures),
+                label,
+                last_model: std::sync::Mutex::new(None),
+            })
+        }
+
+        fn sent_model(&self) -> Option<String> {
+            self.last_model
+                .lock()
+                .expect("model lock")
+                .clone()
         }
     }
 
@@ -1371,15 +1075,25 @@ mod tests {
             &self.provider
         }
 
+        fn tier(&self) -> ProviderTier {
+            self.tier
+        }
+
         fn is_healthy(&self) -> bool {
             self.healthy.load(std::sync::atomic::Ordering::Relaxed)
         }
 
         fn generate(
             &self,
-            _request: &GenerationRequest,
+            request: &GenerationRequest,
         ) -> Result<GenerationResponse, GenerationError> {
-            if self.fail {
+            *self.last_model.lock().expect("model lock") = request.model.clone();
+            let outstanding = self
+                .remaining_failures
+                .load(std::sync::atomic::Ordering::SeqCst);
+            if self.fail || outstanding > 0 {
+                self.remaining_failures
+                    .store(outstanding.saturating_sub(1), std::sync::atomic::Ordering::SeqCst);
                 return Err(GenerationError::new("boom", true));
             }
             Ok(GenerationResponse {
@@ -1398,50 +1112,287 @@ mod tests {
             max_tokens: 32,
             temperature: 0.7,
             seed: None,
+            model: None,
         }
     }
 
-    #[test]
-    fn gateway_submit_routes_and_pins() {
-        let registry = registry_with(vec![
-            internet_model("net-a", &reasoning()),
-            lan_model("lan-a", &reasoning()),
-        ]);
-        let gateway = ModelGateway::new(registry);
+    fn gateway_with(backends: Vec<Arc<MockBackend>>) -> ModelGateway {
+        let registry = registry_with(vec![]);
+        let gateway = ModelGateway::new(registry.clone());
+        for backend in &backends {
+            // Consent grants require the provider to exist in the registry,
+            // mirroring how boot seeds one entry per provider.
+            let entry = ModelEntry::new(
+                ModelId::new(backend.label),
+                backend.provider.clone(),
+                backend.tier,
+                vec![ModelCapability::TextGeneration, ModelCapability::Reasoning],
+            );
+            registry
+                .write()
+                .expect("registry lock")
+                .register(entry)
+                .expect("seed entry");
+            gateway.register_backend(backend.clone());
+        }
         gateway.set_connectivity(ConnectivityState::Internet);
-        gateway.register_backend(MockBackend::ok(
-            ProviderId::new("openrouter"),
-            "openrouter",
-        ));
-        gateway.register_backend(MockBackend::ok(
-            ProviderId::new("lan-gpu-01"),
-            "lan",
-        ));
-
-        let task = public_task();
-        let response = gateway.submit(&task, &request(&task)).expect("submit");
-        assert_eq!(response.decision.provider, ProviderId::new("openrouter"));
-        assert_eq!(response.response.text, "answer from openrouter");
-
-        gateway.set_connectivity(ConnectivityState::LanOnly);
-        let retried = gateway.submit(&task, &request(&task)).expect("submit");
-        assert_eq!(retried.decision.provider, ProviderId::new("openrouter"));
+        gateway
     }
 
     #[test]
-    fn gateway_submit_without_fallback_clears_pin_on_failure() {
-        let registry = registry_with(vec![internet_model("net-a", &reasoning())]);
-        let gateway = ModelGateway::new(registry);
-        gateway.set_connectivity(ConnectivityState::Internet);
-        gateway.register_backend(MockBackend::failing(
+    fn unassigned_role_fails_loudly() {
+        let gateway = gateway_with(vec![MockBackend::ok(
             ProviderId::new("openrouter"),
+            ProviderTier::Internet,
             "openrouter",
+        )]);
+        let task = public_task();
+        assert!(matches!(
+            gateway.submit(&task, &request(&task)),
+            Err(GatewayError::Routing(RoutingError::NoAssignmentForRole(role)))
+              if role == "specialist"
+        ));
+    }
+
+    #[test]
+    fn assigned_role_runs_on_assigned_provider_and_model() {
+        let openrouter = MockBackend::ok(
+            ProviderId::new("openrouter"),
+            ProviderTier::Internet,
+            "openrouter",
+        );
+        let gateway = gateway_with(vec![openrouter]);
+        gateway
+            .router()
+            .set_assignment(
+                "chat",
+                ProviderId::new("openrouter"),
+                ModelId::new("openai/gpt-5.6-luna-pro"),
+            )
+            .expect("assignment");
+
+        let task = ModelTask::new(AgentRole::Planner, DataClassification::Public);
+        let response = gateway.submit(&task, &request(&task)).expect("submit");
+        assert_eq!(response.decision.provider, ProviderId::new("openrouter"));
+        assert_eq!(
+            response.decision.model,
+            ModelId::new("openai/gpt-5.6-luna-pro")
+        );
+        assert_eq!(response.response.text, "answer from openrouter");
+    }
+
+    #[test]
+    fn request_carries_assigned_model_to_backend() {
+        let openrouter = MockBackend::ok(
+            ProviderId::new("openrouter"),
+            ProviderTier::Internet,
+            "openrouter",
+        );
+        let gateway = gateway_with(vec![openrouter.clone()]);
+        gateway
+            .router()
+            .set_assignment(
+                "surface",
+                ProviderId::new("openrouter"),
+                ModelId::new("openrouter/stealth/ox-alpha"),
+            )
+            .expect("assignment");
+
+        let task = ModelTask::new(AgentRole::SurfaceComposition, DataClassification::Public);
+        gateway.submit(&task, &request(&task)).expect("submit");
+        assert_eq!(
+            openrouter.sent_model().as_deref(),
+            Some("openrouter/stealth/ox-alpha")
+        );
+    }
+
+    #[test]
+    fn role_id_override_selects_specialist_assignment() {
+        let wifi = MockBackend::ok(
+            ProviderId::new("openrouter"),
+            ProviderTier::Internet,
+            "wifi-backend",
+        );
+        let gateway = gateway_with(vec![wifi]);
+        gateway
+            .router()
+            .set_assignment(
+                "specialist:wifi",
+                ProviderId::new("openrouter"),
+                ModelId::new("qwen/wifi-72b"),
+            )
+            .expect("assignment");
+
+        let task = ModelTask::new(AgentRole::SpecialistReadOnly, DataClassification::Public)
+            .with_role_id("specialist:wifi");
+        let response = gateway.submit(&task, &request(&task)).expect("submit");
+        assert_eq!(response.decision.model, ModelId::new("qwen/wifi-72b"));
+    }
+
+    #[test]
+    fn internet_assignment_offline_fails() {
+        let openrouter = MockBackend::ok(
+            ProviderId::new("openrouter"),
+            ProviderTier::Internet,
+            "openrouter",
+        );
+        let gateway = gateway_with(vec![openrouter]);
+        gateway.set_connectivity(ConnectivityState::Offline);
+        gateway
+            .router()
+            .set_assignment(
+                "chat",
+                ProviderId::new("openrouter"),
+                ModelId::new("net-a"),
+            )
+            .expect("assignment");
+        let task = ModelTask::new(AgentRole::Planner, DataClassification::Public);
+        assert!(matches!(
+            gateway.submit(&task, &request(&task)),
+            Err(GatewayError::ProviderOffline(_))
+        ));
+    }
+
+    #[test]
+    fn personal_memory_needs_consent_for_assigned_provider() {
+        let openrouter = MockBackend::ok(
+            ProviderId::new("openrouter"),
+            ProviderTier::Internet,
+            "openrouter",
+        );
+        let gateway = gateway_with(vec![openrouter]);
+        gateway
+            .router()
+            .set_assignment(
+                "chat",
+                ProviderId::new("openrouter"),
+                ModelId::new("net-a"),
+            )
+            .expect("assignment");
+        let task = ModelTask::new(AgentRole::Planner, DataClassification::PersonalMemory);
+
+        assert!(matches!(
+            gateway.submit(&task, &request(&task)),
+            Err(GatewayError::Routing(RoutingError::NoConsent(
+                DataClassification::PersonalMemory
+            )))
         ));
 
-        let task = public_task();
+        gateway
+            .router()
+            .grant_consent(ConsentRecord::new(
+                ProviderId::new("openrouter"),
+                vec![DataClassification::PersonalMemory],
+            ))
+            .expect("grant");
+        assert!(gateway.submit(&task, &request(&task)).is_ok());
+    }
+
+    #[test]
+    fn revoked_consent_blocks_submission() {
+        let openrouter = MockBackend::ok(
+            ProviderId::new("openrouter"),
+            ProviderTier::Internet,
+            "openrouter",
+        );
+        let gateway = gateway_with(vec![openrouter]);
+        let provider = ProviderId::new("openrouter");
+        gateway
+            .router()
+            .set_assignment("chat", provider.clone(), ModelId::new("net-a"))
+            .expect("assignment");
+        gateway
+            .router()
+            .grant_consent(ConsentRecord::new(
+                provider.clone(),
+                vec![DataClassification::PersonalMemory],
+            ))
+            .expect("grant");
+        gateway.router().revoke_consent(&provider);
+
+        let task = ModelTask::new(AgentRole::Planner, DataClassification::PersonalMemory);
+        assert!(matches!(
+            gateway.submit(&task, &request(&task)),
+            Err(GatewayError::Routing(RoutingError::NoConsent(_)))
+        ));
+    }
+
+    #[test]
+    fn unhealthy_backend_reports_unavailable() {
+        let openrouter = MockBackend::ok(
+            ProviderId::new("openrouter"),
+            ProviderTier::Internet,
+            "openrouter",
+        );
+        openrouter
+            .healthy
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        let gateway = gateway_with(vec![openrouter]);
+        gateway
+            .router()
+            .set_assignment(
+                "chat",
+                ProviderId::new("openrouter"),
+                ModelId::new("net-a"),
+            )
+            .expect("assignment");
+        let task = ModelTask::new(AgentRole::Planner, DataClassification::Public);
+        assert!(matches!(
+            gateway.submit(&task, &request(&task)),
+            Err(GatewayError::ProviderUnavailable(_))
+        ));
+    }
+
+    #[test]
+    fn failing_backend_surfaces_generation_error() {
+        let openrouter = MockBackend::failing(
+            ProviderId::new("openrouter"),
+            ProviderTier::Internet,
+            "openrouter",
+        );
+        let gateway = gateway_with(vec![openrouter]);
+        gateway
+            .router()
+            .set_assignment(
+                "chat",
+                ProviderId::new("openrouter"),
+                ModelId::new("net-a"),
+            )
+            .expect("assignment");
+        let task = ModelTask::new(AgentRole::Planner, DataClassification::Public);
         assert!(matches!(
             gateway.submit(&task, &request(&task)),
             Err(GatewayError::Generation { .. })
         ));
+    }
+
+    #[test]
+    fn recoverable_generation_errors_are_retried_once() {
+        let openrouter = MockBackend::flaky(
+            ProviderId::new("openrouter"),
+            ProviderTier::Internet,
+            "openrouter",
+            1,
+        );
+        let gateway = gateway_with(vec![openrouter.clone()]);
+        gateway
+            .router()
+            .set_assignment(
+                "chat",
+                ProviderId::new("openrouter"),
+                ModelId::new("net-a"),
+            )
+            .expect("assignment");
+        let task = ModelTask::new(AgentRole::Planner, DataClassification::Public);
+        let response = gateway
+            .submit(&task, &request(&task))
+            .expect("retry should succeed");
+        assert_eq!(response.response.text, "answer from openrouter");
+        // The transient failure must not cool the provider down.
+        assert!(openrouter.is_healthy());
+        assert!(
+            gateway.submit(&task, &request(&task)).is_ok(),
+            "provider stays usable after a recovered blip"
+        );
     }
 }

@@ -142,6 +142,7 @@ fn boot(
         let config = AiosConfig {
             model: None,
             shell: None,
+            roles: None,
             provider: vec![aios::config::ProviderConfig {
                 id: "stub".into(),
                 kind: "openai-compatible".into(),

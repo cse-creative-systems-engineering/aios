@@ -218,6 +218,10 @@ impl ModelBackend for LocalLlama {
         &self.provider
     }
 
+    fn tier(&self) -> crate::model::ProviderTier {
+        crate::model::ProviderTier::Local
+    }
+
     fn is_healthy(&self) -> bool {
         true
     }
@@ -242,6 +246,7 @@ mod tests {
             max_tokens: 32,
             temperature: 0.0,
             seed: Some(0),
+            model: None,
         }
     }
 

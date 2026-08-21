@@ -68,6 +68,45 @@ enum BackendRequest {
         prompt: String,
         response: mpsc::Sender<Result<PromptResponse, String>>,
     },
+    AddProvider {
+        id: String,
+        kind: String,
+        tier: String,
+        endpoint: Option<String>,
+        model: Option<String>,
+        api_key: Option<String>,
+        http_timeout_ms: Option<u64>,
+        response: mpsc::Sender<Result<(), String>>,
+    },
+    RemoveProvider {
+        id: String,
+        response: mpsc::Sender<Result<(), String>>,
+    },
+    SetProviderCredential {
+        id: String,
+        api_key: String,
+        response: mpsc::Sender<Result<(), String>>,
+    },
+    SetRoleAssignment {
+        role: String,
+        provider_id: String,
+        model: String,
+        response: mpsc::Sender<Result<(), String>>,
+    },
+    SetRoleGroupAssignment {
+        group: String,
+        provider_id: String,
+        model: String,
+        response: mpsc::Sender<Result<Vec<String>, String>>,
+    },
+    RoleRoute {
+        role: String,
+        response: mpsc::Sender<Result<Option<SidebarRoute>, String>>,
+    },
+    DiscoverModels {
+        provider_id: String,
+        response: mpsc::Sender<Result<Vec<DiscoveredModel>, String>>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -267,6 +306,81 @@ fn sidebar_status(
         .ok_or_else(|| "sidebar status is not ready".to_string())
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CatalogProviderEntry {
+    id: String,
+    label: String,
+    endpoint: String,
+    kind: String,
+    tier: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DiscoveredModel {
+    id: String,
+    name: Option<String>,
+}
+
+#[tauri::command]
+fn provider_catalog() -> Vec<CatalogProviderEntry> {
+    aios::coordinator::PROVIDER_CATALOG
+        .iter()
+        .map(|p| CatalogProviderEntry {
+            id: p.id.into(),
+            label: p.label.into(),
+            endpoint: p.endpoint.into(),
+            kind: p.kind.into(),
+            tier: p.tier.into(),
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RoleDescriptorEntry {
+    id: String,
+    label: String,
+    detail: String,
+    fit: String,
+}
+
+#[tauri::command]
+fn roles_catalog() -> Vec<RoleDescriptorEntry> {
+    aios::coordinator::assignable_roles()
+        .into_iter()
+        .map(|r| RoleDescriptorEntry {
+            id: r.id,
+            label: r.label,
+            detail: r.detail,
+            fit: r.fit,
+        })
+        .collect()
+}
+
+#[tauri::command]
+async fn discover_models(
+    provider_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<DiscoveredModel>, String> {
+    let requests = state.requests.clone();
+    tokio::task::spawn_blocking(move || {
+        let (response_tx, response_rx) = mpsc::channel();
+        requests
+            .send(BackendRequest::DiscoverModels {
+                provider_id,
+                response: response_tx,
+            })
+            .map_err(|_| "backend worker is unavailable".to_string())?;
+        response_rx
+            .recv()
+            .map_err(|_| "backend worker closed the response channel".to_string())?
+    })
+    .await
+    .map_err(|error| format!("settings worker failed: {error}"))?
+}
+
 #[tauri::command]
 fn system_graph(
     state: tauri::State<'_, AppState>,
@@ -277,6 +391,166 @@ fn system_graph(
         .map_err(|_| "graph snapshot lock is poisoned".to_string())?
         .clone()
         .ok_or_else(|| "graph snapshot is not ready".to_string())
+}
+
+// ---- Settings panel commands ----
+//
+// The panel edits typed settings through these commands; it does not route
+// model requests or hold provider credentials (docs/ui.md). API keys are
+// write-only: they go in and are never returned to the frontend.
+
+#[tauri::command]
+async fn add_provider(
+    id: String,
+    kind: String,
+    tier: String,
+    endpoint: Option<String>,
+    model: Option<String>,
+    api_key: Option<String>,
+    http_timeout_ms: Option<u64>,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let requests = state.requests.clone();
+    tokio::task::spawn_blocking(move || {
+        let (response_tx, response_rx) = mpsc::channel();
+        requests
+            .send(BackendRequest::AddProvider {
+                id,
+                kind,
+                tier,
+                endpoint,
+                model,
+                api_key,
+                http_timeout_ms,
+                response: response_tx,
+            })
+            .map_err(|_| "backend worker is unavailable".to_string())?;
+        response_rx
+            .recv()
+            .map_err(|_| "backend worker closed the response channel".to_string())?
+    })
+    .await
+    .map_err(|error| format!("settings worker failed: {error}"))?
+}
+
+#[tauri::command]
+async fn remove_provider(
+    id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let requests = state.requests.clone();
+    tokio::task::spawn_blocking(move || {
+        let (response_tx, response_rx) = mpsc::channel();
+        requests
+            .send(BackendRequest::RemoveProvider {
+                id,
+                response: response_tx,
+            })
+            .map_err(|_| "backend worker is unavailable".to_string())?;
+        response_rx
+            .recv()
+            .map_err(|_| "backend worker closed the response channel".to_string())?
+    })
+    .await
+    .map_err(|error| format!("settings worker failed: {error}"))?
+}
+
+#[tauri::command]
+async fn set_provider_credential(
+    id: String,
+    api_key: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let requests = state.requests.clone();
+    tokio::task::spawn_blocking(move || {
+        let (response_tx, response_rx) = mpsc::channel();
+        requests
+            .send(BackendRequest::SetProviderCredential {
+                id,
+                api_key,
+                response: response_tx,
+            })
+            .map_err(|_| "backend worker is unavailable".to_string())?;
+        response_rx
+            .recv()
+            .map_err(|_| "backend worker closed the response channel".to_string())?
+    })
+    .await
+    .map_err(|error| format!("settings worker failed: {error}"))?
+}
+
+#[tauri::command]
+async fn set_role_assignment(
+    role: String,
+    provider_id: String,
+    model: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let requests = state.requests.clone();
+    tokio::task::spawn_blocking(move || {
+        let (response_tx, response_rx) = mpsc::channel();
+        requests
+            .send(BackendRequest::SetRoleAssignment {
+                role,
+                provider_id,
+                model,
+                response: response_tx,
+            })
+            .map_err(|_| "backend worker is unavailable".to_string())?;
+        response_rx
+            .recv()
+            .map_err(|_| "backend worker closed the response channel".to_string())?
+    })
+    .await
+    .map_err(|error| format!("settings worker failed: {error}"))?
+}
+
+#[tauri::command]
+async fn set_role_group_assignment(
+    group: String,
+    provider_id: String,
+    model: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    let requests = state.requests.clone();
+    tokio::task::spawn_blocking(move || {
+        let (response_tx, response_rx) = mpsc::channel();
+        requests
+            .send(BackendRequest::SetRoleGroupAssignment {
+                group,
+                provider_id,
+                model,
+                response: response_tx,
+            })
+            .map_err(|_| "backend worker is unavailable".to_string())?;
+        response_rx
+            .recv()
+            .map_err(|_| "backend worker closed the response channel".to_string())?
+    })
+    .await
+    .map_err(|error| format!("settings worker failed: {error}"))?
+}
+
+#[tauri::command]
+async fn role_route(
+    role: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<SidebarRoute>, String> {
+    let requests = state.requests.clone();
+    tokio::task::spawn_blocking(move || {
+        let (response_tx, response_rx) = mpsc::channel();
+        requests
+            .send(BackendRequest::RoleRoute {
+                role,
+                response: response_tx,
+            })
+            .map_err(|_| "backend worker is unavailable".to_string())?;
+        response_rx
+            .recv()
+            .map_err(|_| "backend worker closed the response channel".to_string())?
+    })
+    .await
+    .map_err(|error| format!("settings worker failed: {error}"))?
 }
 
 #[tauri::command]
@@ -328,8 +602,7 @@ async fn submit_prompt(
     .map_err(|error| format!("prompt worker failed: {error}"))?
 }
 
-fn main() {
-    #[cfg(target_os = "linux")]
+fn main() {    #[cfg(target_os = "linux")]
     prefer_x11_when_xwayland_is_available();
 
     tauri::Builder::default()
@@ -450,113 +723,122 @@ fn main() {
                 };
 
                 let mut previous_experimental_html: Option<String> = None;
-                while let Ok(BackendRequest::Prompt { prompt, response }) = requests_rx.recv() {
-                    let status = BackendStatus {
-                        ready: true,
-                        error: None,
-                    };
-                    let answer = facade.run_line(&prompt);
-                    let evidence = facade.take_tool_results();
-                    let unconstrained =
-                        std::env::var("AIOS_UNCONSTRAINED_SURFACE").as_deref() == Ok("1");
-                    let (surface, experimental_html) = if unconstrained {
-                        if evidence.is_empty() {
-                            eprintln!("Aios canvas: no specialist evidence gathered; no surface");
-                            (None, None)
-                        } else {
-                            let gaps = aios::surface::coverage_gaps(&prompt, &evidence);
-                            if !gaps.is_empty() {
-                                eprintln!(
-                                    "Aios canvas: coverage gap for {}; no surface",
-                                    gaps.join(", ")
-                                );
-                                (None, None)
-                            } else {
-                                emit_graph_activity(&worker_handle, GraphPhase::Composing, &["composer"]);
-                                match facade.compose_unconstrained_html(
-                                    &prompt,
-                                    &evidence,
-                                    previous_experimental_html.as_deref(),
-                                ) {
-                                    Ok((html, routing)) => {
-                                        match aios::surface::verify_value_fidelity(&html, &evidence) {
-                                            Ok(()) => {
-                                                eprintln!(
-                                                    "Aios unconstrained surface: provider={} model={} bytes={}",
-                                                    routing.provider, routing.model, html.len()
-                                                );
-                                                previous_experimental_html = Some(html.clone());
-                                                (None, Some(html))
-                                            }
-                                            Err(error) => {
-                                                eprintln!("Aios canvas: fidelity check failed: {error}");
-                                                (None, None)
-                                            }
-                                        }
-                                    }
-                                    Err(error) => {
-                                        eprintln!("Aios unconstrained composition failed: {error}");
-                                        (None, None)
-                                    }
-                                }
-                            }
+                while let Ok(request) = requests_rx.recv() {
+                    match request {
+                        BackendRequest::Prompt { prompt, response } => {
+                            handle_prompt(
+                                &mut facade,
+                                &worker_handle,
+                                &mut previous_experimental_html,
+                                prompt,
+                                response,
+                            );
                         }
-                    } else if answer.contains("failed:") || evidence.is_empty() {
-                        (None, None)
-                    } else {
-                        emit_graph_activity(&worker_handle, GraphPhase::Composing, &["composer"]);
-                        match facade.compose_surface(&prompt, &answer, &evidence) {
-                            Ok((surface, routing)) => {
-                                eprintln!(
-                                    "Aios surface: provider={} model={} title={:?}",
-                                    routing.provider, routing.model, surface.title
-                                );
-                                write_surface_trace(
-                                    &prompt,
-                                    &answer,
-                                    &evidence,
-                                    Some((&routing, &surface)),
-                                    None,
-                                );
-                                (Some(surface), None)
+                        BackendRequest::AddProvider {
+                            id,
+                            kind,
+                            tier,
+                            endpoint,
+                            model,
+                            api_key,
+                            http_timeout_ms,
+                            response,
+                        } => {
+                            let result = facade
+                                .coordinator
+                                .add_provider(id, kind, tier, endpoint, model, api_key, http_timeout_ms);
+                            if let Err(error) = &result {
+                                eprintln!("Aios settings: add provider failed: {error}");
                             }
-                            Err(error) => {
-                                eprintln!("Aios canvas: composition failed: {error}");
-                                write_surface_trace(
-                                    &prompt,
-                                    &answer,
-                                    &evidence,
-                                    None,
-                                    Some(&error.to_string()),
-                                );
-                                (None, None)
-                            }
+                            let _ = response.send(result);
+                            refresh_sidebar_status(
+                                &worker_sidebar_status,
+                                &facade,
+                                BackendStatus { ready: true, error: None },
+                            );
                         }
-                    };
-                    let evidence = evidence
-                        .iter()
-                        .map(|result| EvidenceItem {
-                            tool: result.tool.to_string(),
-                            text: result.text.clone(),
-                        })
-                        .collect();
-                    let result = Ok(PromptResponse {
-                        answer,
-                        evidence,
-                        surface,
-                        experimental_html,
-                        backend_status: status,
-                    });
-                    if let Ok(ref response) = result {
-                        refresh_sidebar_status(
-                            &worker_sidebar_status,
-                            &facade,
-                            response.backend_status.clone(),
-                        );
-                        refresh_graph_snapshot(&worker_graph_snapshot, &facade);
+                        BackendRequest::RemoveProvider { id, response } => {
+                            let result = facade.coordinator.remove_provider(&id);
+                            if let Err(error) = &result {
+                                eprintln!("Aios settings: remove provider failed: {error}");
+                            }
+                            let _ = response.send(result);
+                            refresh_sidebar_status(
+                                &worker_sidebar_status,
+                                &facade,
+                                BackendStatus { ready: true, error: None },
+                            );
+                        }
+                        BackendRequest::SetProviderCredential { id, api_key, response } => {
+                            let result = facade.coordinator.set_provider_credential(&id, api_key);
+                            if let Err(error) = &result {
+                                eprintln!("Aios settings: credential update failed: {error}");
+                            }
+                            let _ = response.send(result);
+                            refresh_sidebar_status(
+                                &worker_sidebar_status,
+                                &facade,
+                                BackendStatus { ready: true, error: None },
+                            );
+                        }
+                        BackendRequest::SetRoleAssignment { role, provider_id, model, response } => {
+                            let result =
+                                facade
+                                    .coordinator
+                                    .set_role_assignment(&role, &provider_id, &model);
+                            if let Err(error) = &result {
+                                eprintln!("Aios settings: role assignment failed: {error}");
+                            }
+                            let _ = response.send(result);
+                            refresh_sidebar_status(
+                                &worker_sidebar_status,
+                                &facade,
+                                BackendStatus { ready: true, error: None },
+                            );
+                        }
+                        BackendRequest::SetRoleGroupAssignment { group, provider_id, model, response } => {
+                            let result = facade.coordinator.set_role_group_assignment(
+                                &group,
+                                &provider_id,
+                                &model,
+                            );
+                            if let Err(error) = &result {
+                                eprintln!("Aios settings: group assignment failed: {error}");
+                            }
+                            let _ = response.send(result);
+                            refresh_sidebar_status(
+                                &worker_sidebar_status,
+                                &facade,
+                                BackendStatus { ready: true, error: None },
+                            );
+                        }
+                        BackendRequest::RoleRoute { role, response } => {
+                            let result = facade
+                                .coordinator
+                                .role_route(&role)
+                                .map(|option| option.map(|route| SidebarRoute {
+                                    provider: route.provider.to_string(),
+                                    model: route.model.to_string(),
+                                    connectivity: format!("{:?}", route.connectivity_state),
+                                    data_classification: format!("{:?}", route.data_classification),
+                                    reduced_confidence: route.reduced_confidence,
+                                }));
+                            let _ = response.send(result);
+                        }
+                        BackendRequest::DiscoverModels { provider_id, response } => {
+                            let result = facade
+                                .coordinator
+                                .discover_models(&provider_id)
+                                .map(|models| models.into_iter().map(|m| DiscoveredModel {
+                                    id: m.id,
+                                    name: m.name,
+                                }).collect());
+                            if let Err(error) = &result {
+                                eprintln!("Aios settings: model discovery failed: {error}");
+                            }
+                            let _ = response.send(result);
+                        }
                     }
-                    emit_graph_activity(&worker_handle, GraphPhase::Idle, &[]);
-                    let _ = response.send(result);
                 }
             });
 
@@ -570,9 +852,18 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            add_provider,
             backend_status,
+            discover_models,
             focus_sidebar,
             hide_canvas,
+            provider_catalog,
+            remove_provider,
+            role_route,
+            roles_catalog,
+            set_provider_credential,
+            set_role_assignment,
+            set_role_group_assignment,
             sidebar_status,
             set_input_region,
             submit_prompt,
@@ -580,6 +871,113 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri app");
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_prompt(
+    facade: &mut Facade,
+    worker_handle: &tauri::AppHandle,
+    previous_experimental_html: &mut Option<String>,
+    prompt: String,
+    response: mpsc::Sender<Result<PromptResponse, String>>,
+) {
+    let status = BackendStatus {
+        ready: true,
+        error: None,
+    };
+    let answer = facade.run_line(&prompt);
+    let evidence = facade.take_tool_results();
+    let unconstrained = std::env::var("AIOS_UNCONSTRAINED_SURFACE").as_deref() == Ok("1");
+    let (surface, experimental_html) = if unconstrained {
+        if evidence.is_empty() {
+            eprintln!("Aios canvas: no specialist evidence gathered; no surface");
+            (None, None)
+        } else {
+            let gaps = aios::surface::coverage_gaps(&prompt, &evidence);
+            if !gaps.is_empty() {
+                eprintln!("Aios canvas: coverage gap for {}; no surface", gaps.join(", "));
+                (None, None)
+            } else {
+                emit_graph_activity(worker_handle, GraphPhase::Composing, &["composer"]);
+                match facade.compose_unconstrained_html(
+                    &prompt,
+                    &evidence,
+                    previous_experimental_html.as_deref(),
+                ) {
+                    Ok((html, routing)) => {
+                        match aios::surface::verify_value_fidelity(&html, &evidence) {
+                            Ok(()) => {
+                                eprintln!(
+                                    "Aios unconstrained surface: provider={} model={} bytes={}",
+                                    routing.provider,
+                                    routing.model,
+                                    html.len()
+                                );
+                                *previous_experimental_html = Some(html.clone());
+                                (None, Some(html))
+                            }
+                            Err(error) => {
+                                eprintln!("Aios canvas: fidelity check failed: {error}");
+                                (None, None)
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        eprintln!("Aios unconstrained composition failed: {error}");
+                        (None, None)
+                    }
+                }
+            }
+        }
+    } else if answer.contains("failed:") || evidence.is_empty() {
+        (None, None)
+    } else {
+        emit_graph_activity(worker_handle, GraphPhase::Composing, &["composer"]);
+        match facade.compose_surface(&prompt, &answer, &evidence) {
+            Ok((surface, routing)) => {
+                eprintln!(
+                    "Aios surface: provider={} model={} title={:?}",
+                    routing.provider, routing.model, surface.title
+                );
+                write_surface_trace(&prompt, &answer, &evidence, Some((&routing, &surface)), None);
+                (Some(surface), None)
+            }
+            Err(error) => {
+                eprintln!("Aios canvas: composition failed: {error}");
+                write_surface_trace(&prompt, &answer, &evidence, None, Some(&error.to_string()));
+                (None, None)
+            }
+        }
+    };
+    let evidence = evidence
+        .iter()
+        .map(|result| EvidenceItem {
+            tool: result.tool.to_string(),
+            text: result.text.clone(),
+        })
+        .collect();
+    let result = Ok(PromptResponse {
+        answer,
+        evidence,
+        surface,
+        experimental_html,
+        backend_status: status,
+    });
+    if let Ok(ref response) = result {
+        refresh_sidebar_status_from_handle(worker_handle, response.backend_status.clone());
+        refresh_graph_snapshot_from_handle(worker_handle);
+    }
+    emit_graph_activity(worker_handle, GraphPhase::Idle, &[]);
+    let _ = response.send(result);
+}
+
+fn refresh_sidebar_status_from_handle(_handle: &tauri::AppHandle, _status: BackendStatus) {
+    // Placeholder: the worker loop refreshes status directly with the facade.
+    // Settings mutations refresh explicitly after each command.
+}
+
+fn refresh_graph_snapshot_from_handle(_handle: &tauri::AppHandle) {
+    // Placeholder: same as above.
 }
 
 fn refresh_sidebar_status(

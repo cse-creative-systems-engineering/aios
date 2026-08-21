@@ -36,6 +36,7 @@ use crate::tools::{ToolError, ToolRegistry, model_tool_instructions, resource_in
 use crate::verifier::Verifier;
 use crate::wifi::WifiSpecialist;
 use crate::wifi_driver::{MockDriverControl, WifiDriverResourceDriver};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{
@@ -75,6 +76,32 @@ pub struct Coordinator {
     boot_specialist: Option<BootRecoverySpecialist>,
     packages_specialist: Option<PackagesSpecialist>,
     progress: Option<ProgressSink>,
+    /// Last /models discovery result per provider, including the failure
+    /// reason when discovery did not succeed. The settings panel reads this
+    /// to show per-provider errors in the model dropdowns.
+    catalogue: RwLock<HashMap<String, ProviderCatalogue>>,
+}
+
+/// One provider's discovered model list (or the reason there is none).
+#[derive(Clone)]
+pub struct ProviderCatalogue {
+    pub models: Vec<DiscoveredModel>,
+    pub error: Option<String>,
+}
+
+impl ProviderCatalogue {
+    fn from_result(result: Result<Vec<DiscoveredModel>, String>) -> Self {
+        match result {
+            Ok(models) => Self {
+                models,
+                error: None,
+            },
+            Err(error) => Self {
+                models: Vec::new(),
+                error: Some(error),
+            },
+        }
+    }
 }
 
 pub struct ChatOutcome {
@@ -235,6 +262,7 @@ impl Coordinator {
             boot_specialist: None,
             packages_specialist: None,
             progress: None,
+            catalogue: RwLock::new(HashMap::new()),
         };
         coordinator.configure_read_only_broker();
         coordinator.ensure_control_plane_nodes();
@@ -250,6 +278,35 @@ impl Coordinator {
                     ProviderId::new(&provider.id),
                     vec![DataClassification::SystemConfig],
                 ));
+        }
+        // Explicit role assignments from [roles] in config. Each is validated
+        // against the registry here so a typo fails at boot, not mid-request
+        // (ADR-0003: no silent fallback).
+        if let Some(roles) = &coordinator.config.roles {
+            if let Some(surface) = &roles.surface {
+                coordinator.gateway.router().set_assignment(
+                    "surface",
+                    ProviderId::new(&surface.provider),
+                    crate::model::ModelId::new(&surface.model),
+                )
+                .map_err(BootError::RoleAssignment)?;
+            }
+            if let Some(chat) = &roles.chat {
+                coordinator.gateway.router().set_assignment(
+                    "chat",
+                    ProviderId::new(&chat.provider),
+                    crate::model::ModelId::new(&chat.model),
+                )
+                .map_err(BootError::RoleAssignment)?;
+            }
+            if let Some(verification) = &roles.verification {
+                coordinator.gateway.router().set_assignment(
+                    "verification",
+                    ProviderId::new(&verification.provider),
+                    crate::model::ModelId::new(&verification.model),
+                )
+                .map_err(BootError::RoleAssignment)?;
+            }
         }
         // Discovery is part of boot so the first model request has machine
         // state available. A discovery failure is retained as context below.
@@ -1181,14 +1238,371 @@ impl Coordinator {
         self.packages_specialist.as_ref()
     }
 
+    /// The assignment the surface composer uses (role id `surface`), if one
+    /// is configured. Named `current_route` for the sidebar status row that
+    /// shows the generative-surface model.
     pub fn current_route(&self) -> Result<RoutingDecision, RoutingError> {
-        let task = ModelTask::new(AgentRole::SpecialistReadOnly, DataClassification::Public);
-        self.gateway.router().route(&task, &[])
+        self.role_assignment_decision("surface")
     }
 
     pub fn chat_route(&self) -> Result<RoutingDecision, RoutingError> {
-        let task = ModelTask::new(AgentRole::Planner, DataClassification::Public);
-        self.gateway.router().route(&task, &[])
+        self.role_assignment_decision("chat")
+    }
+
+    fn role_assignment_decision(&self, role: &str) -> Result<RoutingDecision, RoutingError> {
+        let (provider, model) = self
+            .gateway
+            .router()
+            .assignment(role)
+            .ok_or_else(|| RoutingError::NoAssignmentForRole(role.to_string()))?;
+        Ok(RoutingDecision {
+            provider,
+            model,
+            connectivity_state: self.gateway.router().connectivity(),
+            data_classification: DataClassification::Public,
+            reduced_confidence: false,
+        })
+    }
+
+    // ---- Settings panel: provider and role administration ----
+    //
+    // The panel edits typed settings through these methods; it never routes
+    // model requests or holds provider credentials (docs/ui.md). API keys
+    // are write-only from the frontend's point of view: they go in, are
+    // persisted, and are never returned.
+
+    /// Add a provider to the live registry and persist it to config. The
+    /// backend (HTTP or local) is built immediately so the provider is
+    /// usable without a restart.
+    pub fn add_provider(
+        &mut self,
+        id: String,
+        kind: String,
+        tier: String,
+        endpoint: Option<String>,
+        model: Option<String>,
+        api_key: Option<String>,
+        http_timeout_ms: Option<u64>,
+    ) -> Result<(), String> {
+        let provider = crate::config::ProviderConfig {
+            id: id.clone(),
+            kind: kind.clone(),
+            tier,
+            model: model.clone(),
+            endpoint: endpoint.clone(),
+            api_key,
+            api_key_env: None,
+            capabilities: None,
+            http_timeout_ms: http_timeout_ms.unwrap_or(10_000),
+        };
+        provider.validate_pub().map_err(|e| e.to_string())?;
+        if self.config.provider(&id).is_some() {
+            return Err(format!("provider '{id}' already exists"));
+        }
+
+        // Build and register the backend now so the provider is routable.
+        let tier_parsed = provider.tier().map_err(|e| e.to_string())?;
+        let capabilities = provider.capabilities().map_err(|e| e.to_string())?;
+        let provider_id = ProviderId::new(&id);
+        let model_name = model.clone().unwrap_or_else(|| id.clone());
+        let model_id = ModelId::new(&model_name);
+        match kind.as_str() {
+            "openai-compatible" => {
+                let endpoint = endpoint.clone().ok_or_else(|| {
+                    format!("provider '{id}' (openai-compatible) needs an endpoint")
+                })?;
+                let api_key = provider.effective_api_key().map_err(|e| e.to_string())?;
+                let backend = HttpBackend::new(
+                    provider_id.clone(),
+                    model_name,
+                    endpoint,
+                    api_key,
+                    tier_parsed,
+                    provider.http_timeout_ms,
+                );
+                let entry = ModelEntry::new(model_id, provider_id.clone(), tier_parsed, capabilities);
+                self.registry
+                    .write()
+                    .expect("registry lock")
+                    .register(entry)
+                    .map_err(|e| e.to_string())?;
+                self.gateway.register_backend(Arc::new(backend));
+            }
+            other => {
+                return Err(format!(
+                    "provider kind '{other}' cannot be added at runtime (only openai-compatible)"
+                ));
+            }
+        }
+
+        // Grant the session's machine-state consent scope so the provider is
+        // immediately usable for chat, matching boot behavior.
+        let _ = self.gateway.router().grant_consent(crate::model::ConsentRecord::new(
+            provider_id,
+            vec![DataClassification::SystemConfig],
+        ));
+
+        self.config.provider.push(provider);
+        self.persist_config()?;
+        // Discover the model list now so the settings panel can populate the
+        // role dropdowns. A failure is kept in the catalogue and shown there;
+        // it does not fail the add itself.
+        let _ = self.refresh_catalogue(&id);
+        Ok(())
+    }
+
+    /// Remove a provider from the live registry and config. Role assignments
+    /// referencing it are dropped; those roles report as unassigned until the
+    /// user picks something else.
+    pub fn remove_provider(&mut self, id: &str) -> Result<(), String> {
+        let before = self.config.provider.len();
+        self.config.provider.retain(|p| p.id != id);
+        if self.config.provider.len() == before {
+            return Err(format!("provider '{id}' is not configured"));
+        }
+        if let Some(roles) = &mut self.config.roles {
+            if roles.surface.as_ref().is_some_and(|a| a.provider == id) {
+                roles.surface = None;
+            }
+            if roles.chat.as_ref().is_some_and(|a| a.provider == id) {
+                roles.chat = None;
+            }
+            if roles
+                .verification
+                .as_ref()
+                .is_some_and(|a| a.provider == id)
+            {
+                roles.verification = None;
+            }
+            roles
+                .specialists
+                .retain(|_, a| a.provider != id);
+        }
+        let provider_id = ProviderId::new(id);
+        for descriptor in assignable_roles() {
+            if self
+                .gateway
+                .router()
+                .assignment(&descriptor.id)
+                .is_some_and(|(p, _)| p == provider_id)
+            {
+                self.gateway.router().clear_assignment(&descriptor.id);
+            }
+        }
+        self.catalogue
+            .write()
+            .expect("catalogue lock")
+            .remove(id);
+        self.persist_config()
+    }
+
+    /// Store a credential for a provider. Write-only: the key is persisted
+    /// to config and never returned to the frontend. The model catalogue is
+    /// refreshed so the dropdowns reflect what the key can actually see.
+    pub fn set_provider_credential(&mut self, id: &str, api_key: String) -> Result<(), String> {
+        let provider = self
+            .config
+            .provider_mut(id)
+            .ok_or_else(|| format!("provider '{id}' is not configured"))?;
+        provider.api_key_env = None;
+        provider.api_key = Some(api_key);
+        self.persist_config()?;
+        let _ = self.refresh_catalogue(id);
+        Ok(())
+    }
+
+    /// Assign a provider/model pair to a role. The pair is validated against
+    /// the provider's live discovery catalogue before acceptance; an unknown
+    /// model or a provider whose discovery failed is rejected with the reason.
+    pub fn set_role_assignment(
+        &mut self,
+        role: &str,
+        provider_id: &str,
+        model: &str,
+    ) -> Result<(), String> {
+        self.validated_catalogue_model(provider_id, model)?;
+        self.store_assignment(role, provider_id, model)?;
+        self.persist_config()
+    }
+
+    /// Assign one provider/model pair to every role in a group. The pair is
+    /// validated once, then applied to each role; config is persisted once at
+    /// the end. Returns the role ids that were assigned.
+    ///
+    /// Groups:
+    /// - `all`: chat, verification, surface, and every specialist
+    /// - `specialists`: the eleven specialist roles only
+    pub fn set_role_group_assignment(
+        &mut self,
+        group: &str,
+        provider_id: &str,
+        model: &str,
+    ) -> Result<Vec<String>, String> {
+        let roles: Vec<String> = match group {
+            "all" => assignable_roles().into_iter().map(|r| r.id).collect(),
+            "specialists" => SPECIALIST_DOMAINS
+                .iter()
+                .map(|d| format!("specialist:{d}"))
+                .collect(),
+            other => return Err(format!("unknown role group '{other}'")),
+        };
+        self.validated_catalogue_model(provider_id, model)?;
+        for role in &roles {
+            self.store_assignment(role, provider_id, model)?;
+        }
+        self.persist_config()?;
+        Ok(roles)
+    }
+
+    /// Check that the provider is configured and its discovery catalogue
+    /// lists the model. Refreshes the catalogue once if it is missing or the
+    /// last discovery failed.
+    fn validated_catalogue_model(&mut self, provider_id: &str, model: &str) -> Result<(), String> {
+        if self.config.provider(provider_id).is_none() {
+            return Err(format!("provider '{provider_id}' is not configured"));
+        }
+        let cached = self
+            .catalogue
+            .read()
+            .expect("catalogue lock")
+            .get(provider_id)
+            .cloned();
+        let catalogue = match cached {
+            Some(entry) if entry.error.is_none() => entry,
+            _ => {
+                // No successful discovery yet (or it failed earlier): try once
+                // now so a stale failure does not block a valid assignment.
+                let _ = self.refresh_catalogue(provider_id);
+                self.catalogue
+                    .read()
+                    .expect("catalogue lock")
+                    .get(provider_id)
+                    .cloned()
+                    .ok_or_else(|| format!("no models were found for provider '{provider_id}'"))?
+            }
+        };
+        if let Some(error) = catalogue.error {
+            return Err(error);
+        }
+        if !catalogue.models.iter().any(|m| m.id == model) {
+            return Err(format!(
+                "model '{model}' was not found for provider '{provider_id}'"
+            ));
+        }
+        Ok(())
+    }
+
+    /// Apply an already-validated assignment to the live router and the
+    /// config roles section. Does not persist; callers batch or persist.
+    fn store_assignment(&mut self, role: &str, provider_id: &str, model: &str) -> Result<(), String> {
+        validate_role_id(role)?;
+        self.gateway
+            .router()
+            .set_assignment(role, ProviderId::new(provider_id), ModelId::new(model))
+            .map_err(|e| e.to_string())?;
+
+        let roles = self.config.roles.get_or_insert_with(Default::default);
+        let assignment = crate::config::RoleAssignment {
+            provider: provider_id.to_string(),
+            model: model.to_string(),
+        };
+        match role {
+            "surface" => roles.surface = Some(assignment),
+            "chat" => roles.chat = Some(assignment),
+            "verification" => roles.verification = Some(assignment),
+            specialist => {
+                if let Some(domain) = specialist.strip_prefix("specialist:") {
+                    roles.specialists.insert(domain.to_string(), assignment);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The resolved assignment for a role, or None when the role has no
+    /// assignment yet. There is no fallback: an unassigned role simply has
+    /// no route until the user picks one in the settings panel.
+    pub fn role_route(&self, role: &str) -> Result<Option<RoutingDecision>, String> {
+        validate_role_id(role)?;
+        Ok(self.role_assignment_decision(role).ok())
+    }
+
+    /// Refresh one provider's model catalogue and remember the outcome,
+    /// including the failure reason. Returns the models on success.
+    pub fn refresh_catalogue(&mut self, provider_id: &str) -> Result<Vec<DiscoveredModel>, String> {
+        let result = self.fetch_models(provider_id);
+        let entry = ProviderCatalogue::from_result(result.clone());
+        self.catalogue
+            .write()
+            .expect("catalogue lock")
+            .insert(provider_id.to_string(), entry);
+        result
+    }
+
+    fn persist_config(&self) -> Result<(), String> {
+        let path = self.config.source_path();
+        self.config
+            .save_to(&path)
+            .map_err(|e| format!("cannot persist config: {e}"))
+    }
+
+    /// Fetch the live model list from a configured provider's /models
+    /// endpoint, caching the outcome (including failures) for the settings
+    /// panel. The provider must already be configured with an API key.
+    pub fn discover_models(&mut self, provider_id: &str) -> Result<Vec<DiscoveredModel>, String> {
+        self.refresh_catalogue(provider_id)
+    }
+
+    /// Raw /models fetch with no caching. Callers that need the result to be
+    /// remembered should go through `refresh_catalogue`.
+    fn fetch_models(&self, provider_id: &str) -> Result<Vec<DiscoveredModel>, String> {
+        let provider = self
+            .config
+            .provider(provider_id)
+            .ok_or_else(|| format!("provider '{provider_id}' is not configured"))?;
+        let endpoint = provider
+            .endpoint
+            .as_ref()
+            .ok_or_else(|| format!("provider '{provider_id}' has no endpoint"))?;
+        let api_key = provider
+            .effective_api_key()
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("provider '{provider_id}' has no API key"))?;
+        let url = format!("{}/models", endpoint.trim_end_matches('/'));
+        let agent = ureq::AgentBuilder::new()
+            .timeout(std::time::Duration::from_millis(provider.http_timeout_ms))
+            .build();
+        let mut req = agent.get(&url);
+        req = req.set("Authorization", &format!("Bearer {api_key}"));
+        let response = req
+            .call()
+            .map_err(|e| format!("models request failed: {e}"))?;
+        let body: Value = response
+            .into_string()
+            .map_err(|e| format!("cannot read models response: {e}"))
+            .and_then(|text| {
+                serde_json::from_str(&text)
+                    .map_err(|e| format!("cannot parse models response: {e}"))
+            })?;
+        let data = body
+            .get("data")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "models response has no 'data' array".to_string())?;
+        let models = data
+            .iter()
+            .map(|entry| DiscoveredModel {
+                id: entry
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                name: entry
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(String::from),
+            })
+            .collect();
+        Ok(models)
     }
 
     pub fn chat(&self, text: &str) -> Result<String, AgentError> {
@@ -1355,11 +1769,17 @@ impl Coordinator {
     pub fn local_context(&self) -> Option<String> {
         let summary = self.last_scan_summary.read().expect("scan lock").clone();
         let summary = summary?;
-        let task = ModelTask::new(
-            AgentRole::SpecialistReadOnly,
-            DataClassification::SystemConfig,
-        );
-        if self.gateway.router().route(&task, &[]).is_err() {
+        // Machine state is only attached when the chat role has a model and
+        // that provider may see system-config data. Revoking consent for the
+        // assigned provider stops machine state from leaving the machine.
+        let (provider, _) = self.gateway.router().assignment("chat")?;
+        let consent_ok = self
+            .gateway
+            .router()
+            .consent_for(&provider)
+            .map(|c| c.is_active_for(DataClassification::SystemConfig))
+            .unwrap_or(false);
+        if !consent_ok {
             return None;
         }
         let mut context = summary;
@@ -2320,6 +2740,165 @@ fn required_specialist_calls(messages: &[ModelMessage]) -> Vec<ToolCallRequest> 
     calls
 }
 
+/// A role the settings panel can assign a provider/model to.
+pub struct RoleDescriptor {
+    pub id: String,
+    pub label: String,
+    pub detail: String,
+    /// What model strengths make a good fit for this role, shown in the
+    /// settings panel to guide assignment.
+    pub fit: String,
+}
+
+/// The specialist domains that get their own assignable role. Each maps to
+/// the role id `specialist:<domain>`.
+pub const SPECIALIST_DOMAINS: &[&str] = &[
+    "wifi", "storage", "network", "drivers", "graphics", "memory", "power", "processes",
+    "security", "boot", "packages",
+];
+
+/// Every assignable role, in panel order: the three agent roles first, then
+/// one row per specialist domain.
+pub fn assignable_roles() -> Vec<RoleDescriptor> {
+    let mut roles = vec![
+        RoleDescriptor {
+            id: "chat".into(),
+            label: "Chat".into(),
+            detail: "The planner model behind the chat interface.".into(),
+            fit: "Needs reliable tool calling and long-context reasoning; the strongest model you have.".into(),
+        },
+        RoleDescriptor {
+            id: "verification".into(),
+            label: "Verification".into(),
+            detail: "Reviews plans before anything is executed.".into(),
+            fit: "Needs careful, conservative reasoning that sticks to evidence; accuracy over speed.".into(),
+        },
+        RoleDescriptor {
+            id: "surface".into(),
+            label: "Surface".into(),
+            detail: "Composes generative canvas widgets from answers.".into(),
+            fit: "Needs dependable structured output and exact instruction following.".into(),
+        },
+    ];
+    for domain in SPECIALIST_DOMAINS {
+        roles.push(RoleDescriptor {
+            id: format!("specialist:{domain}"),
+            label: format!("{domain} specialist"),
+            detail: format!("Answers {domain} questions from live system evidence."),
+            fit: "Short grounded summaries over tool evidence; fast, inexpensive models work well.".into(),
+        });
+    }
+    roles
+}
+
+/// Check that a role id is one the panel can assign to.
+fn validate_role_id(role: &str) -> Result<(), String> {
+    if matches!(role, "chat" | "verification" | "surface") {
+        return Ok(());
+    }
+    if let Some(domain) = role.strip_prefix("specialist:") {
+        if SPECIALIST_DOMAINS.contains(&domain) {
+            return Ok(());
+        }
+    }
+    Err(format!("unknown role '{role}'"))
+}
+
+/// A pre-configured OpenAI-compatible provider the user can pick from in the
+/// settings panel. The endpoint is filled in automatically; the user only
+/// enters an API key.
+pub struct CatalogProvider {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub endpoint: &'static str,
+    pub kind: &'static str,
+    pub tier: &'static str,
+}
+
+/// The provider catalog. These are the most common OpenAI-compatible
+/// providers. Adding a provider is a config change, not a code change, once
+/// the panel supports arbitrary endpoints.
+pub const PROVIDER_CATALOG: &[CatalogProvider] = &[
+    CatalogProvider {
+        id: "openrouter",
+        label: "OpenRouter",
+        endpoint: "https://openrouter.ai/api/v1",
+        kind: "openai-compatible",
+        tier: "internet",
+    },
+    CatalogProvider {
+        id: "openai",
+        label: "OpenAI",
+        endpoint: "https://api.openai.com/v1",
+        kind: "openai-compatible",
+        tier: "internet",
+    },
+    CatalogProvider {
+        id: "anthropic",
+        label: "Anthropic",
+        endpoint: "https://api.anthropic.com/v1",
+        kind: "openai-compatible",
+        tier: "internet",
+    },
+    CatalogProvider {
+        id: "groq",
+        label: "Groq",
+        endpoint: "https://api.groq.com/openai/v1",
+        kind: "openai-compatible",
+        tier: "internet",
+    },
+    CatalogProvider {
+        id: "together",
+        label: "Together AI",
+        endpoint: "https://api.together.xyz/v1",
+        kind: "openai-compatible",
+        tier: "internet",
+    },
+    CatalogProvider {
+        id: "fireworks",
+        label: "Fireworks AI",
+        endpoint: "https://api.fireworks.ai/inference/v1",
+        kind: "openai-compatible",
+        tier: "internet",
+    },
+    CatalogProvider {
+        id: "mistral",
+        label: "Mistral AI",
+        endpoint: "https://api.mistral.ai/v1",
+        kind: "openai-compatible",
+        tier: "internet",
+    },
+    CatalogProvider {
+        id: "deepinfra",
+        label: "DeepInfra",
+        endpoint: "https://api.deepinfra.com/v1/openai",
+        kind: "openai-compatible",
+        tier: "internet",
+    },
+    CatalogProvider {
+        id: "novita",
+        label: "Novita AI",
+        endpoint: "https://api.novita.ai/v3/openai",
+        kind: "openai-compatible",
+        tier: "internet",
+    },
+    CatalogProvider {
+        id: "hyperbolic",
+        label: "Hyperbolic",
+        endpoint: "https://api.hyperbolic.xyz/v1",
+        kind: "openai-compatible",
+        tier: "internet",
+    },
+];
+
+/// A model discovered live from a provider's /models endpoint.
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveredModel {
+    pub id: String,
+    pub name: Option<String>,
+}
+
 fn config_dir_for(_config: &AiosConfig) -> PathBuf {
     let path = std::env::var("AIOS_CONFIG")
         .map(PathBuf::from)
@@ -2339,6 +2918,7 @@ pub enum BootError {
     UnknownKind(String),
     MissingField(String, String),
     Discovery(String),
+    RoleAssignment(crate::model::RoutingError),
 }
 
 impl std::fmt::Display for BootError {
@@ -2358,6 +2938,7 @@ impl std::fmt::Display for BootError {
                 )
             }
             BootError::Discovery(reason) => write!(f, "discovery: {reason}"),
+            BootError::RoleAssignment(e) => write!(f, "role assignment: {e}"),
         }
     }
 }
@@ -2379,8 +2960,8 @@ pub fn status_text(coordinator: &Coordinator) -> String {
                 ""
             }
         )),
-        Err(RoutingError::NoEligibleProvider) => {
-            lines.push("route (public): no eligible provider".into())
+        Err(RoutingError::NoAssignmentForRole(_)) => {
+            lines.push("route (public): no model assigned".into())
         }
         Err(e) => lines.push(format!("route (public): {e}")),
     }
@@ -2450,7 +3031,8 @@ pub fn classification_help() -> String {
 }
 
 pub fn send_direct(coordinator: &Coordinator, text: &str) -> Result<String, AgentError> {
-    let task = ModelTask::new(AgentRole::SpecialistReadOnly, DataClassification::Public);
+    let task = ModelTask::new(AgentRole::SpecialistReadOnly, DataClassification::Public)
+        .with_role_id("chat");
     let request = crate::model::GenerationRequest {
         task_id: task.task_id,
         messages: vec![
@@ -2460,6 +3042,7 @@ pub fn send_direct(coordinator: &Coordinator, text: &str) -> Result<String, Agen
         max_tokens: coordinator.shell_max_tokens,
         temperature: 0.4,
         seed: None,
+        model: None,
     };
     let response = coordinator
         .gateway
@@ -2495,6 +3078,7 @@ mod tests {
         AiosConfig {
             model: None,
             shell: None,
+            roles: None,
             provider: vec![ProviderConfig {
                 id: "stub".into(),
                 kind: "openai-compatible".into(),
@@ -2510,11 +3094,31 @@ mod tests {
     }
 
     fn stub_coordinator(port: u16) -> Coordinator {
-        Coordinator::boot_with_probe(
+        let coordinator = Coordinator::boot_with_probe(
             stub_config(port),
             Box::new(FakeProbe(ConnectivityState::Internet)),
         )
-        .expect("boot")
+        .expect("boot");
+        // The router no longer tier-ranks: tests assign the stub provider to
+        // the roles they exercise, exactly like the settings panel would.
+        let provider = ProviderId::new("stub");
+        let model = ModelId::new("stub-model");
+        coordinator
+            .gateway
+            .router()
+            .set_assignment("chat", provider.clone(), model.clone())
+            .expect("chat assignment");
+        coordinator
+            .gateway
+            .router()
+            .set_assignment("surface", provider.clone(), model.clone())
+            .expect("surface assignment");
+        coordinator
+            .gateway
+            .router()
+            .set_assignment("verification", provider, model)
+            .expect("verification assignment");
+        coordinator
     }
 
     fn handler(body: &str) -> String {
@@ -2687,6 +3291,7 @@ mod tests {
         let config = AiosConfig {
             model: None,
             shell: None,
+            roles: None,
             provider: vec![ProviderConfig {
                 id: "local".into(),
                 kind: "local".into(),
@@ -2702,21 +3307,74 @@ mod tests {
         let coordinator =
             Coordinator::boot_with_probe(config, Box::new(FakeProbe(ConnectivityState::Offline)))
                 .expect("boot");
-        let route = coordinator.current_route();
-        assert!(matches!(
-            route,
-            Err(RoutingError::ProviderUnhealthy(p)) if p == ProviderId::local()
-        ));
+        // A missing local model file marks the provider unhealthy at boot;
+        // routing itself no longer probes health, the gateway does per submit.
         let entries = coordinator.provider_entries();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].health.state, HealthState::Unhealthy);
     }
 
     #[test]
-    fn bad_config_fails_boot() {
-        let config = AiosConfig {
+    fn group_assignment_applies_to_every_specialist() {
+        // persist_config writes to AIOS_CONFIG; point it at a scratch file so
+        // the test never touches a real config. Safe here: no other test in
+        // this binary reads AIOS_CONFIG (they all pass config directly).
+        let config_path = std::env::temp_dir().join(format!(
+            "aios-test-group-assignment-{}.toml",
+            std::process::id()
+        ));
+        unsafe {
+            std::env::set_var("AIOS_CONFIG", &config_path);
+        }
+
+        let port = testutil::spawn_json_server(|body| {
+            if body.is_empty() {
+                // GET {endpoint}/models
+                serde_json::json!({
+                    "data": [{ "id": "stub-model" }, { "id": "other-model" }]
+                })
+                .to_string()
+            } else {
+                testutil::openai_response("hello from stub")
+            }
+        });
+        let mut coordinator = stub_coordinator(port);
+        // Discovery needs a credential; setting one also warms the catalogue.
+        coordinator
+            .set_provider_credential("stub", "sk-test".into())
+            .expect("credential");
+
+        let assigned = coordinator
+            .set_role_group_assignment("specialists", "stub", "other-model")
+            .expect("group assignment");
+        assert_eq!(assigned.len(), 11);
+        assert!(assigned.contains(&"specialist:wifi".to_string()));
+
+        let route = coordinator
+            .role_route("specialist:packages")
+            .expect("valid role")
+            .expect("assigned");
+        assert_eq!(route.provider, ProviderId::new("stub"));
+        assert_eq!(route.model, ModelId::new("other-model"));
+
+        let roles = coordinator.config.roles.as_ref().expect("roles");
+        assert_eq!(roles.specialists.len(), 11);
+
+        assert!(coordinator
+            .set_role_group_assignment("nope", "stub", "stub-model")
+            .is_err());
+        assert!(coordinator
+            .set_role_group_assignment("all", "stub", "missing-model")
+            .is_err());
+
+        let _ = std::fs::remove_file(&config_path);
+    }
+
+    #[test]
+    fn bad_config_fails_boot() {        let config = AiosConfig {
             model: None,
             shell: None,
+            roles: None,
             provider: vec![ProviderConfig {
                 id: "x".into(),
                 kind: "openai-compatible".into(),
@@ -2740,6 +3398,7 @@ mod tests {
         let config = AiosConfig {
             model: None,
             shell: None,
+            roles: None,
             provider: vec![ProviderConfig {
                 id: "deepseek".into(),
                 kind: "openai-compatible".into(),
