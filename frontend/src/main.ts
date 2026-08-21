@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { currentMonitor, getCurrentWindow } from '@tauri-apps/api/window';
 import { PhysicalPosition } from '@tauri-apps/api/dpi';
-import { isSectionId, renderSidebar, type EvidenceItem, type FlightProgress, type SectionId, type SidebarMessage, type SidebarStatus, type SystemGraphSnapshot } from './sidebar';
+import { isSectionId, providerCatalog, renderSidebar, roleState, rolesCatalog, settingsForm, updateProviderCatalog, updateRolesCatalog, updateSettingsProviders, type EvidenceItem, type FlightProgress, type SectionId, type SidebarMessage, type SidebarStatus, type SystemGraphSnapshot } from './sidebar';
 type UiWidget =
   | { type: 'metricCard'; label: string; value: string; unit: string; status: string }
   | { type: 'statusList'; title: string; items: string[] }
@@ -144,18 +144,127 @@ function bindSidebar(): void {
       const section = button.dataset.section;
       if (!isSectionId(section)) return;
       activeSection = activeSection === section && section !== 'chat' ? 'chat' : section;
+      if (activeSection === 'settings') void syncRoleAssignmentsFromBackend();
       render();
     });
   });
-  document.querySelector<HTMLButtonElement>('[data-dismiss-inspector]')?.addEventListener('click', () => {
-    activeSection = 'chat';
-    render();
+  document.querySelectorAll<HTMLButtonElement>('[data-dismiss-inspector]')?.forEach((button) => {
+    button.addEventListener('click', () => {
+      activeSection = 'chat';
+      settingsForm.error = null;
+      render();
+    });
+  });
+  document.querySelectorAll<HTMLButtonElement>('[data-remove-provider]').forEach((button) => {
+    button.addEventListener('click', () => {
+      void removeProvider(button.dataset.removeProvider ?? '');
+    });
+  });
+  document.querySelectorAll<HTMLButtonElement>('[data-set-key]').forEach((button) => {
+    button.addEventListener('click', () => {
+      void setProviderKey(button.dataset.setKey ?? '');
+    });
+  });
+  const providerForm = document.querySelector<HTMLFormElement>('#provider-form');
+  providerForm?.addEventListener('submit', (event) => {
+    event.preventDefault();
+    void addProvider(new FormData(providerForm));
+  });
+  document.querySelectorAll<HTMLFormElement>('.settings-role').forEach((form) => {
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      void assignRole(form.dataset.role ?? '', new FormData(form));
+    });
+  });
+  const bulkForm = document.querySelector<HTMLFormElement>('#bulk-form');
+  bulkForm?.addEventListener('submit', (event) => {
+    event.preventDefault();
+    void assignRoleGroup(new FormData(bulkForm));
   });
   document.querySelectorAll<HTMLButtonElement>('[data-retry]').forEach((button) => {
     button.addEventListener('click', () => {
       void retryLastRequest();
     });
   });
+  bindSelectCloser();
+}
+
+function closeAllSelects(): void {
+  document.querySelectorAll<HTMLElement>('.aios-select').forEach((box) => {
+    box.classList.remove('open');
+    box.querySelector<HTMLElement>('.aios-select-list')?.setAttribute('hidden', '');
+    box.querySelector<HTMLButtonElement>('.aios-select-trigger')?.setAttribute('aria-expanded', 'false');
+  });
+}
+
+let selectCloserBound = false;
+
+/// One delegated listener drives every custom dropdown. It uses pointerdown
+/// (capture), not click: this frameless WebKitGTK window can drop or reroute
+/// click events (the focus_sidebar hack exists for the same reason), and
+/// per-node click listeners went stale when a pick did not trigger a render,
+/// leaving the listbox open.
+function bindSelectCloser(): void {
+  if (selectCloserBound) return;
+  selectCloserBound = true;
+  document.addEventListener('pointerdown', (event) => {
+    const target = event.target as Element;
+    const item = target.closest?.('.aios-select-list li');
+    if (item) {
+      const box = item.closest<HTMLElement>('.aios-select');
+      if (box) pickSelectOption(box, item.dataset.value ?? '', item.textContent ?? '');
+      return;
+    }
+    // Scrollbar/drag inside an open list: keep it open.
+    if (target.closest?.('.aios-select-list')) return;
+    const trigger = target.closest?.('.aios-select-trigger');
+    if (trigger) {
+      const box = trigger.closest<HTMLElement>('.aios-select');
+      const list = box?.querySelector<HTMLElement>('.aios-select-list');
+      if (!box || !list) return;
+      const wasOpen = !list.hidden;
+      closeAllSelects();
+      if (!wasOpen) {
+        list.hidden = false;
+        box.classList.add('open');
+        trigger.setAttribute('aria-expanded', 'true');
+      }
+      return;
+    }
+    closeAllSelects();
+  }, true);
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') closeAllSelects();
+  });
+}
+
+function pickSelectOption(box: HTMLElement, value: string, label: string): void {
+  // Close this box first so a missing re-render can never leave it open.
+  box.classList.remove('open');
+  box.querySelector<HTMLElement>('.aios-select-list')?.setAttribute('hidden', '');
+  box.querySelector<HTMLButtonElement>('.aios-select-trigger')?.setAttribute('aria-expanded', 'false');
+  const input = box.querySelector<HTMLInputElement>('input[type="hidden"]');
+  if (input) input.value = value;
+  const valueEl = box.querySelector<HTMLElement>('.aios-select-value');
+  if (valueEl) valueEl.textContent = label;
+  box.classList.toggle('is-placeholder', !value);
+  box.querySelectorAll<HTMLLIElement>('.aios-select-list li').forEach((li) => {
+    li.setAttribute('aria-selected', String(li.dataset.value === value));
+    li.classList.toggle('is-selected', li.dataset.value === value);
+  });
+  closeAllSelects();
+  const role = box.dataset.roleProvider;
+  if (role && value) void loadModelsForRole(role, value);
+  if (box.hasAttribute('data-bulk-provider') && value) void loadModelsForBulk(value);
+  if (box.hasAttribute('data-catalog-select')) syncCatalogSelection(value);
+}
+
+/// Endpoint auto-fill for the Add provider form.
+function syncCatalogSelection(catalogId: string): void {
+  settingsForm.catalogId = catalogId;
+  settingsForm.providerEndpoint = providerCatalog.find((c) => c.id === catalogId)?.endpoint ?? '';
+  const endpointInput = document.querySelector<HTMLInputElement>('#provider-form input[name="endpoint"]');
+  if (endpointInput) endpointInput.value = settingsForm.providerEndpoint;
 }
 
 function render(): void {
@@ -196,6 +305,7 @@ async function refreshSidebarStatus(): Promise<void> {
   try {
     sidebarStatus = await invoke<SidebarStatus>('sidebar_status');
     sidebarStatusError = null;
+    updateSettingsProviders(sidebarStatus.providers);
     if (sidebarStatusRetry !== null) {
       window.clearTimeout(sidebarStatusRetry);
       sidebarStatusRetry = null;
@@ -217,6 +327,222 @@ async function refreshSidebarStatus(): Promise<void> {
   if (!isCanvasWindow) render();
 }
 
+// ---- Settings panel actions ----
+
+async function addProvider(_form: FormData): Promise<void> {
+  const catalogId = String(_form.get('catalog_id') ?? '').trim();
+  const endpoint = String(_form.get('endpoint') ?? '').trim();
+  const apiKey = String(_form.get('api_key') ?? '').trim();
+  if (!catalogId || !endpoint || !apiKey) {
+    settingsForm.error = 'Provider, endpoint, and API key are all required.';
+    render();
+    return;
+  }
+  const catalog = providerCatalog.find((c) => c.id === catalogId);
+  if (!catalog) {
+    settingsForm.error = `Unknown provider '${catalogId}'.`;
+    render();
+    return;
+  }
+  settingsForm.busy = true;
+  settingsForm.error = null;
+  render();
+  try {
+    await invoke('add_provider', {
+      id: catalogId,
+      kind: catalog.kind,
+      tier: catalog.tier,
+      endpoint,
+      model: null,
+      apiKey,
+      httpTimeoutMs: 60000,
+    });
+    settingsForm.catalogId = '';
+    settingsForm.providerEndpoint = '';
+    settingsForm.providerKey = '';
+    await refreshSidebarStatus();
+  } catch (error) {
+    settingsForm.error = String(error);
+  } finally {
+    settingsForm.busy = false;
+    render();
+  }
+}
+
+async function loadModelsForRole(role: string, providerId: string): Promise<void> {
+  const state = roleState(role);
+  settingsForm.busy = true;
+  settingsForm.error = null;
+  state.provider = providerId;
+  state.model = '';
+  render();
+  try {
+    const models = await invoke<{ id: string; name: string | null }[]>('discover_models', { providerId });
+    state.models = models;
+    state.discoveryError = models.length
+      ? null
+      : `no models were found for provider '${providerId}'`;
+  } catch (error) {
+    state.models = [];
+    state.discoveryError = String(error);
+  } finally {
+    settingsForm.busy = false;
+    render();
+  }
+}
+
+async function loadModelsForBulk(providerId: string): Promise<void> {
+  settingsForm.busy = true;
+  settingsForm.error = null;
+  settingsForm.bulkProvider = providerId;
+  settingsForm.bulkModel = '';
+  render();
+  try {
+    const models = await invoke<{ id: string; name: string | null }[]>('discover_models', { providerId });
+    settingsForm.bulkModels = models;
+    settingsForm.bulkDiscoveryError = models.length
+      ? null
+      : `no models were found for provider '${providerId}'`;
+  } catch (error) {
+    settingsForm.bulkModels = [];
+    settingsForm.bulkDiscoveryError = String(error);
+  } finally {
+    settingsForm.busy = false;
+    render();
+  }
+}
+
+async function assignRoleGroup(form: FormData): Promise<void> {
+  const group = String(form.get('group') ?? '').trim();
+  const providerId = String(form.get('provider') ?? '').trim();
+  const model = String(form.get('model') ?? '').trim();
+  if (!group || !providerId || !model) return;
+  settingsForm.busy = true;
+  settingsForm.error = null;
+  try {
+    const assigned = await invoke<string[]>('set_role_group_assignment', { group, providerId, model });
+    // Reflect the group assignment on every affected role row, reusing the
+    // model list already discovered for the bulk form.
+    for (const role of assigned) {
+      const state = roleState(role);
+      state.provider = providerId;
+      state.model = model;
+      state.models = settingsForm.bulkModels;
+      state.discoveryError = settingsForm.bulkDiscoveryError;
+    }
+    settingsForm.bulkModel = model;
+    await refreshSidebarStatus();
+  } catch (error) {
+    settingsForm.error = String(error);
+  } finally {
+    settingsForm.busy = false;
+    render();
+  }
+}
+
+async function removeProvider(id: string): Promise<void> {
+  if (!id) return;
+  settingsForm.busy = true;
+  settingsForm.error = null;
+  try {
+    await invoke('remove_provider', { id });
+    // The backend dropped assignments referencing this provider; reset the
+    // panel rows that pointed at it.
+    for (const state of Object.values(settingsForm.roles)) {
+      if (state.provider === id) {
+        state.provider = '';
+        state.model = '';
+        state.models = [];
+        state.discoveryError = null;
+      }
+    }
+    await refreshSidebarStatus();
+  } catch (error) {
+    settingsForm.error = String(error);
+  } finally {
+    settingsForm.busy = false;
+    render();
+  }
+}
+
+async function setProviderKey(id: string): Promise<void> {
+  const key = window.prompt(`API key for ${id}`);
+  if (!key) return;
+  settingsForm.busy = true;
+  settingsForm.error = null;
+  try {
+    await invoke('set_provider_credential', { id, apiKey: key });
+    await refreshSidebarStatus();
+  } catch (error) {
+    settingsForm.error = String(error);
+  } finally {
+    settingsForm.busy = false;
+    render();
+  }
+}
+
+async function assignRole(role: string, form: FormData): Promise<void> {
+  const providerId = String(form.get('provider') ?? '').trim();
+  const model = String(form.get('model') ?? '').trim();
+  if (!providerId || !model) return;
+  settingsForm.busy = true;
+  settingsForm.error = null;
+  try {
+    await invoke('set_role_assignment', { role, providerId, model });
+    roleState(role).model = model;
+    await refreshSidebarStatus();
+  } catch (error) {
+    settingsForm.error = String(error);
+  } finally {
+    settingsForm.busy = false;
+    render();
+  }
+}
+
+async function loadProviderCatalog(): Promise<void> {
+  try {
+    const catalog = await invoke<{ id: string; label: string; endpoint: string; kind: string; tier: string }[]>('provider_catalog');
+    updateProviderCatalog(catalog);
+  } catch (error) {
+    graphSnapshotError = `Provider catalog unavailable: ${String(error)}`;
+  }
+  try {
+    const roles = await invoke<{ id: string; label: string; detail: string; fit: string }[]>('roles_catalog');
+    updateRolesCatalog(roles);
+  } catch (error) {
+    graphSnapshotError = `Roles catalog unavailable: ${String(error)}`;
+  }
+  if (!isCanvasWindow) render();
+  void syncRoleAssignmentsFromBackend();
+}
+
+let roleSyncInFlight = false;
+
+/// Pull the current assignment for every assignable role from the backend so
+/// the settings rows show persisted state instead of placeholders (fresh
+/// session, edits made elsewhere, etc.). Local edits keep updating state
+/// directly; this only fills what the backend already knows.
+async function syncRoleAssignmentsFromBackend(): Promise<void> {
+  if (roleSyncInFlight || isCanvasWindow) return;
+  roleSyncInFlight = true;
+  try {
+    for (const role of rolesCatalog) {
+      const route = await invoke<{ provider: string; model: string } | null>('role_route', { role: role.id });
+      if (!route) continue;
+      const state = roleState(role.id);
+      if (state.provider !== route.provider || state.model !== route.model) {
+        state.provider = route.provider;
+        state.model = route.model;
+      }
+    }
+    if (activeSection === 'settings') render();
+  } catch {
+    // Status stays as-is; the rows fall back to manual discovery.
+  } finally {
+    roleSyncInFlight = false;
+  }
+}
+
 async function refreshGraph(): Promise<void> {
   try {
     graphSnapshot = await invoke<SystemGraphSnapshot>('system_graph');
@@ -224,7 +550,10 @@ async function refreshGraph(): Promise<void> {
   } catch (error) {
     graphSnapshotError = String(error);
   }
-  if (!isCanvasWindow) render();
+  // While the settings panel is open, refresh data silently. Rebuilding the
+  // DOM mid-interaction destroys the provider dropdown popup, clears the
+  // selection a moment later, and wipes anything typed into the form.
+  if (!isCanvasWindow && activeSection !== 'settings') render();
 }
 
 function renderCanvas(): string {
@@ -329,7 +658,9 @@ function applyGraphActivity(event: GraphActivityEvent): void {
         detail: activityDetail(phase, activeNodeIds),
         activeNodeIds,
       };
-  render();
+  // Never rebuild the DOM under an open settings form: a rebuild between
+  // mousedown and focus makes text fields unclickable and wipes typed input.
+  if (!isCanvasWindow && activeSection !== 'settings') render();
 }
 
 async function runPrompt(text: string, pushUser: boolean): Promise<void> {
@@ -551,6 +882,16 @@ if (isCanvasWindow) {
 }
 
 if (!isCanvasWindow) {
+  // The frameless sidebar window can hold DOM focus without holding real X11
+  // keyboard focus; keystrokes then vanish. The prompt re-establishes X11
+  // focus on pointerdown via focus_sidebar. Extend the same fix to every
+  // form control, including the settings modal fields.
+  document.addEventListener('pointerdown', (event) => {
+    const target = event.target as Element;
+    if (target.closest?.('input, textarea, select, button')) {
+      void invoke('focus_sidebar').catch(() => {});
+    }
+  }, true);
   void listen<GraphActivityEvent>('graph_activity', (event) => {
     applyGraphActivity(event.payload);
   }).catch((error) => {
@@ -559,6 +900,7 @@ if (!isCanvasWindow) {
   });
   void refreshSidebarStatus();
   void refreshGraph();
+  void loadProviderCatalog();
   window.setInterval(() => {
     if (!requestInFlight) void refreshGraph();
   }, 8000);

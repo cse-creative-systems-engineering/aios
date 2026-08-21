@@ -139,6 +139,83 @@ const INSPECTOR: Record<Exclude<SectionId, 'chat'>, { title: string; body: strin
   },
 };
 
+// ---- Settings panel state (providers + roles administration) ----
+
+/// One assignable role's panel state: chosen provider, the models its
+/// discovery returned (or why discovery failed), and the chosen model.
+export type RolePanelState = {
+  provider: string;
+  models: { id: string; name: string | null }[];
+  model: string;
+  discoveryError: string | null;
+};
+
+export type SettingsForm = {
+  open: boolean;
+  // Add-provider form: pick from catalog, endpoint auto-fills, enter key.
+  catalogId: string;
+  providerEndpoint: string;
+  providerKey: string;
+  // Bulk assignment: apply one provider/model to a whole group of roles.
+  bulkGroup: string;
+  bulkProvider: string;
+  bulkModels: { id: string; name: string | null }[];
+  bulkModel: string;
+  bulkDiscoveryError: string | null;
+  // Role assignment: one row per role from the backend's roles catalog.
+  roles: Record<string, RolePanelState>;
+  error: string | null;
+  busy: boolean;
+};
+
+export const settingsForm: SettingsForm = {
+  open: false,
+  catalogId: '',
+  providerEndpoint: '',
+  providerKey: '',
+  bulkGroup: 'specialists',
+  bulkProvider: '',
+  bulkModels: [],
+  bulkModel: '',
+  bulkDiscoveryError: null,
+  roles: {},
+  error: null,
+  busy: false,
+};
+
+export function roleState(role: string): RolePanelState {
+  let state = settingsForm.roles[role];
+  if (!state) {
+    state = { provider: '', models: [], model: '', discoveryError: null };
+    settingsForm.roles[role] = state;
+  }
+  return state;
+}
+
+/// Provider records for the settings panel (from the last sidebar status).
+/// Mirrors SidebarStatus.providers; kept separate so the panel renders even
+/// when the status poll fails.
+export let settingsProviders: SidebarStatus['providers'] = [];
+
+export function updateSettingsProviders(providers: SidebarStatus['providers']): void {
+  settingsProviders = providers;
+}
+
+/// The static provider catalog (OpenRouter etc.) fetched from the backend.
+export let providerCatalog: { id: string; label: string; endpoint: string; kind: string; tier: string }[] = [];
+
+export function updateProviderCatalog(catalog: typeof providerCatalog): void {
+  providerCatalog = catalog;
+}
+
+/// The assignable roles (chat, verification, surface, one per specialist
+/// domain) fetched from the backend so both sides agree on the list.
+export let rolesCatalog: { id: string; label: string; detail: string; fit: string }[] = [];
+
+export function updateRolesCatalog(roles: typeof rolesCatalog): void {
+  rolesCatalog = roles;
+}
+
 function healthClass(health: string): string {
   switch (health) {
     case 'Healthy': return 'graph-h-healthy';
@@ -281,6 +358,7 @@ function renderWorkbench(view: SidebarView, escapeHtml: (value: string) => strin
 
 function renderInspector(section: SectionId, escapeHtml: (value: string) => string): string {
   if (section === 'chat') return '';
+  if (section === 'settings') return renderSettingsModal(escapeHtml);
   const copy = INSPECTOR[section];
   return `<section class="inspector" aria-label="${escapeHtml(copy.title)}">
     <header class="inspector-head">
@@ -292,6 +370,159 @@ function renderInspector(section: SectionId, escapeHtml: (value: string) => stri
     </header>
     <p class="inspector-body">${escapeHtml(copy.body)}</p>
   </section>`;
+}
+
+// ---- Settings modal (provider + role administration) ----
+//
+// The settings icon (5th below chat) opens this overlay. It covers the
+// sidebar content (graph + chat stay mounted underneath, just visually
+// covered) and contains provider management and role assignment. API keys
+// are write-only: they go in and are never returned to the frontend.
+
+function renderSettingsModal(escapeHtml: (value: string) => string): string {
+  return `<div class="settings-overlay" role="dialog" aria-modal="true" aria-label="Settings">
+    <section class="settings-modal">
+      <header class="settings-modal-head">
+        <h2 class="settings-modal-title">Settings</h2>
+        <button type="button" class="settings-modal-close" data-dismiss-inspector aria-label="Close settings">×</button>
+      </header>
+      <div class="settings-modal-body">${renderProvidersAndRolesPanel(escapeHtml)}</div>
+    </section>
+  </div>`;
+}
+
+function renderProvidersAndRolesPanel(escapeHtml: (value: string) => string): string {
+  const providers = settingsProviders;
+  const rows = providers.length
+    ? providers.map((p) => `<div class="settings-provider" data-provider-id="${escapeHtml(p.id)}">
+        <div class="settings-provider-main">
+          <span class="settings-provider-id">${escapeHtml(p.id)}</span>
+        </div>
+        <div class="settings-provider-meta">
+          <span class="${p.health === 'Healthy' ? 'settings-ok' : p.health === 'Unhealthy' ? 'settings-bad' : 'settings-warn'}">${escapeHtml(p.health)}</span>
+          <span>${p.credentialConfigured ? 'key set' : 'no key'}</span>
+          <button type="button" class="settings-key-btn" data-set-key="${escapeHtml(p.id)}">Set key</button>
+          <button type="button" class="settings-remove-btn" data-remove-provider="${escapeHtml(p.id)}">Remove</button>
+        </div>
+      </div>`).join('')
+    : '<p class="settings-empty">No providers configured. Add one below.</p>';
+
+  // Custom dropdown (hidden input + trigger + listbox): native selects cannot
+  // be styled on WebKitGTK and their popups ignore the color scheme entirely.
+  const aiosSelect = (
+    name: string,
+    options: { value: string; label: string }[],
+    selected: string,
+    attrs = '',
+  ): string => {
+    const current = options.find((o) => o.value === selected);
+    const listItems = options.map((o) =>
+      `<li role="option" data-value="${escapeHtml(o.value)}" aria-selected="${o.value === selected}" class="${o.value === selected ? 'is-selected' : ''}${o.value ? '' : 'is-placeholder'}">${escapeHtml(o.label)}</li>`).join('');
+    return `<div class="aios-select${current ? '' : ' is-placeholder'}" ${attrs}>
+      <input type="hidden" name="${escapeHtml(name)}" value="${escapeHtml(selected)}">
+      <button type="button" class="aios-select-trigger" aria-haspopup="listbox" aria-expanded="false">
+        <span class="aios-select-value">${escapeHtml(current?.label ?? options[0]?.label ?? '')}</span>
+        <svg class="aios-select-caret" viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 4.5 6 8l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <ul class="aios-select-list" role="listbox" hidden>${listItems}</ul>
+    </div>`;
+  };
+
+  const providerChoices = () =>
+    [{ value: '', label: 'choose provider…' }]
+      .concat(providers.map((p) => ({ value: p.id, label: p.id })));
+
+  const modelChoices = (models: { id: string; name: string | null }[], selected: string) => {
+    const choices = models.map((m) => ({ value: m.id, label: m.name ?? m.id }));
+    // Keep an assigned-but-not-yet-discovered model selectable instead of
+    // falling back to the placeholder.
+    if (selected && !choices.some((c) => c.value === selected)) {
+      choices.unshift({ value: selected, label: selected });
+    }
+    return [{ value: '', label: 'choose model…' }].concat(choices);
+  };
+
+  const roleRow = (role: { id: string; label: string; detail: string; fit: string }) => {
+    const state = roleState(role.id);
+    const discoveryNote = state.discoveryError
+      ? `<p class="settings-role-error" role="alert">${escapeHtml(state.discoveryError)}</p>`
+      : '';
+    return `
+    <form class="settings-role" data-role="${escapeHtml(role.id)}">
+      <h3 class="settings-form-title">${escapeHtml(role.label)}</h3>
+      <p class="settings-role-detail">${escapeHtml(role.detail)}</p>
+      <p class="settings-role-fit"><span>Good fit</span>${escapeHtml(role.fit)}</p>
+      <label class="settings-field">
+        <span>Provider</span>
+        ${aiosSelect('provider', providerChoices(), state.provider, `data-role-provider="${escapeHtml(role.id)}"`)}
+      </label>
+      <label class="settings-field">
+        <span>Model</span>
+        ${aiosSelect('model', modelChoices(state.models, state.model), state.model)}
+      </label>
+      ${discoveryNote}
+      <button type="submit" class="settings-submit" ${settingsForm.busy ? 'disabled' : ''}>Assign</button>
+    </form>`;
+  };
+
+  return `<div class="settings-tab-body">
+    <section class="settings-section">
+      <header class="settings-section-head">
+        <h2 class="settings-section-title">Providers</h2>
+        <p class="settings-section-hint">Endpoints that can serve models. Health updates live.</p>
+      </header>
+      <div class="settings-list">${rows}</div>
+      <form class="settings-form" id="provider-form">
+        <h3 class="settings-form-title">Add provider</h3>
+        <label class="settings-field">
+          <span>Provider</span>
+          ${aiosSelect('catalog_id', [{ value: '', label: 'choose provider…' }].concat(providerCatalog.map((c) => ({ value: c.id, label: c.label }))), settingsForm.catalogId, 'data-catalog-select')}
+        </label>
+        <label class="settings-field">
+          <span>Endpoint</span>
+          <input name="endpoint" type="url" placeholder="auto-filled from provider" required value="${escapeHtml(settingsForm.providerEndpoint)}" readonly/>
+        </label>
+        <label class="settings-field">
+          <span>API key</span>
+          <input name="api_key" type="password" placeholder="sk-or-..." required/>
+        </label>
+        <button type="submit" class="settings-submit" ${settingsForm.busy ? 'disabled' : ''}>Add provider</button>
+      </form>
+    </section>
+    <section class="settings-section">
+      <header class="settings-section-head">
+        <h2 class="settings-section-title">Roles</h2>
+        <p class="settings-section-hint">Each role runs its own model. Assign providers per role below.</p>
+      </header>
+      ${providerIdsHint(providers.length)}
+      <form class="settings-bulk" id="bulk-form">
+        <p class="settings-bulk-hint">Apply one model to many roles at once. Individual roles keep their own assignment afterwards.</p>
+        <label class="settings-field">
+          <span>Group</span>
+          ${aiosSelect('group', [
+            { value: 'specialists', label: 'All specialists' },
+            { value: 'all', label: 'All roles' },
+          ], settingsForm.bulkGroup, 'data-bulk-group')}
+        </label>
+        <label class="settings-field">
+          <span>Provider</span>
+          ${aiosSelect('provider', providerChoices(), settingsForm.bulkProvider, 'data-bulk-provider')}
+        </label>
+        <label class="settings-field">
+          <span>Model</span>
+          ${aiosSelect('model', modelChoices(settingsForm.bulkModels, settingsForm.bulkModel), settingsForm.bulkModel)}
+        </label>
+        ${settingsForm.bulkDiscoveryError ? `<p class="settings-role-error" role="alert">${escapeHtml(settingsForm.bulkDiscoveryError)}</p>` : ''}
+        <button type="submit" class="settings-submit" ${settingsForm.busy ? 'disabled' : ''}>Assign group</button>
+      </form>
+      <div class="settings-roles-grid">${rolesCatalog.map(roleRow).join('')}</div>
+      ${settingsForm.error ? `<div class="settings-error" role="alert">${escapeHtml(settingsForm.error)}</div>` : ''}
+    </section>
+  </div>`;
+}
+
+function providerIdsHint(providerCount: number): string {
+  return providerCount ? '' : '<p class="settings-empty">Add a provider above first.</p>';
 }
 
 function renderSystemFeedback(view: SidebarView, escapeHtml: (value: string) => string): string {
@@ -318,6 +549,8 @@ function renderSystemFeedback(view: SidebarView, escapeHtml: (value: string) => 
     : 'phase-ready';
   const routeLabel = route ? route.model : 'No route';
   const routeDetail = route ? route.provider : connectivity === 'Unknown' ? 'Unknown' : 'unassigned';
+  const chatLabel = chatRoute ? chatRoute.model : 'No route';
+  const chatDetail = chatRoute ? chatRoute.provider : 'unassigned';
   return `<section class="system-feedback" aria-label="System instrument" data-phase="${phase.toLowerCase().replace(' ', '-')}">
     <header class="instrument-head">
       <div class="instrument-phase">
@@ -326,11 +559,15 @@ function renderSystemFeedback(view: SidebarView, escapeHtml: (value: string) => 
       </div>
       <span class="instrument-conn" title="Connectivity">${escapeHtml(connectivity)}</span>
     </header>
-    <div class="instrument-route" title="${route ? escapeHtml(`${route.provider} / ${route.model}`) : 'No model route'}">
+    <div class="instrument-route" title="${route ? escapeHtml(`surface · ${route.provider} / ${route.model}`) : 'No surface model route'}">
       <span class="route-model">${escapeHtml(routeLabel)}</span>
-     <span class="route-provider">${escapeHtml(routeDetail)}</span>
+     <span class="route-provider">${escapeHtml(`surface · ${routeDetail}`)}</span>
       ${route?.reducedConfidence ? '<span class="route-flag">reduced confidence</span>' : ''}
-      ${chatRoute ? `<span class="route-model">${escapeHtml(chatRoute.model)}</span>` : ''}
+    </div>
+    <div class="instrument-route" title="${chatRoute ? escapeHtml(`chat · ${chatRoute.provider} / ${chatRoute.model}`) : 'No chat model route'}">
+      <span class="route-model">${escapeHtml(chatLabel)}</span>
+      <span class="route-provider">${escapeHtml(`chat · ${chatDetail}`)}</span>
+      ${chatRoute?.reducedConfidence ? '<span class="route-flag">reduced confidence</span>' : ''}
     </div>
     ${renderGraph(view.graph, view.flightProgress, escapeHtml)}
     ${graphReadout(view.graph, view.flightProgress)}
