@@ -57,11 +57,15 @@ impl HttpBackend {
                 json!({ "role": role, "content": message.content })
             })
             .collect();
+        // serde_json widens floats to f64, which turns 0.3f32 into
+        // 0.30000001192092896; some providers reject that as invalid. Round
+        // in f64 space so the wire value matches what was configured.
+        let temperature = (f64::from(request.temperature) * 1000.0).round() / 1000.0;
         let mut body = json!({
-            "model": self.model,
+            "model": request.model.clone().unwrap_or_else(|| self.model.clone()),
             "messages": messages,
             "max_tokens": request.max_tokens,
-            "temperature": request.temperature,
+            "temperature": temperature,
         });
         if request.messages.iter().any(|message| {
             message.role == ModelRole::System
@@ -208,6 +212,10 @@ impl ModelBackend for HttpBackend {
         &self.provider
     }
 
+    fn tier(&self) -> crate::model::ProviderTier {
+        self.tier
+    }
+
     fn is_healthy(&self) -> bool {
         // Some OpenAI-compatible gateways, including free-model routes, serve
         // chat completions but do not expose a usable GET /models endpoint.
@@ -225,7 +233,8 @@ impl ModelBackend for HttpBackend {
         if let Some(key) = &self.api_key {
             http = http.set("Authorization", &format!("Bearer {key}"));
         }
-        match http.send_string(&body) {
+        let mut response_body = String::new();
+        let result = match http.send_string(&body) {
             Ok(response) => {
                 let text = response
                     .into_string()
@@ -234,28 +243,49 @@ impl ModelBackend for HttpBackend {
             }
             Err(ureq::Error::Status(code, response)) => {
                 let status_code: u16 = code;
-                let detail = response
-                    .into_string()
-                    .unwrap_or_default()
-                    .chars()
-                    .take(240)
-                    .collect::<String>();
-                let detail = if detail.is_empty() {
-                    String::new()
-                } else {
-                    format!(": {detail}")
-                };
-                let recoverable = status_code >= 500 || status_code == 429;
-                Err(GenerationError::new(
-                    format!("provider returned HTTP {status_code}{detail}"),
-                    recoverable,
-                ))
+                response_body = response.into_string().unwrap_or_default();
+                Err(Self::status_error(status_code, response_body.clone()))
             }
             Err(ureq::Error::Transport(transport)) => Err(GenerationError::new(
                 format!("transport error: {transport}"),
                 true,
             )),
+        };
+        if let Err(error) = &result {
+            // Dump exactly what we sent and what came back so provider-side
+            // rejections can be replayed and diagnosed. Goes to stderr, which
+            // is visible in the terminal while running tauri:dev.
+            eprintln!(
+                "Aios [{}] generation failed: {error}\nAios request body:\n{body}\nAios response body:\n{response_body}",
+                self.provider
+            );
         }
+        result
+    }
+}
+
+impl HttpBackend {
+    /// Build the error for a non-2xx response. HTTP-level client errors stay
+    /// non-recoverable, but some gateways report *upstream* provider
+    /// failures as HTTP 400 while naming the failed provider in an `error.metadata`
+    /// object (OpenRouter does this). The request itself was valid there, so
+    /// those are transient and worth retrying.
+    fn status_error(code: u16, body: String) -> GenerationError {
+        let upstream_failure = serde_json::from_str::<Value>(&body)
+            .ok()
+            .and_then(|parsed| parsed.get("error").and_then(|e| e.get("metadata")).cloned())
+            .is_some();
+        let snippet: String = body.chars().take(240).collect();
+        let detail = if snippet.is_empty() {
+            String::new()
+        } else {
+            format!(": {snippet}")
+        };
+        let recoverable = code >= 500 || code == 429 || upstream_failure;
+        GenerationError::new(
+            format!("provider returned HTTP {code}{detail}"),
+            recoverable,
+        )
     }
 }
 
@@ -277,6 +307,7 @@ mod tests {
             max_tokens: 64,
             temperature: 0.2,
             seed: None,
+            model: None,
         }
     }
 
@@ -334,6 +365,18 @@ mod tests {
     }
 
     #[test]
+    fn upstream_provider_400_is_recoverable() {
+        let body = r#"{"error":{"message":"Provider returned error","code":400,"metadata":{"raw":"ERROR","provider_name":"Stealth","is_byok":false}}}"#;
+        assert!(HttpBackend::status_error(400, body.to_string()).recoverable);
+        // A real request problem stays non-recoverable.
+        let client_error =
+            r#"{"error":{"message":"no endpoints found matching your request"}}"#;
+        assert!(!HttpBackend::status_error(400, client_error.to_string()).recoverable);
+        assert!(HttpBackend::status_error(502, String::new()).recoverable);
+        assert!(!HttpBackend::status_error(401, String::new()).recoverable);
+    }
+
+    #[test]
     fn request_body_has_expected_shape() {
         let backend = HttpBackend::new(
             ProviderId::new("p"),
@@ -360,6 +403,29 @@ mod tests {
         with_seed.seed = Some(7);
         let body = backend.request_body(&with_seed);
         assert_eq!(body["seed"], 7);
+    }
+
+    #[test]
+    fn temperature_is_rounded_for_the_wire() {
+        let backend = HttpBackend::new(
+            ProviderId::new("p"),
+            "m".into(),
+            "https://x.example/v1".into(),
+            None,
+            ProviderTier::Internet,
+            5000,
+        );
+        // serde_json widens f32 to f64; 0.3f32 must not reach the wire as
+        // 0.30000001192092896 (providers reject that).
+        let mut request = request();
+        request.temperature = 0.3;
+        let body = backend.request_body(&request).to_string();
+        assert!(!body.contains("30000001192092896"));
+        assert!(body.contains("\"temperature\":0.3"));
+
+        request.temperature = 0.7;
+        let body = backend.request_body(&request).to_string();
+        assert!(body.contains("\"temperature\":0.7"));
     }
 
     #[test]
