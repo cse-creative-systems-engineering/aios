@@ -7,3 +7,13 @@ package-lock.json
 .idea/
 *.iml
 .DS_Store
+
+# graphify knowledge graph: keep the graph committed, ignore local cost + cache
+graphify-out/cost.json
+graphify-out/cache/
+
+# graphify build logs
+graphify-out_build.log
+graphify-out_cluster.log
+
+graphify-out/graph.html
