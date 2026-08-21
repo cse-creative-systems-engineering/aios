@@ -1,5 +1,13 @@
 {
   "plugin": [
     ".opencode/plugins/graphify.js"
-  ]
+  ],
+  "mcpServers": {
+    "graphify": {
+      "command": "/home/shane/.local/bin/graphify-mcp",
+      "args": [
+        "/home/shane/RustroverProjects/aios/graphify-out/graph.json"
+      ]
+    }
+  }
 }
