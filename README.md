@@ -94,8 +94,12 @@ There is now also a runnable core. `cargo run` drives the in-process demo
 hardware). `cargo run -- shell` boots the interactive shell: it loads
 `~/.aios/config.toml`, runs a local Qwen model through llama.cpp, and routes
 chat through the model gateway, with discovery, provider status, consent, and
-a plan-and-verify flow. The current library baseline is 438 passing tests with
+a plan-and-verify flow. The current library baseline is 432 passing tests with
 one ignored real-model test.
+
+The orchestration core was recently modularized: `src/coordinator` is split into
+routing, providers, chat, planning, consent, and surface modules behind the same
+public `aios::coordinator::*` API.
 
 Milestones, briefly:
 
@@ -216,7 +220,7 @@ model-routing → human-interaction. Takes an afternoon.
 
 ```bash
 cargo build          # compile everything
-cargo test           # run the test suite (438 library tests)
+cargo test           # run the test suite (432 library tests)
 cargo run            # in-process demo: broker, guardian, mock agents
 cargo run -- shell   # interactive shell against your real config and models
 ```
@@ -225,6 +229,32 @@ The shell reads `~/.aios/config.toml`. Point the `[model] path` at a GGUF
 file, or leave providers empty and it runs degraded. Remote providers are
 `[[provider]]` entries with an OpenAI-compatible endpoint; see
 `model-routing.md` §6.3 for the shape.
+
+## Knowledge graph for agents (graphify)
+
+This repo ships a code knowledge graph so AI agents (and you) can navigate it
+without grepping the whole tree. It lives at `graphify-out/`: `graph.json` is
+the graph (~2.8k nodes / ~7.6k edges / ~118 communities for this repo) and
+`GRAPH_REPORT.md` is a broad architecture overview with named communities.
+
+It is kept current automatically:
+
+- `graphify hook install` (already set up) rebuilds the structural layer for
+  free on every commit, and `scripts/graphify-refresh.sh` refreshes the
+  semantic (LLM) layer in the background on changed files only. Neither
+  auto-commits.
+- AI coding agents can use it as an MCP server named `graphify-mcp-server`
+  (registered globally in VS Code / VS Code Insiders, and as `graphify` in
+  opencode). Tools include `query_graph`, `get_node`, `shortest_path`,
+  `god_nodes`, and `get_pr_impact` (which communities a PR touches). For
+  "what breaks if I change X", use the CLI `graphify affected "<X>"`.
+- No MCP? Fall back to the CLI: `graphify query "<question>"`,
+  `graphify explain "<concept>"`, `graphify path "<A>" "<B>"`.
+
+Prefer the graph over raw grep for "where does X live / what depends on Y"
+questions. The full capability list and rules are in `AGENTS.md`. This is the
+*code* knowledge graph — distinct from the runtime System Graph that tracks
+live hardware and services.
 
 ## Contributing
 

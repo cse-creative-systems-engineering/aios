@@ -774,9 +774,9 @@
     "semantic_hash": ""
   },
   "AGENTS.md": {
-    "mtime": 1787343496.1088717,
-    "seen": 1787344642.3942595,
-    "ast_hash": "3746b3d747f13e20466f1561c53ea99f",
+    "mtime": 1787346272.127918,
+    "seen": 1787346369.941628,
+    "ast_hash": "8b2692947843e0f1c25df2d34cf6b3a4",
     "semantic_hash": ""
   },
   "CONTRIBUTING.md": {
@@ -957,6 +957,24 @@
     "mtime": 1786672295.1888,
     "seen": 1787344642.3943183,
     "ast_hash": "fa12fe33d5228eedda6e8c09db37d7bc",
+    "semantic_hash": ""
+  },
+  "scripts/graphify-refresh.sh": {
+    "mtime": 1787346313.7410603,
+    "seen": 1787346369.9415305,
+    "ast_hash": "82613f520df98e1c03107cb645c8e167",
+    "semantic_hash": ""
+  },
+  "scripts/install-graphify-hooks.sh": {
+    "mtime": 1787346315.6530666,
+    "seen": 1787346369.941533,
+    "ast_hash": "ca56b9c50c2dd9b7eddd0bdf0a2169f2",
+    "semantic_hash": ""
+  },
+  ".github/copilot-instructions.md": {
+    "mtime": 1787346324.0177124,
+    "seen": 1787346369.9416244,
+    "ast_hash": "ec2dc0dc7bef63488889f34de2f5584d",
     "semantic_hash": ""
   }
 }
