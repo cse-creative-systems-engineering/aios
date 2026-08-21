@@ -31,7 +31,9 @@ else
 
 $MARKER
 # Incremental semantic refresh (debounced, no auto-commit). See scripts/graphify-refresh.sh
-bash "$REPO/scripts/graphify-refresh.sh" &
+# Fully detached: redirect fds away from git's commit pipe so the hook returns
+# immediately. The script logs to \$HOME/.cache/graphify-semantic.log.
+bash "$REPO/scripts/graphify-refresh.sh" >> "\$HOME/.cache/graphify-semantic.log" 2>&1 </dev/null &
 EOF
   echo "[install] added semantic refresh to post-commit"
 fi
