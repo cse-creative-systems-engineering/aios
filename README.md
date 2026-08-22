@@ -116,10 +116,11 @@ marked value against the evidence before anything renders. There are no
 predetermined CPU, RAM, or dashboard widgets — the model draws what the
 question needs, fresh each time, and a typed widget IR that briefly took over
 as the default path has been removed. This runs for real now: on a live
-desktop, free-tier OpenRouter models author pages on request, every displayed
-number is traced back to specialist data before render, and the canvas sizes
-itself to whatever the model drew — so nothing gets clipped by a fixed frame
-and you can drag the result around the screen. A deterministic campaign
+desktop, whatever model you assign to the surface role authors pages on
+request, every displayed number is traced back to specialist data before
+render, and the canvas sizes itself to whatever the model drew — so nothing
+gets clipped by a fixed frame and you can drag the result around the screen.
+A deterministic campaign
 harness (`src/harness.rs`) replays prompt plans, quarantines denied steps, and
 records each run. End-to-end UI tests live in `tests/ui_e2e.rs`, driven by a
 stub surface model (`src/bin/stub_provider.rs`).
