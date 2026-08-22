@@ -9,7 +9,7 @@ use gtk::prelude::*;
 use gtk::cairo::{RectangleInt, Region};
 #[cfg(target_os = "linux")]
 use gtk_layer_shell::{Edge, Layer, LayerShell};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -65,6 +65,10 @@ enum BackendRequest {
         prompt: String,
         response: mpsc::Sender<Result<PromptResponse, String>>,
     },
+    CloseSurface {
+        id: String,
+        response: mpsc::Sender<Result<(), String>>,
+    },
     AddProvider {
         id: String,
         kind: String,
@@ -118,10 +122,25 @@ struct BackendStatus {
 struct PromptResponse {
     answer: String,
     evidence: Vec<EvidenceItem>,
-    /// HTML authored by the separate groundless surface model after passing
-    /// the value-fidelity gate. `None` means nothing may be displayed.
-    experimental_html: Option<String>,
+    /// A surface authored by the separate groundless surface model after
+    /// passing the value-fidelity gate. `None` means nothing may be displayed.
+    experimental_html: Option<SurfaceCard>,
     backend_status: BackendStatus,
+}
+
+/// One generated surface living on the canvas. Several coexist; each is a
+/// self-contained HTML fragment the frontend hosts, drags, and measures.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SurfaceCard {
+    id: String,
+    html: String,
+}
+
+fn next_surface_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(1);
+    format!("surface-{}", COUNTER.fetch_add(1, Ordering::Relaxed))
 }
 
 #[derive(Debug, Serialize)]
@@ -246,9 +265,18 @@ fn hide_canvas(app: AppHandle) -> Result<(), String> {
 /// Set the native input shape of the canvas window so only the widget region
 /// captures clicks. Everything outside the rectangle passes through to apps
 /// behind the transparent work-area overlay.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InputRect {
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+}
+
 #[tauri::command]
 #[cfg(target_os = "linux")]
-fn set_input_region(app: AppHandle, x: f64, y: f64, w: f64, h: f64) -> Result<(), String> {
+fn set_input_region(app: AppHandle, regions: Vec<InputRect>) -> Result<(), String> {
     let window = app
         .get_webview_window("canvas")
         .ok_or_else(|| "canvas window is unavailable".to_string())?;
@@ -258,27 +286,55 @@ fn set_input_region(app: AppHandle, x: f64, y: f64, w: f64, h: f64) -> Result<()
     let gdk_window = gtk_window
         .window()
         .ok_or_else(|| "canvas has no GDK window".to_string())?;
-    let region = if w <= 0.0 || h <= 0.0 {
-        Region::create()
-    } else {
+    let region = Region::create();
+    for rect in &regions {
+        if rect.w <= 0.0 || rect.h <= 0.0 {
+            continue;
+        }
         let rectangle = RectangleInt::new(
-            x.round() as i32,
-            y.round() as i32,
-            w.round().max(1.0) as i32,
-            h.round().max(1.0) as i32,
+            rect.x.round() as i32,
+            rect.y.round() as i32,
+            rect.w.round().max(1.0) as i32,
+            rect.h.round().max(1.0) as i32,
         );
-        Region::create_rectangle(&rectangle)
-    };
+        // A rectangle outside the window bounds is not an error here; GDK
+        // clips it, and the frontend only ever reports measured surfaces.
+        region.union(&Region::create_rectangle(&rectangle)).ok();
+    }
     gdk_window.input_shape_combine_region(&region, 0, 0);
 
-    eprintln!("Aios canvas: input region set to ({x},{y}) {w}x{h}");
+    eprintln!(
+        "Aios canvas: input region set to {} rect(s)",
+        regions.iter().filter(|r| r.w > 0.0 && r.h > 0.0).count()
+    );
     Ok(())
 }
 
 #[cfg(not(target_os = "linux"))]
 #[tauri::command]
-fn set_input_region(_app: AppHandle, _x: f64, _y: f64, _w: f64, _h: f64) -> Result<(), String> {
+fn set_input_region(_app: AppHandle, _regions: Vec<InputRect>) -> Result<(), String> {
     Ok(())
+}
+
+/// Drop one generated surface from the live set. The frontend hides the
+/// canvas window itself once the list runs empty.
+#[tauri::command]
+async fn close_surface(id: String, state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let requests = state.requests.clone();
+    tokio::task::spawn_blocking(move || {
+        let (response_tx, response_rx) = mpsc::channel();
+        requests
+            .send(BackendRequest::CloseSurface {
+                id,
+                response: response_tx,
+            })
+            .map_err(|_| "backend worker is unavailable".to_string())?;
+        response_rx
+            .recv()
+            .map_err(|_| "backend worker closed the response channel".to_string())?
+    })
+    .await
+    .map_err(|error| format!("settings worker failed: {error}"))?
 }
 
 #[tauri::command]
@@ -569,7 +625,7 @@ async fn submit_prompt(
             .map_err(|_| "backend worker closed the response channel".to_string())?;
             if let Ok(ref payload) = response {
             if payload.experimental_html.is_some() {
-                if let Err(error) = set_input_region(app.clone(), 0.0, 0.0, 0.0, 0.0) {
+                if let Err(error) = set_input_region(app.clone(), Vec::new()) {
                     eprintln!("Aios canvas: failed to clear input region: {error}");
                 }
                 if let Some(window) = app.get_webview_window("canvas") {
@@ -710,17 +766,20 @@ fn main() {    #[cfg(target_os = "linux")]
                     }
                 };
 
-                let mut previous_experimental_html: Option<String> = None;
+                let mut surfaces: Vec<SurfaceCard> = Vec::new();
                 while let Ok(request) = requests_rx.recv() {
                     match request {
                         BackendRequest::Prompt { prompt, response } => {
-                            handle_prompt(
-                                &mut facade,
-                                &worker_handle,
-                                &mut previous_experimental_html,
-                                prompt,
-                                response,
-                            );
+                            handle_prompt(&mut facade, &worker_handle, &mut surfaces, prompt, response);
+                        }
+                        BackendRequest::CloseSurface { id, response } => {
+                            let before = surfaces.len();
+                            surfaces.retain(|surface| surface.id != id);
+                            if surfaces.len() == before {
+                                let _ = response.send(Err(format!("no surface '{id}' is open")));
+                            } else {
+                                let _ = response.send(Ok(()));
+                            }
                         }
                         BackendRequest::AddProvider {
                             id,
@@ -854,6 +913,7 @@ fn main() {    #[cfg(target_os = "linux")]
             set_role_group_assignment,
             sidebar_status,
             set_input_region,
+            close_surface,
             submit_prompt,
             system_graph
         ])
@@ -865,7 +925,7 @@ fn main() {    #[cfg(target_os = "linux")]
 fn handle_prompt(
     facade: &mut Facade,
     worker_handle: &tauri::AppHandle,
-    previous_experimental_html: &mut Option<String>,
+    surfaces: &mut Vec<SurfaceCard>,
     prompt: String,
     response: mpsc::Sender<Result<PromptResponse, String>>,
 ) {
@@ -877,7 +937,9 @@ fn handle_prompt(
     let evidence = facade.take_tool_results();
     // Groundless generation (ADR-0007): Aios relays the prompt and specialist
     // data to the surface model, then verifies value fidelity before display.
-    // There is no other surface path and no widget vocabulary.
+    // There is no other surface path and no widget vocabulary. Each prompt
+    // authors a fresh surface; revising an existing one is a separate,
+    // explicit action, so nothing from earlier prompts leaks into this call.
     let experimental_html = if evidence.is_empty() {
         eprintln!("Aios canvas: no specialist evidence gathered; no surface");
         None
@@ -888,11 +950,7 @@ fn handle_prompt(
             None
         } else {
             emit_graph_activity(worker_handle, GraphPhase::Composing, &["composer"]);
-            match facade.compose_unconstrained_html(
-                &prompt,
-                &evidence,
-                previous_experimental_html.as_deref(),
-            ) {
+            match facade.compose_unconstrained_html(&prompt, &evidence, None) {
                 Ok((html, routing)) => {
                     match aios::surface::verify_value_fidelity(&html, &evidence) {
                         Ok(()) => {
@@ -909,8 +967,12 @@ fn handle_prompt(
                                 Some((&routing, html.len())),
                                 None,
                             );
-                            *previous_experimental_html = Some(html.clone());
-                            Some(html)
+                            let card = SurfaceCard {
+                                id: next_surface_id(),
+                                html,
+                            };
+                            surfaces.push(card.clone());
+                            Some(card)
                         }
                         Err(error) => {
                             eprintln!("Aios canvas: fidelity check failed: {error}");

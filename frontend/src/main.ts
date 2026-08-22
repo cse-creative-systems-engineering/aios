@@ -6,11 +6,13 @@ import { PhysicalPosition } from '@tauri-apps/api/dpi';
 import { isSectionId, providerCatalog, renderSidebar, roleState, rolesCatalog, settingsForm, updateProviderCatalog, updateRolesCatalog, updateSettingsProviders, type EvidenceItem, type FlightProgress, type SectionId, type SidebarMessage, type SidebarStatus, type SystemGraphSnapshot } from './sidebar';
 // The only dock edge type still shared with the sidebar renderer.
 type DockEdge = 'left' | 'right' | 'top' | 'bottom';
+type SurfaceCard = { id: string; html: string };
 type PromptResponse = {
   answer: string;
   evidence: EvidenceItem[];
-  experimentalHtml: string | null;
+  experimentalHtml: SurfaceCard | null;
 };
+type PlacedSurface = SurfaceCard & { x: number; y: number };
 type BackendStatus = { ready: boolean; error: string | null };
 type GraphActivityEvent = {
   phase: 'idle' | 'planning' | 'verifying' | 'gathering' | 'composing' | 'policycheck';
@@ -21,7 +23,7 @@ type GraphActivityEvent = {
 const currentWindow = getCurrentWindow();
 const isCanvasWindow = currentWindow.label === 'canvas';
 if (isCanvasWindow) document.documentElement.classList.add('canvas-document');
-let experimentalHtml: string | null = null;
+let surfaces: PlacedSurface[] = [];
 let sidebarStatus: SidebarStatus | null = null;
 let sidebarStatusError: string | null = null;
 let sidebarStatusRetry: number | null = null;
@@ -32,16 +34,16 @@ let requestInFlight = false;
 let flightProgress: FlightProgress | null = null;
 let lastSurfacePresent = false;
 let chatScrollMode: 'restore' | 'end' = 'restore';
-const surfacePosition = { x: 20, y: 16 };
 let surfaceResizeObserver: ResizeObserver | null = null;
 let inputRegionFrame: number | null = null;
 let dragState: {
   pointerId: number;
-  startX: number;
-  startY: number;
-  left: number;
-  top: number;
+  grabX: number;
+  grabY: number;
+  rootX: number;
+  rootY: number;
   handle: HTMLElement;
+  surfaceId: string;
 } | null = null;
 const messages: SidebarMessage[] = [{
   role: 'assistant',
@@ -264,9 +266,14 @@ function render(): void {
     document.querySelectorAll<HTMLButtonElement>('[data-dock]').forEach((button) => {
       button.addEventListener('click', () => void dockPanel(button.dataset.dock as DockEdge));
     });
-    if (experimentalHtml) {
-      wireSurfaceDrag();
-      observeSurfaceSize();
+    document.querySelectorAll<HTMLButtonElement>('[data-close]').forEach((button) => {
+      button.addEventListener('click', () => void closeSurface(button.dataset.close ?? ''));
+    });
+    if (surfaces.length) {
+      document.querySelectorAll<HTMLElement>('.surface-host').forEach((host) => {
+        wireSurfaceDrag(host);
+        observeSurfaceSize(host);
+      });
     } else {
       surfaceResizeObserver?.disconnect();
       surfaceResizeObserver = null;
@@ -529,9 +536,22 @@ async function refreshGraph(): Promise<void> {
   if (!isCanvasWindow && activeSection !== 'settings') render();
 }
 
+/// Generated headers must not carry `data-tauri-drag-region`: Tauri's
+/// injected core script turns that attribute into a native whole-window
+/// drag, which fights our per-card JS drag (cards jump by half a screen,
+/// or move in lockstep). Older prompts asked models for that exact
+/// attribute, so rename it defensively on every render.
+function adoptSurfaceHtml(html: string): string {
+  return html.replaceAll('data-tauri-drag-region', 'data-aios-drag-region');
+}
+
 function renderCanvas(): string {
-  if (!experimentalHtml) return '';
-  return `<div id="surface-host" class="surface-host" style="left:${surfacePosition.x}px;top:${surfacePosition.y}px">${experimentalHtml}</div>`;
+  if (!surfaces.length) return '';
+  return surfaces.map((surface) =>
+    `<div class="surface-host" data-surface-id="${escapeHtml(surface.id)}" style="left:${surface.x}px;top:${surface.y}px">${adoptSurfaceHtml(surface.html)}` +
+    `<button type="button" class="surface-close" data-close="${escapeHtml(surface.id)}" aria-label="Close surface">×</button>` +
+    `</div>`
+  ).join('');
 }
 
 async function dockPanel(edge: DockEdge): Promise<void> {
@@ -645,8 +665,9 @@ async function runPrompt(text: string, pushUser: boolean): Promise<void> {
       state: 'complete',
     };
     messages.push(next);
-    experimentalHtml = response.experimentalHtml;
-    lastSurfacePresent = Boolean(response.experimentalHtml);
+    // The canvas window owns surface placement; the sidebar only tracks
+    // whether anything is on screen.
+    if (response.experimentalHtml) lastSurfacePresent = true;
     void refreshSidebarStatus();
     void refreshGraph();
   } catch (error) {
@@ -672,8 +693,30 @@ function escapeHtml(value: string): string {
   return value.replace(/[&<>'"]/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[character] ?? character);
 }
 
-function surfaceHost(): HTMLElement | null {
-  return document.querySelector<HTMLElement>('#surface-host');
+function surfaceHosts(): HTMLElement[] {
+  return Array.from(document.querySelectorAll<HTMLElement>('.surface-host'));
+}
+
+function findSurface(id: string): PlacedSurface | undefined {
+  return surfaces.find((surface) => surface.id === id);
+}
+
+async function closeSurface(id: string): Promise<void> {
+  if (!id || !findSurface(id)) return;
+  try {
+    await invoke('close_surface', { id });
+  } catch (error) {
+    console.error(`[Aios] close_surface failed: ${String(error)}`);
+  }
+  surfaces = surfaces.filter((surface) => surface.id !== id);
+  lastSurfacePresent = surfaces.length > 0;
+  render();
+  if (!surfaces.length) {
+    // Nothing left to interact with: clear the input shape and tuck the
+    // canvas window away until the next generation.
+    await invoke('set_input_region', { regions: [] }).catch(() => {});
+    await currentWindow.hide();
+  }
 }
 
 function scheduleInputRegion(): void {
@@ -685,44 +728,46 @@ function scheduleInputRegion(): void {
 }
 
 async function updateInputRegion(): Promise<void> {
-  const target = experimentalHtml ? surfaceHost() : document.querySelector<HTMLElement>('#root');
-  if (!target) {
-    await invoke('set_input_region', { x: 0, y: 0, w: 0, h: 0 });
-    return;
-  }
-  const rect = target.getBoundingClientRect();
   const scale = window.devicePixelRatio || 1;
-  await invoke('set_input_region', {
-    x: rect.left * scale,
-    y: rect.top * scale,
-    w: rect.width * scale,
-    h: rect.height * scale,
+  // An empty list clears the input shape entirely: clicks fall through.
+  const regions = surfaceHosts().map((host) => {
+    const rect = host.getBoundingClientRect();
+    return { x: rect.left * scale, y: rect.top * scale, w: rect.width * scale, h: rect.height * scale };
   });
+  await invoke('set_input_region', { regions });
 }
 
-function observeSurfaceSize(): void {
-  surfaceResizeObserver?.disconnect();
-  const host = surfaceHost();
-  if (!host) return;
+function observeSurfaceSize(host: HTMLElement): void {
+  surfaceResizeObserver?.unobserve(host);
   surfaceResizeObserver = new ResizeObserver(() => scheduleInputRegion());
   surfaceResizeObserver.observe(host);
 }
 
-function wireSurfaceDrag(): void {
-  const host = surfaceHost();
-  if (!host) return;
-  const handle = host.querySelector<HTMLElement>('[data-tauri-drag-region], header') ?? host;
+function wireSurfaceDrag(host: HTMLElement): void {
+  // Prefer our own drag marker; fall back to the tauri one (renamed at
+  // render time) and finally to a bare header so every card stays movable.
+  const handle =
+    host.querySelector<HTMLElement>('[data-aios-drag-region], [data-tauri-drag-region], header') ??
+    host;
+  const id = host.dataset.surfaceId ?? '';
   handle.addEventListener('pointerdown', (event) => {
     if (event.button !== 0) return;
     if ((event.target as Element).closest('button, a, input, textarea, select, [data-no-drag]')) return;
+    const root = document.querySelector<HTMLElement>('#root');
+    if (!root) return;
     const rect = host.getBoundingClientRect();
+    const rootRect = root.getBoundingClientRect();
     dragState = {
       pointerId: event.pointerId,
-      startX: event.clientX,
-      startY: event.clientY,
-      left: rect.left,
-      top: rect.top,
+      // Offset from the pointer to the card's top-left, in viewport
+      // pixels. Recomputed on every grab so the card can never drift from
+      // the cursor, even after the canvas window itself moved or resized.
+      grabX: event.clientX - rect.left,
+      grabY: event.clientY - rect.top,
+      rootX: rootRect.left,
+      rootY: rootRect.top,
       handle,
+      surfaceId: id,
     };
     handle.setPointerCapture?.(event.pointerId);
     handle.classList.add('surface-dragging');
@@ -730,13 +775,17 @@ function wireSurfaceDrag(): void {
   });
   handle.addEventListener('pointermove', (event) => {
     if (!dragState || dragState.pointerId !== event.pointerId) return;
+    const surface = findSurface(dragState.surfaceId);
+    if (!surface) return;
     const root = document.querySelector<HTMLElement>('#root');
     const maxLeft = root ? Math.max(0, root.clientWidth - host.offsetWidth) : Number.POSITIVE_INFINITY;
     const maxTop = root ? Math.max(0, root.clientHeight - host.offsetHeight) : Number.POSITIVE_INFINITY;
-    surfacePosition.x = Math.min(maxLeft, Math.max(0, dragState.left + event.clientX - dragState.startX));
-    surfacePosition.y = Math.min(maxTop, Math.max(0, dragState.top + event.clientY - dragState.startY));
-    host.style.left = `${surfacePosition.x}px`;
-    host.style.top = `${surfacePosition.y}px`;
+    // Viewport pointer position -> #root-local coordinates via the stored
+    // grab offset and root origin; clamped so cards stay reachable.
+    surface.x = Math.min(maxLeft, Math.max(0, event.clientX - dragState.grabX - dragState.rootX));
+    surface.y = Math.min(maxTop, Math.max(0, event.clientY - dragState.grabY - dragState.rootY));
+    host.style.left = `${surface.x}px`;
+    host.style.top = `${surface.y}px`;
     scheduleInputRegion();
   });
   const endDrag = (event: PointerEvent) => {
@@ -756,11 +805,20 @@ function wireSurfaceDrag(): void {
 
 if (isCanvasWindow) {
   void listen<PromptResponse>('canvas_response', async (event) => {
-    experimentalHtml = event.payload.experimentalHtml ?? null;
+    if (event.payload.experimentalHtml) {
+      // Cascade new surfaces so overlapping cards are discoverable.
+      const offset = ((surfaces.length % 8) + 1) * 28;
+      surfaces.push({
+        ...event.payload.experimentalHtml,
+        x: 20 + offset,
+        y: 16 + offset,
+      });
+      lastSurfacePresent = true;
+    }
     render();
-    if (experimentalHtml) {
-      // Wait for WebKitGTK to finish layout, then expose only the widget area
-      // to the desktop input system.
+    if (surfaces.length) {
+      // Wait for WebKitGTK to finish layout, then expose only the surface
+      // areas to the desktop input system.
       await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())));
     }
     await updateInputRegion();

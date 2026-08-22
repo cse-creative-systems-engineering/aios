@@ -2,6 +2,10 @@
 //! type a prompt in the sidebar, wait for the canvas window to open, verify
 //! the generated surface, then repeat across many metric themes.
 //!
+//! Surfaces accumulate: every generated card stays on screen until closed,
+//! so after N prompts the canvas hosts exactly N surfaces. The run finishes
+//! by closing them one by one and asserting the canvas empties.
+//!
 //! The stub provider plays the groundless surface model: each theme gets an
 //! HTML fragment whose values are marked `data-aios` and trace back to the
 //! specialist evidence, so the fidelity gate stays exercised end to end. No
@@ -133,10 +137,32 @@ fn spawn_stub(binary: &str) -> u16 {
     }
 }
 
+/// Environment variables that break WebKit processes when inherited from a
+/// snap-packaged editor terminal. GTK_PATH is the proven killer: it makes
+/// GTK load immodules from the snap's core20 glibc, which crashes against
+/// the system one ("undefined symbol: __libc_pthread_init"). The others are
+/// stripped as cheap insurance for GUI module paths from the same source.
+const SNAP_RUNTIME_VARS: &[&str] = &[
+    "GTK_PATH",
+    "GTK_EXE_PREFIX",
+    "GIO_MODULE_DIR",
+    "GSETTINGS_SCHEMA_DIR",
+    "LOCPATH",
+];
+
+fn sanitized(mut command: Command) -> Command {
+    // Defense in depth for `cargo test` runs launched straight from a snap
+    // editor terminal; scripts/ui-e2e.sh already unsets these shell-wide.
+    for var in SNAP_RUNTIME_VARS {
+        command.env_remove(var);
+    }
+    command
+}
+
 fn spawn_driver() -> ChildGuard {
-    let child = Command::new("tauri-driver")
+    let child = sanitized(Command::new("tauri-driver"))
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .expect("tauri-driver on PATH");
     wait_for_port(4444, Duration::from_secs(15));
@@ -144,7 +170,7 @@ fn spawn_driver() -> ChildGuard {
 }
 
 fn spawn_app(config: &Path) -> ChildGuard {
-    let child = Command::new(app_binary())
+    let child = sanitized(Command::new(app_binary()))
         .env("AIOS_CONFIG", config)
         .env("TAURI_WEBVIEW_AUTOMATION", "true")
         .stdout(Stdio::null())
@@ -232,17 +258,23 @@ async fn submit_and_open_surface(
     }
 }
 
-async fn assert_surface(client: &Client, canvas: &fantoccini::wd::WindowHandle, theme: &Theme) {
+async fn assert_surface(
+    client: &Client,
+    canvas: &fantoccini::wd::WindowHandle,
+    theme: &Theme,
+    expected_total: usize,
+) {
     client.switch_to_window(canvas.clone()).await.expect("switch to canvas");
 
+    // Surfaces accumulate: after N prompts the canvas hosts N cards.
     let surfaces = client
         .find_all(Locator::Css(".aios-surface"))
         .await
         .expect("find .aios-surface");
     assert_eq!(
         surfaces.len(),
-        1,
-        "expected exactly one generated surface, found {}",
+        expected_total,
+        "expected {expected_total} generated surfaces on screen, found {}",
         surfaces.len()
     );
 
@@ -250,6 +282,17 @@ async fn assert_surface(client: &Client, canvas: &fantoccini::wd::WindowHandle, 
     assert!(
         legacy.is_empty(),
         "legacy widget-grid fallback rendered; generation did not produce a surface"
+    );
+
+    // Every hosted surface carries a close affordance.
+    let close_buttons = client
+        .find_all(Locator::Css("[data-close]"))
+        .await
+        .expect("find [data-close] buttons");
+    assert_eq!(
+        close_buttons.len(),
+        expected_total,
+        "expected {expected_total} close buttons for the open surfaces"
     );
 
     // The surface model must mark its values so the fidelity gate can bind
@@ -262,6 +305,29 @@ async fn assert_surface(client: &Client, canvas: &fantoccini::wd::WindowHandle, 
         !markers.is_empty(),
         "theme {:?} rendered a surface with no data-aios-marked values",
         theme.prompt
+    );
+}
+
+/// Close every open surface through its UI button and verify the canvas is
+/// empty afterwards.
+async fn close_all_surfaces(client: &Client, canvas: &fantoccini::wd::WindowHandle) {
+    client.switch_to_window(canvas.clone()).await.expect("switch to canvas");
+    for _ in 0..THEMES.len() {
+        let button = match client.find(Locator::Css("[data-close]")).await {
+            Ok(button) => button,
+            Err(_) => break,
+        };
+        button.click().await.expect("click close button");
+        tokio::time::sleep(POLL_PERIOD).await;
+    }
+    let remaining = client
+        .find_all(Locator::Css(".surface-host"))
+        .await
+        .expect("find .surface-host after closing");
+    assert!(
+        remaining.is_empty(),
+        "canvas still hosts {} surfaces after closing all of them",
+        remaining.len()
     );
 }
 
@@ -289,21 +355,39 @@ async fn user_loops_prompts_and_verifies_surfaces() {
     let _driver = spawn_driver();
     let _app = spawn_app(&config);
 
-    let client = ClientBuilder::native()
-        .connect(DRIVER_URL)
-        .await
-        .expect("connect to tauri-driver");
+    // wait_for_port only proves the TCP listener bound; tauri-driver needs a
+    // beat before its HTTP layer answers, and an instant first connect dies
+    // with an incomplete-message error.
+    let client = {
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            match ClientBuilder::native().connect(DRIVER_URL).await {
+                Ok(client) => break client,
+                Err(error) if attempt < 20 => {
+                    eprintln!("ui_e2e: driver connect attempt {attempt} failed: {error}");
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
+                Err(error) => panic!("connect to tauri-driver after {attempt} attempts: {error}"),
+            }
+        }
+    };
 
     let sidebar = sidebar_handle(&client).await;
     let mut canvas: Option<fantoccini::wd::WindowHandle> = None;
 
-    for theme in THEMES {
+    for (index, theme) in THEMES.iter().enumerate() {
         eprintln!("--- prompt: {:?}", theme.prompt);
         submit_and_open_surface(&client, &sidebar, &mut canvas, theme.prompt, theme.key).await;
         let canvas_handle = canvas.as_ref().expect("canvas handle discovered");
-        assert_surface(&client, canvas_handle, theme).await;
+        assert_surface(&client, canvas_handle, theme, index + 1).await;
     }
 
+    close_all_surfaces(&client, canvas.as_ref().expect("canvas handle")).await;
+
     client.close().await.expect("close webdriver session");
-    eprintln!("ui_e2e: all {} themes rendered a surface", THEMES.len());
+    eprintln!(
+        "ui_e2e: all {} themes rendered and accumulated; surfaces closed cleanly",
+        THEMES.len()
+    );
 }

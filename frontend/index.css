@@ -59,6 +59,24 @@ html.canvas-document, html.canvas-document body { overflow: hidden; }
 .surface-host > [data-tauri-drag-region], .surface-host > header { cursor: grab !important; user-select: none; touch-action: none; }
 .surface-host > [data-tauri-drag-region] *, .surface-host > header * { cursor: grab !important; }
 .surface-dragging, .surface-dragging * { cursor: grabbing !important; }
+.surface-close {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  z-index: 10;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 50%;
+  background: rgba(10, 14, 20, 0.72);
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  pointer-events: auto;
+}
+.surface-close:hover { background: rgba(120, 30, 30, 0.85); border-color: rgba(255, 255, 255, 0.45); }
 
 /* --- App shell --- */
 .app-shell {

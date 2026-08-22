@@ -12,6 +12,20 @@ set -euo pipefail
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo"
 
+# Snap-packaged editors (VS Code / VS Code Insiders) leak their sandbox
+# runtime into child shells. GTK_PATH pointing at the snap's gtk-3.0 module
+# dir makes every GTK/WebKit process load immodules built against the snap's
+# core20 glibc, which dies on contact with the system one:
+#   libpthread.so.0: undefined symbol: __libc_pthread_init, version GLIBC_PRIVATE
+# tauri-driver, WebKitWebDriver, MiniBrowser and the app under test all hit
+# this. Strip the snap runtime vars so they resolve system modules instead.
+for var in GTK_PATH GTK_EXE_PREFIX GIO_MODULE_DIR GSETTINGS_SCHEMA_DIR LOCPATH; do
+    if [[ -n "${!var:-}" ]]; then
+        echo "[ui-e2e] stripping snap-inherited $var=${!var}"
+        unset "$var"
+    fi
+done
+
 echo "[ui-e2e] building frontend (embedded into the app binary)"
 npm run build
 

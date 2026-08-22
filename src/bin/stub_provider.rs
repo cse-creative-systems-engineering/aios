@@ -178,6 +178,9 @@ fn themed_surface_html(body: &str) -> String {
         })
         .collect();
     let height = (180 + 34 * rows.len()).min(620);
+    // Deliberately emits the legacy `data-tauri-drag-region` attribute: the
+    // canvas renames it on render, and the e2e suite relies on that path to
+    // prove surfaces authored against the old prompt stay draggable.
     format!(
         "<section class=\"surface aios-surface\" data-aios-theme=\"{}\" style=\"width:420px;height:{}px;display:flex;flex-direction:column;font-family:sans-serif;background:#161b26;color:#e8ecf4;padding:18px;border-radius:14px\" data-tauri-drag-region><h1 style=\"font-size:18px;margin:0 0 12px\">{} health roll-up</h1><ul style=\"list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px;font-size:14px\">{}</ul></section>",
         theme.key(),
