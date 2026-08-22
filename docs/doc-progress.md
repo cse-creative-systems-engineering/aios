@@ -1,7 +1,7 @@
 # Aios Documentation Progress
 
 **Status:** Living document  
-**Last updated:** 2026-08-17
+**Last updated:** 2026-08-22
 
 This document tracks the completion status of the Aios design doc set.
 Updated whenever a document's status changes.
@@ -29,6 +29,7 @@ Updated whenever a document's status changes.
 | `decisions/0005-freeze-triage.md` | ✅ Accepted | 100% |
 | `decisions/0006-model-gateway.md` | ✅ Accepted | 100% |
 | `decisions/0007-groundless-generation-model.md` | ✅ Accepted | 100% |
+| `decisions/0008-workspace-co-partner-branch-and-scope.md` | ✅ Accepted | 100% |
 | `security-model.md` | Draft — frozen for M1 | Passed adversarial review (round 2) |
 | `capability-model.md` | Draft — frozen for M1 | Fixes applied, dead types removed; risk-4 gate aligned with state machine; broker resource-state plumbing noted |
 | `message-protocol.md` | Draft — frozen for M1 | Fixes applied; duplicate `Deny` removed, `Escalate`/`Modified` variants dropped, audit-loop termination defined |
@@ -38,24 +39,27 @@ Updated whenever a document's status changes.
 | `model-routing.md` | Draft — updated for M3 | Gateway architecture added (ADR-0006); §6 renumbered |
 | `human-interaction.md` | Draft — frozen for M1 | New — consolidates approval/escalation/facade trust; `Modified` decision removed (see message-protocol) |
 | `implementation-roadmap.md` | Draft — updated for M8 | M0–M7 complete; M8 desktop foundation working, lifecycle planned |
+| `milestones/0004-workspace-co-partner.md` | 📝 Drafted — docs only | Planned; branch `feature/workspace-co-partner` |
 | `testing-strategy.md` | Draft — frozen for M1 | Test code reconciled with protocol |
 | `observability.md` | Draft — frozen for M1 | May need refinement during implementation; retention advisory note and recursive-log-avoidance added |
 | `modules/` | 📝 Drafted | 19 of 19 module specs written (wifi, storage, network, drivers, graphics, memory, power-thermal, security, processes, packages, boot-recovery, block-disk, filesystem, files-data, gpu, display, session, bluetooth, wired-lan) |
+| `modules/web-fetch.md` | 📋 Stub | Deferred to Stage 3 — fetch/search with DataPolicy provenance |
 
 ## Overall Progress
 
 ```
-Design docs:  16 of 19 frozen or accepted  (84%)
+Design docs:  17 of 20 frozen or accepted  (85%)
   architecture.md: Vision (essay, not contract)
   glossary.md: Draft
   requirements.md: Draft
   11 focused docs: Draft — frozen for M1
   human-interaction.md: Draft — frozen for M1 (new)
+  milestones/0004: Drafted — docs only
 Core contracts: 8 of 8 drafted              (100%)
   (SEC, CAP, MSG, ASM, GRAPH, PKG, MODEL, HI)
 Human interaction: 1 of 1 drafted           (100%)
-ADRs: 7 accepted                             (7 of expected ~15-20)
-Module specs: 19 of 19 drafted              (100%)
+ADRs: 8 accepted                             (8 of expected ~15-20)
+Module specs: 19 of 19 drafted + 1 stub     (web-fetch stub)
 ```
 
 Implementation status is tracked in `implementation-roadmap.md` and the M8

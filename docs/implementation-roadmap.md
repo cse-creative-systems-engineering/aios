@@ -42,13 +42,15 @@ graph TD
     M6 --> M7[M7: Additional Specialists]
     M6 --> M8[M8: System State Panel]
     M2 --> M8
+    M7 --> M9[M9: Workspace Co-Partner]
+    M8 --> M9
 
     classDef done fill:#2d7d46,color:#fff,stroke:#1a5c2e,stroke-width:2px
     classDef current fill:#d4a017,color:#fff,stroke:#a07c10,stroke-width:2px
     classDef planned fill:#4a90d9,color:#fff,stroke:#2a6db0,stroke-width:2px
 
     class M0,M1,M2,M3,M4,M5,M6,M7 done
-    class M8 current
+    class M8,M9 current
 ```
 
 ---
@@ -946,9 +948,11 @@ premium sidebar redesign remain separate future workstreams.
 | M6: First Hardware Specialist | ✅ Complete | 13–19 weeks | M4, M5 |
 | M7: Additional Specialists | ✅ Complete | +2–4 weeks per specialist | M6 |
 | M8: System State Panel | ✅ Terminal panel and resident docked UI complete; dynamic generative surface in progress | 15–22 weeks (parallel) | M2 |
+| M9: Workspace Co-Partner | 📝 Planned — docs only | 3–5 weeks (M9.1 files, M9.2 env, M9.3 web, M9.4 loop/artifacts) | M7, M8 |
 
 **Estimated time to working v0.1 with Wi-Fi vertical slice:** 4–5 months  
-**Estimated time to full specialist coverage (8 modules):** 8–12 months
+**Estimated time to full specialist coverage (8 modules):** 8–12 months  
+**Estimated time to co-partner MVP (files + env + fetch + loop):** +3–5 weeks after M8 on `feature/workspace-co-partner`
 
 ---
 
