@@ -1444,7 +1444,7 @@ fn expand_path(path: &Path, base: &Path) -> PathBuf {
         base.join(path)
     }
 }
-fn config_dir_for(_config: &AiosConfig) -> PathBuf {
+pub(crate) fn config_dir_for(_config: &AiosConfig) -> PathBuf {
     let path = std::env::var("AIOS_CONFIG")
         .map(PathBuf::from)
         .unwrap_or_else(|_| AiosConfig::default_path());

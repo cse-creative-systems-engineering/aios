@@ -34,6 +34,7 @@ pub mod surface;
 pub mod tools;
 pub mod verifier;
 pub mod web;
+pub mod session;
 pub mod wifi;
 pub mod wifi_driver;
 

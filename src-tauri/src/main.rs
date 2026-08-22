@@ -1076,6 +1076,27 @@ fn handle_prompt(
             text: result.text.clone(),
         })
         .collect();
+    // Persist surfaces for day-bucket restore (ADR-0009 Stage 2 minimal): save Vec<SurfaceCard> to SessionStore
+    {
+        let config_dir = std::env::var("AIOS_CONFIG").map(std::path::PathBuf::from).map(|p| p.parent().map(|d| d.to_path_buf()).unwrap_or(p)).unwrap_or_else(|_| aios::config::AiosConfig::default_path().parent().map(|d| d.to_path_buf()).unwrap_or_else(|| std::path::PathBuf::from("/tmp")));
+        let store = aios::session::SessionStore::new(&config_dir);
+        let today = aios::session::SessionStore::today();
+        let snap = aios::session::SessionSnapshot {
+            id: today.clone(),
+            history: Vec::new(), // history already persisted via Facade
+            tool_results: Vec::new(),
+            surfaces: surfaces.iter().map(|c| aios::session::StoredSurface { id: c.id.clone(), html: c.html.clone() }).collect(),
+            updated_at: aios::protocol::now(),
+        };
+        if let Some(existing) = store.load(&today) {
+            let mut merged = snap;
+            merged.history = existing.history;
+            merged.tool_results = existing.tool_results;
+            let _ = store.save(&merged);
+        } else {
+            let _ = store.save(&snap);
+        }
+    }
     let result = Ok(PromptResponse {
         answer,
         evidence,
