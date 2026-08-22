@@ -417,6 +417,22 @@ impl ModelRegistry {
         self.entries.iter().find(|e| &e.model_id == model_id)
     }
 
+    /// Drop every entry belonging to `provider`. Used when a provider is
+    /// removed at runtime so a later re-add with the same model cannot hit a
+    /// stale duplicate. Returns how many entries were removed.
+    pub fn deregister_provider(&mut self, provider: &ProviderId) -> usize {
+        let before = self.entries.len();
+        self.entries.retain(|entry| &entry.provider != provider);
+        if self.entries.len() != before {
+            self.index.clear();
+            for (position, entry) in self.entries.iter().enumerate() {
+                self.index
+                    .insert((entry.provider.clone(), entry.model_id.clone()), position);
+            }
+        }
+        before - self.entries.len()
+    }
+
     pub fn len(&self) -> usize {
         self.entries.len()
     }
@@ -798,6 +814,18 @@ impl ModelGateway {
             .mark_provider_healthy(&provider);
     }
 
+    /// Remove the backend registered for `provider`, if any. Returns whether
+    /// a backend was removed. Callers removing a provider at runtime must
+    /// pair this with `ModelRegistry::deregister_provider`, otherwise the
+    /// provider lingers as an unkeyable ghost entry.
+    pub fn unregister_backend(&self, provider: &ProviderId) -> bool {
+        self.backends
+            .write()
+            .expect("backends lock")
+            .remove(provider)
+            .is_some()
+    }
+
     /// Run one request on the role's assigned provider/model. There is no
     /// fallback routing: an unassigned role fails loudly, and a failing
     /// assignment surfaces its error to the caller.
@@ -991,6 +1019,30 @@ mod tests {
             registry.register(local_model("qwen-local", &text_only())),
             Err(RegistryError::DuplicateModel(_))
         ));
+    }
+
+    #[test]
+    fn deregister_provider_drops_only_that_provider() {
+        let mut registry = ModelRegistry::new();
+        registry
+            .register(local_model("qwen-local", &text_only()))
+            .expect("local");
+        let mut remote = internet_model("acme/fast-model", &reasoning());
+        remote.provider = ProviderId::new("openrouter");
+        registry.register(remote).expect("remote");
+        // Same model id under a different provider must survive.
+        let mut other = internet_model("acme/fast-model", &reasoning());
+        other.provider = ProviderId::new("together");
+        registry.register(other).expect("other");
+
+        assert_eq!(registry.deregister_provider(&ProviderId::new("openrouter")), 1);
+        assert_eq!(registry.len(), 2);
+        // The removed slot must be re-registrable (the remove/re-add cycle
+        // in the settings panel depends on this).
+        let again = internet_model("acme/fast-model", &reasoning());
+        registry
+            .register(again)
+            .expect("re-register after deregister");
     }
 
     #[test]

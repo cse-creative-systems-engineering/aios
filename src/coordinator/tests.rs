@@ -319,6 +319,47 @@
     }
 
     #[test]
+    fn removed_provider_leaves_no_ghost_and_can_be_added_again() {
+        // persist_config writes to AIOS_CONFIG; point it at a scratch file so
+        // the test never touches a real config. Safe here: no other test in
+        // this binary reads AIOS_CONFIG (they all pass config directly).
+        let config_path = std::env::temp_dir().join(format!(
+            "aios-test-remove-readd-{}.toml",
+            std::process::id()
+        ));
+        unsafe {
+            std::env::set_var("AIOS_CONFIG", &config_path);
+        }
+
+        let mut coordinator = stub_coordinator(9);
+        coordinator.remove_provider("stub").expect("remove");
+        assert!(coordinator.config.provider("stub").is_none());
+        assert!(coordinator
+            .provider_entries()
+            .iter()
+            .all(|entry| entry.provider.to_string() != "stub"));
+
+        // The registry must not keep a ghost entry, or the re-add fails with
+        // "model already registered" while key updates fail with "not
+        // configured" — exactly the broken state users cannot escape.
+        coordinator
+            .add_provider(
+                "stub".into(),
+                "openai-compatible".into(),
+                "internet".into(),
+                Some("http://127.0.0.1:9".into()),
+                Some("stub-model".into()),
+                None,
+                None,
+            )
+            .expect("re-add after remove");
+        assert!(coordinator.config.provider("stub").is_some());
+        assert_eq!(coordinator.provider_entries().len(), 1);
+
+        let _ = std::fs::remove_file(&config_path);
+    }
+
+    #[test]
     fn bad_config_fails_boot() {        let config = AiosConfig {
             model: None,
             shell: None,

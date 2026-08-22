@@ -1006,10 +1006,15 @@ fn sidebar_status_snapshot(
         .into_iter()
         .map(|entry| {
             let provider_id = entry.provider.to_string();
-            let config = coordinator
-                .config
-                .provider(&provider_id)
-                .ok_or_else(|| format!("provider '{provider_id}' is missing from configuration"))?;
+            // A registry entry without configuration is a leftover from an
+            // older remove path; report it rather than failing the whole
+            // snapshot, which would freeze the settings panel on stale data.
+            let Some(config) = coordinator.config.provider(&provider_id) else {
+                eprintln!(
+                    "Aios sidebar: skipping registry entry without configuration: {provider_id}"
+                );
+                return Ok(None);
+            };
             let consent_scopes = coordinator
                 .gateway
                 .router()
@@ -1022,7 +1027,7 @@ fn sidebar_status_snapshot(
                         .collect()
                 })
                 .unwrap_or_default();
-            Ok(SidebarProvider {
+            Ok(Some(SidebarProvider {
                 id: provider_id,
                 kind: config.kind.clone(),
                 model: entry.model_id.to_string(),
@@ -1039,9 +1044,12 @@ fn sidebar_status_snapshot(
                 retry_after: entry.health.retry_after,
                 credential_configured: config.api_key.is_some() || config.api_key_env.is_some(),
                 consent_scopes,
-            })
+            }))
         })
-        .collect::<Result<Vec<_>, String>>()?;
+        .collect::<Result<Vec<Option<_>>, String>>()?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
 
     Ok(SidebarStatusResponse {
         backend_status,

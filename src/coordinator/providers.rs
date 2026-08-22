@@ -109,6 +109,19 @@ impl Coordinator {
                 .retain(|_, a| a.provider != id);
         }
         let provider_id = ProviderId::new(id);
+        // Tear the provider out of the runtime layers too. Without this the
+        // registry keeps a ghost entry: the settings panel still lists it,
+        // re-adding fails with "model already registered", and updating its
+        // key fails with "not configured".
+        self.gateway.unregister_backend(&provider_id);
+        let removed = self
+            .registry
+            .write()
+            .expect("registry lock")
+            .deregister_provider(&provider_id);
+        if removed == 0 {
+            eprintln!("Aios backend: provider '{id}' had no registry entries to drop");
+        }
         for descriptor in assignable_roles() {
             if self
                 .gateway
