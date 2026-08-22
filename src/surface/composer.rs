@@ -168,6 +168,28 @@ fn tolerance(value: f64) -> f64 {
     (value.abs() * 0.001).max(0.005)
 }
 
+/// Ratios mapping a displayed unit back onto the raw specialist unit. The
+/// generation prompt allows re-shaping values ("formatting, units"), so a
+/// model may render `rss_kb=167352` as "167 MB"; the gate honours that by
+/// comparing across common decimal and binary prefixes. An invented number
+/// matches under no ratio and still fails.
+const UNIT_SCALES: [f64; 7] = [
+    1.0,
+    1000.0,
+    1024.0,
+    1_000_000.0,
+    1_048_576.0,
+    1_000_000_000.0,
+    1_073_741_824.0,
+];
+
+fn numbers_match(shown: f64, expected: f64) -> bool {
+    UNIT_SCALES.iter().any(|&scale| {
+        let scaled = shown * scale;
+        (scaled - expected).abs() <= tolerance(expected).max(expected.abs() * 0.01)
+    })
+}
+
 /// True when the model's marked `content` faithfully represents the specialist
 /// `expected` value. If the shown content contains a number, that number must
 /// appear in the specialist value (tolerating "113.7%" vs "113.7"). If it
@@ -183,7 +205,7 @@ fn value_matches(content: &str, expected: &str) -> bool {
         }
         return shown
             .iter()
-            .any(|number| expected.iter().any(|e| (number - e).abs() <= tolerance(*e)));
+            .any(|number| expected.iter().any(|e| numbers_match(*number, *e)));
     }
     let content = content.to_lowercase();
     let expected = expected.to_lowercase();
@@ -390,6 +412,20 @@ mod tests {
             text: "top_cpu_0=\"pid=1 comm=rustrover cpu_percent=113.7 state=S\"".into(),
         }];
         let html = r#"<div><span data-aios="top_cpu_0">113.7%</span></div>"#;
+        assert!(verify_value_fidelity(html, &evidence).is_ok());
+    }
+
+    #[test]
+    fn fidelity_accepts_unit_derived_value_from_composite_field() {
+        // The prompt permits re-shaping values ("formatting, units"); a model
+        // rendering rss_kb=167080 as "167 MB" must pass, matching the exact
+        // failure seen live with dots-3.
+        let evidence = [crate::tools::ToolResult {
+            tool: "processes.observe_process",
+            text: "top_cpu_1=\"pid=329762 comm=WebKitWebProces cpu_percent=55.6 rss_kb=167080 state=S\""
+                .into(),
+        }];
+        let html = r#"<div><span data-aios="top_cpu_1">167 MB</span></div>"#;
         assert!(verify_value_fidelity(html, &evidence).is_ok());
     }
 

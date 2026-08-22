@@ -225,7 +225,10 @@ impl Coordinator {
         // The composer must emit a full JSON surface. Reasoning-heavy models
         // spend tokens on an untagged preamble first, so give the composition
         // call its own larger budget and keep the interactive budget as-is.
-        let compose_max_tokens = shell_max_tokens.max(4096);
+        // Surface pages are long (full HTML with inline CSS), and reasoning
+        // models spend part of the budget thinking before writing; 4096 left
+        // such models with nothing to emit.
+        let compose_max_tokens = shell_max_tokens.max(8192);
 
         let audit_path = audit_log_path(&config_dir);
 

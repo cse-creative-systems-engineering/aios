@@ -134,7 +134,11 @@ impl HttpBackend {
                 .get("tool_calls")
                 .map(|calls| json!({ "tool_calls": calls }).to_string())
                 .ok_or_else(|| {
-                    GenerationError::new("message has no content or tool calls", false)
+                    GenerationError::new(
+                        "model returned no visible content; reasoning models can spend their \
+                         whole token budget thinking — assign a non-reasoning model to this role",
+                        false,
+                    )
                 })?,
         };
         let finish_reason = match choice
