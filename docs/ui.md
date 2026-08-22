@@ -232,9 +232,11 @@ The backend contains these confirmed runtime components:
 - ToolRegistry (`src/tools.rs`) — 6 cross-cutting graph query tools
 
 **Surface pipeline:**
-- SurfaceComposer (`src/surface/composer.rs`) — model call producing typed Surface JSON
+- SurfaceComposer (`src/surface/composer.rs`) — relays request plus specialist
+  evidence to the groundless surface model, then verifies value fidelity on
+  the returned HTML (coverage gate, `data-aios` marker check, unit-scale
+  number matching)
 - EvidenceIndex (`src/surface/evidence.rs`) — value-presence verification
-- SurfaceValidator (`src/surface/validator.rs`) — value fidelity check
 
 #### Graph Layout
 

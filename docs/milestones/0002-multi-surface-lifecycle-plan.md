@@ -301,8 +301,11 @@ npm run build --prefix frontend
 The manual desktop baseline remains:
 
 ```bash
-AIOS_UNCONSTRAINED_SURFACE=1 ./src-tauri/target/debug/aios-tauri
+./src-tauri/target/debug/aios-tauri
 ```
+
+Groundless generation is the only path now; the old
+`AIOS_UNCONSTRAINED_SURFACE` opt-in is gone.
 
 The ignored WebDriver suite should be expanded as the environment becomes
 available. It must cover create, update, multiple surfaces, close, and

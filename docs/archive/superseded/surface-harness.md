@@ -1,5 +1,11 @@
 # Surface Harness
 
+> Superseded: the `surface_harness` binary and the typed surface pipeline it
+> drove were removed when groundless generation became the only path. The
+> campaign-replay role lives on in `src/harness.rs`, and end-to-end runs use
+> the stub surface model (`src/bin/stub_provider.rs`) with
+> `tests/ui_e2e.rs`. Kept for implementation history.
+
 Headless test harness for the generative surface pipeline, driven as a
 conversation. It answers the two product questions directly:
 

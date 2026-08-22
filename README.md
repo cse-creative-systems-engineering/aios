@@ -94,7 +94,7 @@ There is now also a runnable core. `cargo run` drives the in-process demo
 hardware). `cargo run -- shell` boots the interactive shell: it loads
 `~/.aios/config.toml`, runs a local Qwen model through llama.cpp, and routes
 chat through the model gateway, with discovery, provider status, consent, and
-a plan-and-verify flow. The current library baseline is 391 passing tests with
+a plan-and-verify flow. The current library baseline is 394 passing tests with
 one ignored real-model test.
 
 The orchestration core was recently modularized: `src/coordinator` is split into
@@ -115,10 +115,14 @@ model, which authors a self-contained HTML fragment; Aios then checks every
 marked value against the evidence before anything renders. There are no
 predetermined CPU, RAM, or dashboard widgets — the model draws what the
 question needs, fresh each time, and a typed widget IR that briefly took over
-as the default path has been removed. A deterministic campaign harness
-(`src/harness.rs`) replays prompt plans, quarantines denied steps, and records
-each run. End-to-end UI tests live in `tests/ui_e2e.rs`, driven by a stub
-surface model (`src/bin/stub_provider.rs`).
+as the default path has been removed. This runs for real now: on a live
+desktop, free-tier OpenRouter models author pages on request, every displayed
+number is traced back to specialist data before render, and the canvas sizes
+itself to whatever the model drew — so nothing gets clipped by a fixed frame
+and you can drag the result around the screen. A deterministic campaign
+harness (`src/harness.rs`) replays prompt plans, quarantines denied steps, and
+records each run. End-to-end UI tests live in `tests/ui_e2e.rs`, driven by a
+stub surface model (`src/bin/stub_provider.rs`).
 
 Milestones, briefly:
 
@@ -146,7 +150,8 @@ Milestones, briefly:
   broker.
 - **M8 — Generative surface desktop foundation.** The resident sidebar, live
   specialist evidence path, groundless surface generation, value validation,
-  transparent canvas, click-through, and widget movement are working.
+  transparent canvas, click-through, and widget movement are working, and the
+  whole loop has been validated against real providers on a live desktop.
   Multi-specialist composition works too: one surface can draw evidence from
   several specialists at once (deterministic coverage tests prove the CPU plus
   RAM case), and the sidebar administration backend from milestone 0003
@@ -249,7 +254,7 @@ model-routing → human-interaction. Takes an afternoon.
 
 ```bash
 cargo build          # compile everything
-cargo test           # run the test suite (391 library tests)
+cargo test           # run the test suite (394 library tests)
 cargo run            # in-process demo: broker, guardian, mock agents
 cargo run -- shell   # interactive shell against your real config and models
 ```

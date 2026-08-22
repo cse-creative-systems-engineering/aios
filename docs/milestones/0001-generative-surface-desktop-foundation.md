@@ -20,8 +20,11 @@
 Launch the current debug binary with:
 
 ```bash
-AIOS_UNCONSTRAINED_SURFACE=1 ./src-tauri/target/debug/aios-tauri
+./src-tauri/target/debug/aios-tauri
 ```
+
+Groundless generation is the only path now; the old
+`AIOS_UNCONSTRAINED_SURFACE` opt-in is gone.
 
 Then verify:
 
