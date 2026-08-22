@@ -44,13 +44,15 @@ graph TD
     M2 --> M8
     M7 --> M9[M9: Workspace Co-Partner]
     M8 --> M9
+    M9 --> M10[M10: Session Day-Buckets]
 
     classDef done fill:#2d7d46,color:#fff,stroke:#1a5c2e,stroke-width:2px
     classDef current fill:#d4a017,color:#fff,stroke:#a07c10,stroke-width:2px
     classDef planned fill:#4a90d9,color:#fff,stroke:#2a6db0,stroke-width:2px
 
-    class M0,M1,M2,M3,M4,M5,M6,M7 done
-    class M8,M9 current
+    class M0,M1,M2,M3,M4,M5,M6,M7,M9 done
+    class M8 current
+    class M10 planned
 ```
 
 ---

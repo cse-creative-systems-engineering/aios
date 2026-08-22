@@ -39,7 +39,9 @@ Updated whenever a document's status changes.
 | `model-routing.md` | Draft — updated for M3 | Gateway architecture added (ADR-0006); §6 renumbered |
 | `human-interaction.md` | Draft — frozen for M1 | New — consolidates approval/escalation/facade trust; `Modified` decision removed (see message-protocol) |
 | `implementation-roadmap.md` | Draft — updated for M8 | M0–M7 complete; M8 desktop foundation working, lifecycle planned |
-| `milestones/0004-workspace-co-partner.md` | 📝 Drafted — docs only | Planned; branch `feature/workspace-co-partner` |
+| `milestones/0004-workspace-co-partner.md` | ✅ Complete — merged to `main` at `32ffc0f` | Staged file/web + artifact, `cargo test --lib` 410 |
+| `milestones/0005-session-day-buckets.md` | 📝 Drafted — docs only | Planned; branch `feature/session-day-buckets` |
+| `decisions/0009-session-day-buckets.md` | 📝 Drafted — docs only | Branch rule for day-buckets, `SessionStore` + `Project` |
 | `testing-strategy.md` | Draft — frozen for M1 | Test code reconciled with protocol |
 | `observability.md` | Draft — frozen for M1 | May need refinement during implementation; retention advisory note and recursive-log-avoidance added |
 | `modules/` | 📝 Drafted | 19 of 19 module specs written (wifi, storage, network, drivers, graphics, memory, power-thermal, security, processes, packages, boot-recovery, block-disk, filesystem, files-data, gpu, display, session, bluetooth, wired-lan) |
