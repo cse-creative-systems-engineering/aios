@@ -530,6 +530,16 @@ pub(crate) fn required_specialist_calls(messages: &[ModelMessage]) -> Vec<ToolCa
         let content = extract_file_content(&original).unwrap_or_else(|| "hello from aios".to_string());
         add(&mut calls, "files.write_file", &format!("{path} {content}"));
     }
+    if prompt.contains("scaffold project") || prompt.contains("scaffold") {
+        // Project scaffold: `scaffold project demo as python html server` -> python-html template
+        let (slug, project) = if prompt.contains("rust") { ("rust-cli", extract_project_name(&original).unwrap_or_else(|| "demo".into())) } else { ("python-html", extract_project_name(&original).unwrap_or_else(|| "demo".into())) };
+        let date = crate::session::SessionStore::today();
+        if let Some(files) = crate::project::scaffold_files(slug, &project, &date) {
+            for (path, content) in files {
+                add(&mut calls, "files.write_file", &format!("{path} {content}"));
+            }
+        }
+    }
     if prompt.contains("http://") || prompt.contains("https://") || prompt.contains("fetch") || prompt.contains("docs.rs") || prompt.contains("tokio") {
         if let Some(url) = extract_url(&original) {
             add(&mut calls, "web.fetch_url", &url);
@@ -576,6 +586,20 @@ fn extract_file_content(original: &str) -> Option<String> {
     // If prompt contains "hello" keep hello world
     if lower.contains("hello") {
         return Some("hello from aios\nprint('hi')".to_string());
+    }
+    None
+}
+
+fn extract_project_name(original: &str) -> Option<String> {
+    for token in original.split_whitespace() {
+        let t = token.trim_matches(|c: char| c == '"' || c == '\'' || c == ',' || c == ';');
+        if t.to_ascii_lowercase() == "project" {
+            // next token is name
+            let idx = original.to_ascii_lowercase().find("project").unwrap();
+            let after = original[idx+7..].trim();
+            let name = after.split_whitespace().next().unwrap_or("demo").trim_matches(|c: char| c == '"' || c == '\'' || c == ',' );
+            if !name.is_empty() { return Some(name.to_string()); }
+        }
     }
     None
 }

@@ -766,7 +766,15 @@ fn main() {    #[cfg(target_os = "linux")]
                     }
                 };
 
-                let mut surfaces: Vec<SurfaceCard> = Vec::new();
+                let mut surfaces: Vec<SurfaceCard> = {
+                    // Restore prior day's surfaces (ADR-0009 Stage 2)
+                    let config_dir = std::env::var("AIOS_CONFIG").map(std::path::PathBuf::from).map(|p| p.parent().map(|d| d.to_path_buf()).unwrap_or(p)).unwrap_or_else(|_| aios::config::AiosConfig::default_path().parent().map(|d| d.to_path_buf()).unwrap_or_else(|| std::path::PathBuf::from("/tmp")));
+                    let store = aios::session::SessionStore::new(&config_dir);
+                    let today = aios::session::SessionStore::today();
+                    if let Some(snap) = store.load(&today) {
+                        snap.surfaces.into_iter().map(|s| SurfaceCard { id: s.id, html: s.html }).collect()
+                    } else { Vec::new() }
+                };
                 while let Ok(request) = requests_rx.recv() {
                     match request {
                         BackendRequest::Prompt { prompt, response } => {
