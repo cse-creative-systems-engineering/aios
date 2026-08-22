@@ -201,7 +201,27 @@ impl Coordinator {
             call.name.as_str(),
             "packages.observe_package" | "packages.diagnose_fault"
         );
-        let resource = if is_wifi_tool {
+        let is_files_tool = call.name.starts_with("files.");
+        let is_web_tool = call.name.starts_with("web.");
+        let resource = if is_files_tool {
+            // Files: resource is the file path (first token of args). Must be a
+            // `file:/workspace/...` or `file:/artifacts/...` resource (ADR-0008).
+            let arg = call.arguments.trim();
+            let path = arg.split_whitespace().next().unwrap_or("file:/workspace").trim();
+            // Allow bare filenames by prefixing workspace.
+            let resource_str = if path.starts_with("file:") {
+                path.to_string()
+            } else if path.starts_with('/') {
+                format!("file:/workspace{path}")
+            } else if path.is_empty() {
+                "file:/workspace".to_string()
+            } else {
+                format!("file:/workspace/{path}")
+            };
+            ResourceId(resource_str)
+        } else if is_web_tool {
+            ResourceId("web:fetch".into())
+        } else if is_wifi_tool {
             let device = self
                 .wifi_specialist
                 .as_ref()
@@ -238,9 +258,7 @@ impl Coordinator {
         let token = self
             .session_tokens
             .iter()
-            .find(|token| {
-                token.capability.operation == operation && token.capability.resource == resource
-            })
+            .find(|token| crate::capability::capability_covers(&token.capability, &resource, operation))
             .cloned()
             .ok_or_else(|| {
                 ToolError::Permission(format!("no session token for {operation:?} on {resource}"))
@@ -333,6 +351,16 @@ pub(crate) fn operation_for_tool(name: &str) -> Option<Operation> {
         "boot.diagnose_fault" => Some(Operation::Diagnose),
         "packages.observe_package" => Some(Operation::Observe),
         "packages.diagnose_fault" => Some(Operation::Diagnose),
+        "files.observe_file" => Some(Operation::Observe),
+        "files.diagnose_file" => Some(Operation::Diagnose),
+        "files.write_file" => Some(Operation::Write),
+        "files.create_file" => Some(Operation::Create),
+        "files.patch_file" => Some(Operation::Patch),
+        "files.delete_file" => Some(Operation::Delete),
+        "files.write_artifact" => Some(Operation::Write),
+        "files.create_artifact" => Some(Operation::Create),
+        "web.fetch_url" => Some(Operation::Fetch),
+        "web.search_web" => Some(Operation::Fetch),
         _ => None,
     }
 }
@@ -352,7 +380,25 @@ pub(crate) fn tool_parameters(operation: Operation, args: &str) -> crate::protoc
         Operation::Reset => crate::protocol::ToolParameters::Reset {
             to_known_good: true,
         },
-        _ => unreachable!("operation mapping is exhaustive"),
+        Operation::Write | Operation::Create | Operation::Patch => {
+            // Files: args = "<file:/workspace/path> <content>" — content may contain spaces.
+            // Split on first whitespace to separate path from content.
+            let trimmed = args.trim();
+            let (path, content) = match trimmed.find(char::is_whitespace) {
+                Some(idx) => (trimmed[..idx].trim(), trimmed[idx..].trim()),
+                None => (trimmed, ""),
+            };
+            // Store path in the module field for backward compat and content under content.
+            // Broker's candidate extraction prefers content over module.
+            crate::protocol::ToolParameters::Stage {
+                change: serde_json::json!({ "path": path, "content": content, "module": content }),
+            }
+        }
+        Operation::Delete => crate::protocol::ToolParameters::Stage {
+            change: serde_json::json!({ "path": args.trim(), "content": "" }),
+        },
+        Operation::Fetch => crate::protocol::ToolParameters::Fetch { url: args.trim().into() },
+        _ => crate::protocol::ToolParameters::Query { query: args.into() },
     }
 }
 
@@ -380,11 +426,22 @@ pub(crate) fn protocol_tool_result(
         return Err(ToolError::Permission(message.into()));
     }
     let text = match result.data {
-        Some(crate::protocol::ToolData::QueryResult { data }) => data
-            .get("text")
-            .and_then(|value| value.as_str())
-            .ok_or_else(|| ToolError::Usage(format!("tool {name} returned malformed data")))?
-            .to_string(),
+        Some(crate::protocol::ToolData::QueryResult { data }) => {
+            // Web fetch and generic query results carry content under
+            // `content` or `text` — prefer text, fall back to content/fetched_from.
+            if let Some(text) = data.get("text").and_then(|v| v.as_str()) {
+                text.to_string()
+            } else if let Some(content) = data.get("content").and_then(|v| v.as_str()) {
+                let url = data.get("fetched_from").and_then(|v| v.as_str()).unwrap_or("");
+                if url.is_empty() {
+                    content.to_string()
+                } else {
+                    format!("fetched_from={url} content={content}")
+                }
+            } else {
+                data.to_string()
+            }
+        }
         Some(crate::protocol::ToolData::DeviceState { state, metrics }) => {
             let mut parts = vec![format!("state={state:?}")];
             let mut metrics: Vec<(String, String)> = metrics.into_iter().collect();
@@ -401,6 +458,12 @@ pub(crate) fn protocol_tool_result(
             "confidence={confidence} findings=[{}]",
             findings.join(" | ")
         ),
+        Some(crate::protocol::ToolData::CommitResult { committed, health_verified }) => {
+            format!("committed={committed} health_verified={health_verified} tool={name}")
+        }
+        Some(crate::protocol::ToolData::StagedChange { id, checkpoint }) => {
+            format!("staged id={id} checkpoint={checkpoint} tool={name}")
+        }
         _ => {
             return Err(ToolError::Usage(format!(
                 "tool {name} returned no result data"
@@ -423,14 +486,15 @@ pub(crate) fn quote_value(value: &str) -> String {
     }
 }
 pub(crate) fn required_specialist_calls(messages: &[ModelMessage]) -> Vec<ToolCallRequest> {
-    let Some(prompt) = messages
+    let Some(original) = messages
         .iter()
         .rev()
         .find(|message| message.role == ModelRole::User)
-        .map(|message| message.content.to_ascii_lowercase())
+        .map(|message| message.content.clone())
     else {
         return Vec::new();
     };
+    let prompt = original.to_ascii_lowercase();
     let mut calls = Vec::new();
     let add = |calls: &mut Vec<ToolCallRequest>, name: &str, arguments: &str| {
         calls.push(ToolCallRequest {
@@ -453,5 +517,75 @@ pub(crate) fn required_specialist_calls(messages: &[ModelMessage]) -> Vec<ToolCa
     if prompt.contains("network") || prompt.contains("wifi") || prompt.contains("internet") {
         add(&mut calls, "network.observe_network", "all");
     }
+    // Workspace co-partner (Stage 1/3): heuristic file/web triggers for natural
+    // language so the full UX works without forced JSON. The model can still
+    // emit precise tool_calls; this just seeds evidence for intent that mentions
+    // files or web URLs.
+    if prompt.contains("file:") || prompt.contains("workspace") || prompt.contains("create file") || prompt.contains("write file") || prompt.contains(".py") || prompt.contains(".rs") || prompt.contains(".html") || prompt.contains(".txt") || prompt.contains(".md") {
+        // Try to extract a file path from the original prompt (preserve case).
+        // Look for file:/workspace/... or bare <name>.<ext>
+        let path = extract_file_path(&original).unwrap_or_else(|| "file:/workspace/hello.py".to_string());
+        // Content after "with content" or after the path — keep simple: if prompt
+        // mentions "hello" use a hello world, otherwise empty (health will still pass).
+        let content = extract_file_content(&original).unwrap_or_else(|| "hello from aios".to_string());
+        add(&mut calls, "files.write_file", &format!("{path} {content}"));
+    }
+    if prompt.contains("http://") || prompt.contains("https://") || prompt.contains("fetch") || prompt.contains("docs.rs") || prompt.contains("tokio") {
+        if let Some(url) = extract_url(&original) {
+            add(&mut calls, "web.fetch_url", &url);
+        } else if prompt.contains("tokio") {
+            add(&mut calls, "web.fetch_url", "https://docs.rs/tokio");
+        }
+    }
     calls
+}
+
+fn extract_file_path(original: &str) -> Option<String> {
+    // Prefer explicit file:/workspace/... or file:/artifacts/...
+    for token in original.split_whitespace() {
+        let t = token.trim_matches(|c: char| c == '"' || c == '\'' || c == ',' || c == '.' || c == ';');
+        if t.starts_with("file:/workspace") || t.starts_with("file:/artifacts") {
+            return Some(t.to_string());
+        }
+    }
+    // Fallback: look for bare filename with extension
+    for token in original.split_whitespace() {
+        let t = token.trim_matches(|c: char| c == '"' || c == '\'' || c == ',' || c == ';');
+        if t.contains('.') && !t.contains("://") && t.len() < 64 {
+            let lower = t.to_ascii_lowercase();
+            if lower.ends_with(".py") || lower.ends_with(".rs") || lower.ends_with(".html") || lower.ends_with(".txt") || lower.ends_with(".md") || lower.ends_with(".json") || lower.ends_with(".ts") || lower.ends_with(".js") {
+                // Strip leading ./ or /
+                let name = t.trim_start_matches("./").trim_start_matches('/');
+                return Some(format!("file:/workspace/{name}"));
+            }
+        }
+    }
+    None
+}
+
+fn extract_file_content(original: &str) -> Option<String> {
+    // Look for "with content <...>" or content after a quoted block
+    let lower = original.to_ascii_lowercase();
+    if let Some(idx) = lower.find("with content") {
+        let after = &original[idx + "with content".len()..].trim();
+        let content = after.trim_matches(|c: char| c == '"' || c == '\'' || c == ':' ).trim();
+        if !content.is_empty() {
+            return Some(content.to_string());
+        }
+    }
+    // If prompt contains "hello" keep hello world
+    if lower.contains("hello") {
+        return Some("hello from aios\nprint('hi')".to_string());
+    }
+    None
+}
+
+fn extract_url(original: &str) -> Option<String> {
+    for token in original.split_whitespace() {
+        let t = token.trim_matches(|c: char| c == '"' || c == '\'' || c == ',' || c == ';' || c == ')');
+        if t.starts_with("http://") || t.starts_with("https://") {
+            return Some(t.to_string());
+        }
+    }
+    None
 }

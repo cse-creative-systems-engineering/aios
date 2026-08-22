@@ -45,6 +45,59 @@ use std::sync::{
 };
 
 static NEXT_TOOL_NONCE: AtomicU64 = AtomicU64::new(1);
+
+struct CompositeDriver {
+    wifi: crate::wifi_driver::WifiDriverResourceDriver,
+    files: crate::files::FileDriver,
+}
+
+impl crate::executor::ResourceDriver for CompositeDriver {
+    fn create_checkpoint(&mut self, action_id: &crate::protocol::ActionId, resource: &crate::capability::ResourceId) -> Result<crate::action::Checkpoint, crate::action::CheckpointError> {
+        if resource.as_str().starts_with("file:") {
+            self.files.create_checkpoint(action_id, resource)
+        } else {
+            self.wifi.create_checkpoint(action_id, resource)
+        }
+    }
+    fn verify_checkpoint(&self, checkpoint: &crate::action::Checkpoint) -> Result<(), crate::action::CheckpointError> {
+        if checkpoint.resource.as_str().starts_with("file:") {
+            self.files.verify_checkpoint(checkpoint)
+        } else {
+            self.wifi.verify_checkpoint(checkpoint)
+        }
+    }
+    fn stage(&mut self, checkpoint: &crate::action::Checkpoint, candidate: &str) -> Result<(), crate::action::StageError> {
+        if checkpoint.resource.as_str().starts_with("file:") {
+            self.files.stage(checkpoint, candidate)
+        } else {
+            self.wifi.stage(checkpoint, candidate)
+        }
+    }
+    fn health_check(&self, resource: &crate::capability::ResourceId) -> Result<crate::protocol::HealthState, crate::action::HealthError> {
+        if resource.as_str().starts_with("file:") {
+            self.files.health_check(resource)
+        } else {
+            self.wifi.health_check(resource)
+        }
+    }
+    fn commit(&mut self, checkpoint: &crate::action::Checkpoint) -> Result<(), crate::action::CommitError> {
+        if checkpoint.resource.as_str().starts_with("file:") {
+            self.files.commit(checkpoint)
+        } else {
+            self.wifi.commit(checkpoint)
+        }
+    }
+    fn rollback(&mut self, checkpoint: &crate::action::Checkpoint) -> Result<(), crate::action::RollbackError> {
+        if checkpoint.resource.as_str().starts_with("file:") {
+            self.files.rollback(checkpoint)
+        } else {
+            self.wifi.rollback(checkpoint)
+        }
+    }
+    fn reset(&mut self) -> Result<(), crate::action::ResetError> {
+        self.wifi.reset()
+    }
+}
 use chat::tool_arguments;
 use planning::{seed_security_domain, seed_boot_domain};
 pub struct Coordinator {
@@ -977,6 +1030,76 @@ impl Coordinator {
                 .client(coordinator.session_principal.clone())
                 .capability_tokens(&coordinator.session_principal);
         }
+        // Files/Data specialist (Stage 1) and Web specialist (Stage 3): workspace
+        // co-partner resources. The specialists are always instantiated (no
+        // discovery gate) so the broker has the tools even on an empty graph.
+        {
+            use crate::files::{FilesSpecialist, FileDriver};
+            use crate::web::{WebSpecialist, MockFetcher, LiveFetcher};
+            // Files
+            {
+                let specialist = {
+                    let mut graph = coordinator.graph.write().expect("graph lock");
+                    FilesSpecialist::instantiate(&mut graph).expect("files specialist")
+                };
+                let definitions = specialist.tool_definitions();
+                let principal = crate::capability::PrincipalId::agent(crate::files::PACKAGE_ID, specialist.specialist.0.clone());
+                let caps: Vec<_> = definitions.iter().flat_map(|d| d.required_capabilities.clone()).collect();
+                for def in definitions {
+                    coordinator.broker.register_tool(def);
+                }
+                coordinator.broker.register_principal(principal.clone(), caps.clone(), crate::capability::Clearance::max());
+                for r in [crate::capability::ResourceId("file:/workspace".into()), crate::capability::ResourceId("file:/artifacts".into())] {
+                    coordinator.broker.set_resource_state(r.clone(), crate::capability::ResourceState::Available);
+                    coordinator.broker.set_resource_owner(r, principal.clone());
+                }
+                // Also register concrete file paths as they are requested; the
+                // broker's prefix capability covers them without per-file state.
+                let file_caps: Vec<crate::capability::Capability> = caps.into_iter().filter(|c| c.resource.as_str().starts_with("file:")).collect();
+                for cap in file_caps {
+                    coordinator.broker.grant_capability(&coordinator.session_principal, cap);
+                }
+                coordinator.session_tokens = coordinator.broker.client(coordinator.session_principal.clone()).capability_tokens(&coordinator.session_principal);
+                // Wire FileDriver into the existing StagedExecutor if one
+                // exists, otherwise create one with a FileDriver. The wifi
+                // driver executor already exists at this point (created
+                // below); we keep it and let the file driver be swapped via
+                // a composite driver. For now we keep the wifi driver as the
+                // executor's driver and let files use a separate executor
+                // fallback: if no executor yet, install FileDriver.
+                // The actual FileDriver is installed lazily: the chat path
+                // will use FileDriver directly for file resources.
+                let _ = specialist;
+            }
+            // Web
+            {
+                let specialist = {
+                    let mut graph = coordinator.graph.write().expect("graph lock");
+                    WebSpecialist::instantiate(&mut graph).expect("web specialist")
+                };
+                let definitions = specialist.tool_definitions();
+                let principal = crate::capability::PrincipalId::agent(crate::web::PACKAGE_ID, specialist.specialist.0.clone());
+                let caps: Vec<_> = definitions.iter().flat_map(|d| d.required_capabilities.clone()).collect();
+                for def in definitions {
+                    let tool_id = def.tool_id.clone();
+                    coordinator.broker.register_tool(def);
+                    // Live fetcher by default; tests override with MockFetcher.
+                    let ws = specialist.clone();
+                    coordinator.broker.spawn_specialist(&tool_id, std::sync::Arc::new(move |req| ws.handle_fetch(&req, &LiveFetcher)));
+                }
+                coordinator.broker.register_principal(principal.clone(), caps.clone(), crate::capability::Clearance::max());
+                coordinator.broker.set_resource_state(crate::capability::ResourceId(crate::web::WEB_RESOURCE.into()), crate::capability::ResourceState::Available);
+                coordinator.broker.set_resource_owner(crate::capability::ResourceId(crate::web::WEB_RESOURCE.into()), principal.clone());
+                for cap in caps {
+                    coordinator.broker.grant_capability(&coordinator.session_principal, cap);
+                }
+                coordinator.session_tokens = coordinator.broker.client(coordinator.session_principal.clone()).capability_tokens(&coordinator.session_principal);
+            }
+        }
+        // Global guardian for staged operations (files/web/wifi) — required
+        // for any risk >=2 tool (DATA-003 etc). Read-only specialists don't need
+        // it, but we set it once here so staged file writes succeed.
+        coordinator.broker.set_guardian(crate::guardian::Guardian::new());
         // Boot and recovery specialist (M7): the umbrella for the
         // boot and recovery domain (docs/modules/boot-recovery.md).
         // Unlike hardware umbrellas, its domain is the trust plane —
@@ -1155,10 +1278,12 @@ impl Coordinator {
             } else {
                 Box::new(MockDriverControl::new())
             };
-        let driver = WifiDriverResourceDriver::new(control, device_id);
+        let wifi_driver = WifiDriverResourceDriver::new(control, device_id);
+        let file_driver = crate::files::FileDriver::new();
+        let composite = CompositeDriver { wifi: wifi_driver, files: file_driver };
         coordinator
             .broker
-            .set_executor(StagedExecutor::new(Box::new(store), Box::new(driver)));
+            .set_executor(StagedExecutor::new(Box::new(store), Box::new(composite)));
         coordinator.ensure_control_plane_edges();
         coordinator.record_audit("coordinator", "boot", "system", "ok");
         Ok(coordinator)

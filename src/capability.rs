@@ -93,20 +93,57 @@ pub enum Operation {
     Reset,
     Quarantine,
     Rollback,
+    Write,
+    Create,
+    Patch,
+    Delete,
+    Fetch,
+    StageEnv,
 }
 
 impl Operation {
     pub fn default_risk_level(self) -> RiskLevel {
         match self {
             Operation::Observe | Operation::Diagnose | Operation::Query => RiskLevel::ReadOnly,
-            Operation::Restart | Operation::Configure => RiskLevel::Routine,
-            Operation::Stage | Operation::Commit => RiskLevel::Staged,
-            Operation::FirmwareWrite | Operation::BootConfig | Operation::KernelModule => {
-                RiskLevel::Critical
-            }
+            Operation::Restart | Operation::Configure | Operation::Fetch => RiskLevel::Routine,
+            Operation::Stage
+            | Operation::Commit
+            | Operation::Write
+            | Operation::Create
+            | Operation::Patch
+            | Operation::StageEnv => RiskLevel::Staged,
+            Operation::FirmwareWrite
+            | Operation::BootConfig
+            | Operation::KernelModule
+            | Operation::Delete => RiskLevel::Critical,
             Operation::Reset | Operation::Quarantine | Operation::Rollback => RiskLevel::Recovery,
         }
     }
+}
+
+/// Returns true if a capability resource prefix covers a request resource.
+/// Only `file:/workspace` and `file:/artifacts` are prefix capabilities (ADR-0008);
+/// all other resources require exact equality.
+pub fn resource_covers(capability_resource: &str, request_resource: &str) -> bool {
+    if capability_resource == request_resource {
+        return true;
+    }
+    const PREFIXES: &[&str] = &["file:/workspace", "file:/artifacts"];
+    for prefix in PREFIXES {
+        if capability_resource == *prefix {
+            if request_resource == *prefix
+                || request_resource.starts_with(&format!("{prefix}/"))
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+pub fn capability_covers(token: &Capability, request_resource: &ResourceId, request_operation: Operation) -> bool {
+    token.operation == request_operation
+        && resource_covers(token.resource.as_str(), request_resource.as_str())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

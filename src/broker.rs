@@ -229,9 +229,14 @@ impl PolicyBroker {
         self.capabilities
             .get(principal)
             .map(|tokens| {
-                tokens
-                    .iter()
-                    .any(|t| &t.capability == capability && &t.principal == principal)
+                tokens.iter().any(|t| {
+                    &t.principal == principal
+                        && crate::capability::capability_covers(
+                            &t.capability,
+                            &capability.resource,
+                            capability.operation,
+                        )
+                })
             })
             .unwrap_or(false)
     }
@@ -306,12 +311,41 @@ impl PolicyBroker {
         }
 
         for required in &tool.required_capabilities {
-            if !self.has_capability(&request.principal, required) {
+            // required is the canonical capability the tool demands; the
+            // principal may hold a prefix capability that covers it (file:
+            // workspace prefix exception, ADR-0008).
+            let covered = self
+                .capabilities
+                .get(&request.principal)
+                .map(|tokens| {
+                    tokens.iter().any(|t| {
+                        crate::capability::capability_covers(
+                            &t.capability,
+                            &required.resource,
+                            required.operation,
+                        )
+                    })
+                })
+                .unwrap_or(false);
+            if !covered {
                 return PolicyVerdict::Deny(DenyReason::MissingCapability);
             }
         }
 
-        match self.resource_states.get(&request.resource) {
+        // Resource state check — for file workspace/artifacts prefix
+        // capabilities the exact subpath need not be pre-registered; the
+        // prefix state covers the subtree (ADR-0008).
+        let state = self.resource_states.get(&request.resource).copied().or_else(|| {
+            let s = request.resource.as_str();
+            if s.starts_with("file:/workspace") {
+                self.resource_states.get(&ResourceId("file:/workspace".into())).copied()
+            } else if s.starts_with("file:/artifacts") {
+                self.resource_states.get(&ResourceId("file:/artifacts".into())).copied()
+            } else {
+                None
+            }
+        });
+        match state {
             None => return PolicyVerdict::Deny(DenyReason::AmbiguousCapability),
             Some(ResourceState::Removed) => {
                 return PolicyVerdict::Deny(DenyReason::ResourceUnavailable(
@@ -338,13 +372,46 @@ impl PolicyBroker {
         if &token.principal != &request.principal {
             return PolicyVerdict::Deny(DenyReason::MissingCapability);
         }
-        if !tool.required_capabilities.contains(&token.capability) {
+        // Token must cover the request resource+operation via prefix matching.
+        if !crate::capability::capability_covers(
+            &token.capability,
+            &request.resource,
+            request.operation,
+        ) {
             return PolicyVerdict::Deny(DenyReason::MissingCapability);
         }
-        if &token.capability.resource != &request.resource
-            || token.capability.operation != request.operation
+        // Token must also be among the tool's required capabilities (prefix-aware).
+        let token_covers_required = tool.required_capabilities.iter().any(|req| {
+            crate::capability::capability_covers(
+                &token.capability,
+                &req.resource,
+                req.operation,
+            ) || crate::capability::capability_covers(
+                req,
+                &token.capability.resource,
+                token.capability.operation,
+            )
+        });
+        // For prefix tools the required capability is the prefix itself; token
+        // covering the request is sufficient. Fall back to exact check for
+        // non-file resources.
+        if !token_covers_required
+            && !tool
+                .required_capabilities
+                .iter()
+                .any(|req| req == &token.capability)
         {
-            return PolicyVerdict::Deny(DenyReason::MissingCapability);
+            // Allow if token directly covers the request and the tool's
+            // required set is prefix-compatible (file workspace case).
+            let is_file_prefix = token
+                .capability
+                .resource
+                .as_str()
+                .starts_with("file:/workspace")
+                || token.capability.resource.as_str().starts_with("file:/artifacts");
+            if !is_file_prefix {
+                return PolicyVerdict::Deny(DenyReason::MissingCapability);
+            }
         }
         if now > token.expires_at {
             return PolicyVerdict::Deny(DenyReason::ExpiredToken);
@@ -677,14 +744,21 @@ impl LocalBroker {
             }
         }
 
-        // Extract the candidate module from the validated Stage payload
-        // (message-protocol §2.4 `ToolParameters::Stage { change }`). The
-        // executor applies it; validation of the module name happens in the
-        // executor (REQ-SAF-005). A risk-4 reset skips staging and goes
-        // straight to a checkpointed reset (action-state-machine §2.2).
+        // Extract the candidate from the validated Stage payload
+        // (message-protocol §2.4 `ToolParameters::Stage { change }`). For file
+        // resources the content is under `content`; for driver resources it is
+        // under `module`. Validation happens in the executor (REQ-SAF-005).
+        // A risk-4 reset skips staging and goes straight to a checkpointed
+        // reset (action-state-machine §2.2).
         let candidate = match &request.parameters {
             crate::protocol::ToolParameters::Stage { change } => change
-                .get("module")
+                .get("content")
+                .and_then(serde_json::Value::as_str)
+                .or_else(|| change.get("module").and_then(serde_json::Value::as_str))
+                .unwrap_or("")
+                .to_string(),
+            crate::protocol::ToolParameters::Configure { changes } => changes
+                .get("content")
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("")
                 .to_string(),

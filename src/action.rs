@@ -158,6 +158,12 @@ pub enum CheckpointState {
         config_path: String,
         content_hash: [u8; 32],
     },
+    FileBackup {
+        path: String,
+        backup_path: Option<String>,
+        existed: bool,
+        content_hash: Option<[u8; 32]>,
+    },
     Empty,
 }
 

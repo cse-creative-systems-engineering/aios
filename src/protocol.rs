@@ -155,6 +155,8 @@ pub enum ToolParameters {
     Reset { to_known_good: bool },
     Quarantine { reason: String },
     Rollback { checkpoint: CheckpointRef },
+    Fetch { url: String },
+    Search { query: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -8,6 +8,7 @@ pub mod coordinator;
 pub mod discovery;
 pub mod drivers;
 pub mod executor;
+pub mod files;
 pub mod facade;
 pub mod graph;
 pub mod graphics;
@@ -32,6 +33,7 @@ pub mod storage;
 pub mod surface;
 pub mod tools;
 pub mod verifier;
+pub mod web;
 pub mod wifi;
 pub mod wifi_driver;
 

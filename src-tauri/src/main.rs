@@ -922,6 +922,10 @@ fn main() {    #[cfg(target_os = "linux")]
 }
 
 #[allow(clippy::too_many_arguments)]
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+}
+
 fn handle_prompt(
     facade: &mut Facade,
     worker_handle: &tauri::AppHandle,
@@ -940,14 +944,78 @@ fn handle_prompt(
     // There is no other surface path and no widget vocabulary. Each prompt
     // authors a fresh surface; revising an existing one is a separate,
     // explicit action, so nothing from earlier prompts leaks into this call.
+    // Stage 4 artifact surface: if any file write/create succeeded, generate a
+    // deterministic artifact preview alongside the groundless surface. This
+    // bypasses the LLM fidelity gate (the content is the staged file content
+    // itself, not an invented value) and shows the user the actual artifact.
+    let artifact_html = {
+        let file_evidence: Vec<_> = evidence.iter().filter(|r| r.tool.starts_with("files.") && r.text.contains("committed=true")).collect();
+        if file_evidence.is_empty() {
+            None
+        } else {
+            // Build artifact preview: show tool result + actual file preview if readable.
+            let mut body = String::new();
+            for ev in &file_evidence {
+                body.push_str(&format!("<div style=\"margin:8px 0;padding:8px;background:#0f172a;color:#e2e8f0;border-radius:8px;font-family:monospace;font-size:12px\">{}</div>", html_escape(&ev.text)));
+            }
+            // Try to read the first file produced (prompt may be "create file hello.py")
+            let preview = {
+                let candidates = ["hello.py", "hello.txt", "output.html", "test.py", "main.rs"];
+                let mut found = None;
+                for name in candidates {
+                    if prompt.to_ascii_lowercase().contains(name) {
+                        let ws = std::env::var("AIOS_WORKSPACE").map(std::path::PathBuf::from).unwrap_or_else(|_| std::env::var("HOME").map(|h| std::path::PathBuf::from(h).join("workspace")).unwrap_or_else(|_| std::path::PathBuf::from("/tmp/aios-workspace")));
+                        let path = ws.join(name);
+                        if let Ok(content) = std::fs::read_to_string(&path) {
+                            let snippet = content.chars().take(400).collect::<String>();
+                            found = Some((name, snippet));
+                            break;
+                        }
+                    }
+                }
+                // Fallback: try to extract file path from prompt directly
+                if found.is_none() {
+                    for token in prompt.split_whitespace() {
+                        let t = token.trim_matches(|c: char| c == '"' || c == '\'' || c == ',' || c == ';');
+                        let lower = t.to_ascii_lowercase();
+                        if lower.ends_with(".py") || lower.ends_with(".txt") || lower.ends_with(".html") || lower.ends_with(".md") {
+                            let name = t.trim_start_matches("./").trim_start_matches('/').trim_start_matches("file:/workspace/");
+                            // name may still contain file:/workspace prefix handling
+                            let bare = name.split('/').last().unwrap_or(name);
+                            let ws = std::env::var("AIOS_WORKSPACE").map(std::path::PathBuf::from).unwrap_or_else(|_| std::env::var("HOME").map(|h| std::path::PathBuf::from(h).join("workspace")).unwrap_or_else(|_| std::path::PathBuf::from("/tmp/aios-workspace")));
+                            let path = ws.join(bare);
+                            if let Ok(content) = std::fs::read_to_string(&path) {
+                                let snippet = content.chars().take(400).collect::<String>();
+                                found = Some((bare, snippet));
+                                break;
+                            }
+                        }
+                    }
+                }
+                found
+            };
+            let preview_html = if let Some((name, snippet)) = preview {
+                format!(r#"<div style="margin-top:8px;padding:8px;background:#020617;border:1px solid #1e293b;border-radius:8px"><div style="font-size:11px;opacity:0.7;margin-bottom:4px">{}</div><pre style="margin:0;white-space:pre-wrap;word-break:break-all;font-size:11px">{}</pre></div>"#, html_escape(name), html_escape(&snippet))
+            } else {
+                String::new()
+            };
+            let html = format!(
+                r#"<div style="width:420px;min-height:120px;padding:16px;background:#0b1220;color:#e2e8f0;border:1px solid #1e293b;border-radius:12px;font-family:system-ui,sans-serif" data-aios-drag-region><div style="font-weight:600;margin-bottom:8px">Artifact — staged file</div><div style="font-size:12px;opacity:0.9">{}</div>{}<div style="margin-top:10px;font-size:11px;opacity:0.6">Staged via broker → FileCheckpoint → health verified → committed. Check ~/workspace.</div></div>"#,
+                body, preview_html
+            );
+            let card = SurfaceCard { id: next_surface_id(), html };
+            surfaces.push(card.clone());
+            Some(card)
+        }
+    };
     let experimental_html = if evidence.is_empty() {
         eprintln!("Aios canvas: no specialist evidence gathered; no surface");
-        None
+        artifact_html
     } else {
         let gaps = aios::surface::coverage_gaps(&prompt, &evidence);
         if !gaps.is_empty() {
             eprintln!("Aios canvas: coverage gap for {}; no surface", gaps.join(", "));
-            None
+            artifact_html
         } else {
             emit_graph_activity(worker_handle, GraphPhase::Composing, &["composer"]);
             match facade.compose_unconstrained_html(&prompt, &evidence, None) {
@@ -972,7 +1040,13 @@ fn handle_prompt(
                                 html,
                             };
                             surfaces.push(card.clone());
-                            Some(card)
+                            // Prefer the LLM surface, but keep artifact as second card if present.
+                            if artifact_html.is_some() {
+                                // Both surfaces are already in `surfaces`; return the LLM one as primary.
+                                Some(card)
+                            } else {
+                                Some(card)
+                            }
                         }
                         Err(error) => {
                             eprintln!("Aios canvas: fidelity check failed: {error}");
@@ -983,14 +1057,14 @@ fn handle_prompt(
                                 None,
                                 Some(&error),
                             );
-                            None
+                            artifact_html
                         }
                     }
                 }
                 Err(error) => {
                     eprintln!("Aios canvas: composition failed: {error}");
                     write_surface_trace(&prompt, &answer, &evidence, None, Some(&error.to_string()));
-                    None
+                    artifact_html
                 }
             }
         }

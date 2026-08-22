@@ -207,14 +207,26 @@ impl StagedExecutor {
         action_id: &ActionId,
         candidate: &str,
     ) -> Result<StagingResult, StagingError> {
-        // The candidate module name is validated before staging: it must be a
-        // plain kernel module identifier to avoid shell/arg injection
-        // (REQ-SAF-005: external data is untrusted).
-        let module = validate_module(candidate).ok_or(StagingError::StageFailed)?;
         let record = self
             .store
             .load(action_id)
             .map_err(|_| StagingError::CheckpointFailed)?;
+        // For file resources the candidate is arbitrary file content (not a
+        // module name) and must not be validated as a module identifier.
+        let is_file = record.resource.as_str().starts_with("file:");
+        let staged_content = if is_file {
+            // Basic size guard for file writes (10 MiB limit).
+            if candidate.len() > 10 * 1024 * 1024 {
+                return Err(StagingError::StageFailed);
+            }
+            candidate.to_string()
+        } else {
+            // The candidate module name is validated before staging: it must be a
+            // plain kernel module identifier to avoid shell/arg injection
+            // (REQ-SAF-005: external data is untrusted).
+            validate_module(candidate).ok_or(StagingError::StageFailed)?
+        };
+        let _ = is_file; // keep binding for clarity
         let from = record.state;
         let next = match from {
             ActionState::GuardianChecked | ActionState::Approved => ActionState::Staged,
@@ -243,7 +255,7 @@ impl StagedExecutor {
             return Err(StagingError::CheckpointFailed);
         }
 
-        if self.stage(&checkpoint, &module).is_err() {
+        if self.stage(&checkpoint, &staged_content).is_err() {
             self.transition(action_id, ActionState::Failed, "stage failed")
                 .map_err(|_| StagingError::StageFailed)?;
             return Err(StagingError::StageFailed);

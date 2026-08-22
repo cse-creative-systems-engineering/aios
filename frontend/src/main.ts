@@ -542,7 +542,14 @@ async function refreshGraph(): Promise<void> {
 /// or move in lockstep). Older prompts asked models for that exact
 /// attribute, so rename it defensively on every render.
 function adoptSurfaceHtml(html: string): string {
-  return html.replaceAll('data-tauri-drag-region', 'data-aios-drag-region');
+  let out = html.replaceAll('data-tauri-drag-region', 'data-aios-drag-region');
+  // Stage 4 artifact: if this is an artifact card, inject Save/Open actions.
+  // The backend artifact HTML is deterministic; we add a footer with actions
+  // that are handled via delegated click (no inline JS needed).
+  if (out.includes('Artifact — staged file')) {
+    out = out.replace('</div></div>', '</div><div style="margin-top:10px;display:flex;gap:8px"><button type="button" data-artifact-action="open" style="padding:6px 10px;background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:8px;font-size:11px;cursor:pointer">Open in workspace</button><span style="font-size:11px;opacity:0.6;align-self:center">~/workspace</span></div></div>');
+  }
+  return out;
 }
 
 function renderCanvas(): string {

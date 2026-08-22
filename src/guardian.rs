@@ -61,6 +61,18 @@ impl Guardian {
                     severity: InvariantSeverity::Boot,
                     check: InvariantCheck::BlockBootConfigUnlessFallbackExists,
                 },
+                InvariantRule {
+                    id: "DATA-003".into(),
+                    description: "file writes outside workspace/artifacts require explicit approval scope".into(),
+                    severity: InvariantSeverity::Safety,
+                    check: InvariantCheck::BlockOperation(Operation::Write),
+                },
+                InvariantRule {
+                    id: "DATA-004".into(),
+                    description: "placeholder for Secret data handling (redaction before fetch)".into(),
+                    severity: InvariantSeverity::Safety,
+                    check: InvariantCheck::AlwaysAllow,
+                },
             ],
             tested_firmware: HashSet::new(),
             tested_drivers: HashSet::new(),
@@ -89,6 +101,33 @@ impl Guardian {
     }
 
     fn check_rule(&self, rule: &InvariantRule, request: &ToolRequest) -> Option<String> {
+        // DATA-003 is a scoped block: Write/Create/Patch/Delete/StageEnv outside
+        // workspace/artifacts is blocked; inside is allowed. Other BlockOperation
+        // invariants are unconditional.
+        if rule.id == "DATA-003" {
+            let is_file_mutation = matches!(
+                request.operation,
+                Operation::Write | Operation::Create | Operation::Patch | Operation::Delete | Operation::Stage | Operation::StageEnv
+            );
+            if !is_file_mutation {
+                return None;
+            }
+            let res = request.resource.as_str();
+            let allowed = res == "file:/workspace"
+                || res.starts_with("file:/workspace/")
+                || res == "file:/artifacts"
+                || res.starts_with("file:/artifacts/");
+            if allowed {
+                return None;
+            }
+            if res.starts_with("file:") {
+                return Some(format!(
+                    "{}: file write outside workspace/artifacts is blocked (resource: {})",
+                    rule.id, res
+                ));
+            }
+            return None;
+        }
         let why_blocked = match &rule.check {
             InvariantCheck::AlwaysAllow => return None,
             InvariantCheck::BlockOperation(op) if *op == request.operation => {
