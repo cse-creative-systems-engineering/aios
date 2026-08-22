@@ -73,8 +73,11 @@ ignored real-model test.
 - Thinking toggle beside each role's model picker in Settings (UI +
   backend), replacing the hardcoded compose-side reasoning-off. Planned
   with the owner; deferred as its own feature.
-- Surface editing/iteration: feed a chosen card's html back through the
-  relay's previous-design parameter and update it in place. Relay plumbing
-  exists; selection UX not designed yet (click-to-select vs naming the
-  card in the prompt).
+- Surface editing/iteration (v0.2, design agreed, not started): cards
+  remember their origin prompt; when cards exist, a cheap pre-flight model
+  call classifies the request as revise:<id>, NEW, or AMBIGUOUS. Revise
+  feeds that card's html through the relay's previous-design parameter and
+  updates the card in place; AMBIGUOUS asks back in plain chat. Selection
+  is entirely natural language — no click-to-select. Falls back to NEW on
+  any failure so editing can never break generation.
 - Sidebar polish and full chat experience per milestone 0003.
