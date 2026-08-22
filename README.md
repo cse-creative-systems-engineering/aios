@@ -94,7 +94,7 @@ There is now also a runnable core. `cargo run` drives the in-process demo
 hardware). `cargo run -- shell` boots the interactive shell: it loads
 `~/.aios/config.toml`, runs a local Qwen model through llama.cpp, and routes
 chat through the model gateway, with discovery, provider status, consent, and
-a plan-and-verify flow. The current library baseline is 394 passing tests with
+a plan-and-verify flow. The current library baseline is 398 passing tests with
 one ignored real-model test.
 
 The orchestration core was recently modularized: `src/coordinator` is split into
@@ -255,7 +255,7 @@ model-routing → human-interaction. Takes an afternoon.
 
 ```bash
 cargo build          # compile everything
-cargo test           # run the test suite (394 library tests)
+cargo test           # run the test suite (398 library tests)
 cargo run            # in-process demo: broker, guardian, mock agents
 cargo run -- shell   # interactive shell against your real config and models
 ```

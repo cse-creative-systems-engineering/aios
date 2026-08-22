@@ -94,8 +94,12 @@ pub fn compose_unconstrained_html(
         temperature: 0.7,
         seed: None,
         model: None,
+        reasoning_disabled: true,
     };
-    let response = gateway.submit(&task, &request)?;
+    // Composition wants markup, not deliberation, so thinking is switched
+    // off where the provider supports it; if it comes back empty anyway,
+    // the budget retry gives the same prompt more room exactly once.
+    let response = crate::model::submit_with_budget_retry(gateway, &task, request)?;
     let html = strip_think(response.response.text.trim());
     if html.trim().is_empty() {
         return Err(SurfaceComposeError::EmptyResponse);

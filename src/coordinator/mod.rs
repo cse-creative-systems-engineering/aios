@@ -1462,10 +1462,12 @@ pub fn send_direct(coordinator: &Coordinator, text: &str) -> Result<String, Agen
         temperature: 0.4,
         seed: None,
         model: None,
+        // Chat keeps thinking enabled — it earns its tokens here. Only the
+        // budget retry adapts, for models that think longer than the
+        // configured allowance.
+        reasoning_disabled: false,
     };
-    let response = coordinator
-        .gateway
-        .submit(&task, &request)
+    let response = crate::model::submit_with_budget_retry(&coordinator.gateway, &task, request)
         .map_err(AgentError::from)?;
     Ok(crate::planner::strip_think(response.response.text.trim()).to_string())
 }

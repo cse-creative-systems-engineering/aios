@@ -247,6 +247,7 @@ mod tests {
             temperature: 0.0,
             seed: Some(0),
             model: None,
+        reasoning_disabled: false,
         }
     }
 

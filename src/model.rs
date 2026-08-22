@@ -686,6 +686,12 @@ pub struct GenerationRequest {
     /// role assignment; backends fall back to their registered default when
     /// absent.
     pub model: Option<String>,
+    /// Ask the provider not to think before answering. Surface composition
+    /// wants markup, not deliberation, and thinking burns the token budget
+    /// that was meant for the answer. Sent as OpenRouter's normalized
+    /// `reasoning.enabled=false`; providers without support ignore it, so
+    /// any model stays usable.
+    pub reasoning_disabled: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -707,6 +713,11 @@ pub struct GenerationResponse {
 pub struct GenerationError {
     pub message: String,
     pub recoverable: bool,
+    /// The provider answered but emitted nothing visible: the whole token
+    /// budget went to hidden reasoning (or the provider stripped it). The
+    /// budget-retry helper keys off this flag; other failures must not
+    /// trigger a re-request.
+    pub empty_content: bool,
 }
 
 impl GenerationError {
@@ -714,7 +725,49 @@ impl GenerationError {
         Self {
             message: message.into(),
             recoverable,
+            empty_content: false,
         }
+    }
+
+    pub fn empty_content(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            // Deliberately not "recoverable": the provider is alive and
+            // answered promptly, so this is not a transient blip. Flagging
+            // it recoverable made the gateway cool the provider down after
+            // two wasted identical attempts, taking every role on that
+            // provider offline until reboot — a thinking model that ran out
+            // of budget must never look like an outage.
+            recoverable: false,
+            empty_content: true,
+        }
+    }
+}
+
+/// One identical re-request with double the token budget when a model spends
+/// its entire budget on hidden reasoning and returns nothing visible. This is
+/// deliberately NOT a correction loop: the prompt never changes, no fallback
+/// provider is tried, and a second failure surfaces as the original error.
+/// Aios stays model-agnostic — whatever the user assigns gets more room
+/// instead of a lecture about which models to pick.
+pub fn submit_with_budget_retry(
+    gateway: &ModelGateway,
+    task: &ModelTask,
+    request: GenerationRequest,
+) -> Result<GatewayResponse, GatewayError> {
+    match gateway.submit(task, &request) {
+        Ok(response) => Ok(response),
+        Err(GatewayError::Generation {
+            empty_content: true,
+            ..
+        }) => {
+            let retried = GenerationRequest {
+                max_tokens: request.max_tokens.saturating_mul(2).max(1),
+                ..request
+            };
+            gateway.submit(task, &retried)
+        }
+        Err(error) => Err(error),
     }
 }
 
@@ -741,6 +794,10 @@ pub enum GatewayError {
     Generation {
         provider: ProviderId,
         message: String,
+        /// Mirrors `GenerationError::empty_content`: the provider answered
+        /// but nothing visible came back, so the same prompt is worth one
+        /// more attempt with a larger budget.
+        empty_content: bool,
     },
 }
 
@@ -763,7 +820,11 @@ impl std::fmt::Display for GatewayError {
                 f,
                 "provider {p} needs internet but the system is offline"
             ),
-            GatewayError::Generation { provider, message } => {
+            GatewayError::Generation {
+                provider,
+                message,
+                ..
+            } => {
                 write!(f, "generation failed on {provider}: {message}")
             }
         }
@@ -912,6 +973,7 @@ impl ModelGateway {
                 return Err(GatewayError::Generation {
                     provider: provider.clone(),
                     message: error.message,
+                    empty_content: error.empty_content,
                 });
             }
         };
@@ -1070,6 +1132,13 @@ mod tests {
         remaining_failures: std::sync::atomic::AtomicU32,
         label: &'static str,
         last_model: std::sync::Mutex<Option<String>>,
+        /// Every max_tokens value handed to `generate`, in call order. The
+        /// budget-retry test asserts the second attempt doubled it.
+        max_tokens_seen: std::sync::Mutex<Vec<u32>>,
+        /// When > 0, the next calls return the empty-content error instead
+        /// of a response: a reasoning model that spent its whole budget
+        /// thinking and shipped nothing visible.
+        empty_content_failures: std::sync::atomic::AtomicU32,
     }
 
     impl MockBackend {
@@ -1082,6 +1151,8 @@ mod tests {
                 remaining_failures: std::sync::atomic::AtomicU32::new(0),
                 label,
                 last_model: std::sync::Mutex::new(None),
+                max_tokens_seen: std::sync::Mutex::new(Vec::new()),
+                empty_content_failures: std::sync::atomic::AtomicU32::new(0),
             })
         }
 
@@ -1094,6 +1165,8 @@ mod tests {
                 remaining_failures: std::sync::atomic::AtomicU32::new(0),
                 label,
                 last_model: std::sync::Mutex::new(None),
+                max_tokens_seen: std::sync::Mutex::new(Vec::new()),
+                empty_content_failures: std::sync::atomic::AtomicU32::new(0),
             })
         }
 
@@ -1111,6 +1184,40 @@ mod tests {
                 remaining_failures: std::sync::atomic::AtomicU32::new(failures),
                 label,
                 last_model: std::sync::Mutex::new(None),
+                max_tokens_seen: std::sync::Mutex::new(Vec::new()),
+                empty_content_failures: std::sync::atomic::AtomicU32::new(0),
+            })
+        }
+
+        /// Backend whose first call answers with nothing visible, then
+        /// behaves normally afterwards.
+        fn empty_first(
+            provider: ProviderId,
+            tier: ProviderTier,
+            label: &'static str,
+        ) -> Arc<Self> {
+            Self::empty_n_times(provider, tier, label, 1)
+        }
+
+        /// Backend that answers with nothing visible for the first `n`
+        /// calls, then behaves normally. Values above 1 exercise paths
+        /// where even a same-request retry comes back empty.
+        fn empty_n_times(
+            provider: ProviderId,
+            tier: ProviderTier,
+            label: &'static str,
+            n: u32,
+        ) -> Arc<Self> {
+            Arc::new(Self {
+                provider,
+                tier,
+                healthy: std::sync::atomic::AtomicBool::new(true),
+                fail: false,
+                remaining_failures: std::sync::atomic::AtomicU32::new(0),
+                label,
+                last_model: std::sync::Mutex::new(None),
+                max_tokens_seen: std::sync::Mutex::new(Vec::new()),
+                empty_content_failures: std::sync::atomic::AtomicU32::new(n),
             })
         }
 
@@ -1118,6 +1225,13 @@ mod tests {
             self.last_model
                 .lock()
                 .expect("model lock")
+                .clone()
+        }
+
+        fn sent_max_tokens(&self) -> Vec<u32> {
+            self.max_tokens_seen
+                .lock()
+                .expect("tokens lock")
                 .clone()
         }
     }
@@ -1140,6 +1254,20 @@ mod tests {
             request: &GenerationRequest,
         ) -> Result<GenerationResponse, GenerationError> {
             *self.last_model.lock().expect("model lock") = request.model.clone();
+            self.max_tokens_seen
+                .lock()
+                .expect("tokens lock")
+                .push(request.max_tokens);
+            let outstanding_empty = self
+                .empty_content_failures
+                .load(std::sync::atomic::Ordering::SeqCst);
+            if outstanding_empty > 0 {
+                self.empty_content_failures
+                    .store(outstanding_empty - 1, std::sync::atomic::Ordering::SeqCst);
+                return Err(GenerationError::empty_content(
+                    "thought past the token budget",
+                ));
+            }
             let outstanding = self
                 .remaining_failures
                 .load(std::sync::atomic::Ordering::SeqCst);
@@ -1165,6 +1293,7 @@ mod tests {
             temperature: 0.7,
             seed: None,
             model: None,
+            reasoning_disabled: false,
         }
     }
 
@@ -1445,6 +1574,133 @@ mod tests {
         assert!(
             gateway.submit(&task, &request(&task)).is_ok(),
             "provider stays usable after a recovered blip"
+        );
+    }
+
+    #[test]
+    fn budget_retry_reissues_identical_prompt_with_doubled_tokens() {
+        // A reasoning-heavy provider burns its first budget on hidden
+        // thinking; Aios re-asks the SAME prompt once with double the room
+        // instead of telling the user which models not to pick.
+        let openrouter = MockBackend::empty_first(
+            ProviderId::new("openrouter"),
+            ProviderTier::Internet,
+            "net-a",
+        );
+        let gateway = gateway_with(vec![openrouter.clone()]);
+        gateway
+            .router()
+            .set_assignment(
+                "chat",
+                ProviderId::new("openrouter"),
+                ModelId::new("net-a"),
+            )
+            .expect("assignment");
+        let task = ModelTask::new(AgentRole::Planner, DataClassification::Public);
+        let mut req = request(&task);
+        req.max_tokens = 64;
+        req.reasoning_disabled = true;
+
+        let response =
+            submit_with_budget_retry(&gateway, &task, req).expect("budget retry recovers");
+        assert_eq!(response.response.text, "answer from net-a");
+        assert_eq!(
+            openrouter.sent_max_tokens(),
+            vec![64, 128],
+            "empty content skips the gateway's identical retry and gets one doubled re-ask"
+        );
+    }
+
+    #[test]
+    fn budget_retry_leaves_other_errors_untouched() {
+        // Generic failures must surface as-is: only the empty-content case
+        // earns another attempt, anything else would be error masking.
+        let openrouter = MockBackend::failing(
+            ProviderId::new("openrouter"),
+            ProviderTier::Internet,
+            "net-a",
+        );
+        let gateway = gateway_with(vec![openrouter.clone()]);
+        gateway
+            .router()
+            .set_assignment(
+                "chat",
+                ProviderId::new("openrouter"),
+                ModelId::new("net-a"),
+            )
+            .expect("assignment");
+        let task = ModelTask::new(AgentRole::Planner, DataClassification::Public);
+
+        assert!(matches!(
+            submit_with_budget_retry(&gateway, &task, request(&task)),
+            Err(GatewayError::Generation { .. })
+        ));
+        // The gateway's own identical-request retry fires for recoverable
+        // blips (2 x 32 here); the budget helper must NOT add a third call
+        // or double anything for errors that are not empty-content.
+        assert_eq!(
+            openrouter.sent_max_tokens(),
+            vec![32, 32],
+            "no doubled retry for non-empty-content errors"
+        );
+    }
+
+    #[test]
+    fn empty_content_errors_leave_the_provider_healthy() {
+        // Regression: an empty answer used to count as a recoverable blip;
+        // once the gateway's identical retry came back empty too, the
+        // provider was cooled down and every role on it went dark until the
+        // app restarted. A thinking model out of budget is not an outage.
+        let openrouter = MockBackend::empty_n_times(
+            ProviderId::new("openrouter"),
+            ProviderTier::Internet,
+            "net-a",
+            2,
+        );
+        let registry = registry_with(vec![]);
+        let gateway = ModelGateway::new(registry.clone());
+        registry
+            .write()
+            .expect("registry lock")
+            .register(ModelEntry::new(
+                ModelId::new("net-a"),
+                ProviderId::new("openrouter"),
+                ProviderTier::Internet,
+                vec![ModelCapability::TextGeneration],
+            ))
+            .expect("register");
+        gateway.register_backend(openrouter);
+        // Internet-tier routing requires an online router; tests default to
+        // offline so set it explicitly.
+        gateway.set_connectivity(ConnectivityState::Internet);
+        gateway
+            .router()
+            .set_assignment(
+                "chat",
+                ProviderId::new("openrouter"),
+                ModelId::new("net-a"),
+            )
+            .expect("assignment");
+        let task = ModelTask::new(AgentRole::Planner, DataClassification::Public);
+
+        // Both the initial attempt and the gateway's identical retry come
+        // back empty; the error must surface without cooling the provider.
+        assert!(matches!(
+            gateway.submit(&task, &request(&task)),
+            Err(GatewayError::Generation {
+                empty_content: true,
+                ..
+            })
+        ));
+        let unhealthy = registry
+            .read()
+            .expect("registry lock")
+            .iter()
+            .any(|entry| entry.provider == ProviderId::new("openrouter")
+                && entry.health.state == HealthState::Unhealthy);
+        assert!(
+            !unhealthy,
+            "an empty answer must not mark the provider unhealthy"
         );
     }
 }

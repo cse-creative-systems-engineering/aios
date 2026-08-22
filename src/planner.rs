@@ -44,6 +44,9 @@ pub fn submit(
         temperature: 0.3,
         seed: None,
         model: None,
+        // Planning benefits from reasoning; the budget retry covers models
+        // that think longer than the configured allowance.
+        reasoning_disabled: false,
     };
     let response = gateway.submit(&task, &request)?;
     let text = strip_think(response.response.text.trim());

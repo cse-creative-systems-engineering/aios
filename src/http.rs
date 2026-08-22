@@ -112,6 +112,12 @@ impl HttpBackend {
         if let Some(seed) = request.seed {
             body["seed"] = json!(seed);
         }
+        // OpenRouter's normalized reasoning switch. Providers that cannot
+        // disable thinking drop the field, so the request stays valid
+        // everywhere; where it is honored, budget goes to the answer.
+        if request.reasoning_disabled {
+            body["reasoning"] = json!({ "enabled": false });
+        }
         body
     }
 
@@ -134,10 +140,11 @@ impl HttpBackend {
                 .get("tool_calls")
                 .map(|calls| json!({ "tool_calls": calls }).to_string())
                 .ok_or_else(|| {
-                    GenerationError::new(
-                        "model returned no visible content; reasoning models can spend their \
-                         whole token budget thinking — assign a non-reasoning model to this role",
-                        false,
+                    // Flagged so the budget-retry helper can re-request with
+                    // more room instead of surfacing this straight away.
+                    GenerationError::empty_content(
+                        "model returned no visible content; its full token budget may have \
+                         been spent before any output",
                     )
                 })?,
         };
@@ -312,6 +319,7 @@ mod tests {
             temperature: 0.2,
             seed: None,
             model: None,
+            reasoning_disabled: false,
         }
     }
 
@@ -407,6 +415,29 @@ mod tests {
         with_seed.seed = Some(7);
         let body = backend.request_body(&with_seed);
         assert_eq!(body["seed"], 7);
+    }
+
+    #[test]
+    fn reasoning_disabled_flag_controls_the_reasoning_switch() {
+        let backend = HttpBackend::new(
+            ProviderId::new("p"),
+            "m".into(),
+            "https://x.example/v1".into(),
+            None,
+            ProviderTier::Internet,
+            5000,
+        );
+        // Default: no reasoning key at all, so providers that never heard
+        // of the field keep receiving unchanged request bodies.
+        let body = backend.request_body(&request());
+        assert!(body.get("reasoning").is_none());
+
+        // Flagged: OpenRouter's normalized switch; non-supporting
+        // providers drop the field server-side.
+        let mut quiet = request();
+        quiet.reasoning_disabled = true;
+        let body = backend.request_body(&quiet);
+        assert_eq!(body["reasoning"]["enabled"], false);
     }
 
     #[test]
