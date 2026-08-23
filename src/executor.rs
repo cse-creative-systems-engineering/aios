@@ -3,6 +3,7 @@ use crate::action::{
     HealthError, PersistenceError, RecoveryOutcome, ResetError, RollbackError, StageError,
     TransitionError, can_transition,
 };
+use crate::broker::AuthorizationProof;
 use crate::capability::{Operation, PrincipalId, ResourceId, RiskLevel};
 use crate::protocol::{ActionId, CorrelationId, HealthState};
 use std::sync::{Arc, Mutex};
@@ -202,15 +203,29 @@ impl StagedExecutor {
         self.store.load(action_id)
     }
 
+    /// Stage a candidate change, health-check, and commit or roll back.
+    ///
+    /// `proof` is an unforgeable witness that the `PolicyBroker` authorized
+    /// this staging (ADR-0010 §1.1). The parameter is required at the type
+    /// level; the runtime cross-check confirms the proof's risk matches the
+    /// persisted `ActionRecord.risk` — mismatch is an internal bug and is
+    /// treated as a checkpoint failure (fail-closed).
     pub fn stage_and_commit(
         &mut self,
         action_id: &ActionId,
         candidate: &str,
+        proof: &AuthorizationProof,
     ) -> Result<StagingResult, StagingError> {
         let record = self
             .store
             .load(action_id)
             .map_err(|_| StagingError::CheckpointFailed)?;
+        if proof.risk() != record.risk_level {
+            // The proof was minted for a different risk than this action's
+            // persisted record. This can only happen through a programming
+            // error inside the broker; refuse to proceed.
+            return Err(StagingError::CheckpointFailed);
+        }
         // For file resources the candidate is arbitrary file content (not a
         // module name) and must not be validated as a module identifier.
         let is_file = record.resource.as_str().starts_with("file:");
@@ -325,12 +340,19 @@ impl StagedExecutor {
     /// reset, health-check, then commit (deleting the checkpoint) or roll
     /// back to the checkpointed state. Guarded by broker-owned approval
     /// before this is reached (human-interaction §1).
-    pub fn reset_and_commit(&mut self, action_id: &ActionId) -> Result<StagingResult, StagingError> {
+    pub fn reset_and_commit(
+        &mut self,
+        action_id: &ActionId,
+        proof: &AuthorizationProof,
+    ) -> Result<StagingResult, StagingError> {
         let record = self
             .store
             .load(action_id)
             .map_err(|_| StagingError::CheckpointFailed)?;
         if record.state != ActionState::Approved {
+            return Err(StagingError::CheckpointFailed);
+        }
+        if proof.risk() != record.risk_level {
             return Err(StagingError::CheckpointFailed);
         }
 
@@ -778,7 +800,13 @@ mod tests {
             .unwrap();
         prestage(&mut executor, &action_id);
         assert_eq!(
-            executor.stage_and_commit(&action_id, "mt7921e").unwrap(),
+            executor
+                .stage_and_commit(
+                    &action_id,
+                    "mt7921e",
+                    &AuthorizationProof::for_test(RiskLevel::Staged),
+                )
+                .unwrap(),
             StagingResult::Committed
         );
         let record = executor.load_record(&action_id).unwrap();
@@ -802,7 +830,13 @@ mod tests {
             .unwrap();
         prestage(&mut executor, &action_id);
         assert_eq!(
-            executor.stage_and_commit(&action_id, "mt7921e").unwrap(),
+            executor
+                .stage_and_commit(
+                    &action_id,
+                    "mt7921e",
+                    &AuthorizationProof::for_test(RiskLevel::Staged),
+                )
+                .unwrap(),
             StagingResult::RolledBack
         );
         let record = executor.load_record(&action_id).unwrap();
@@ -828,7 +862,12 @@ mod tests {
             .unwrap();
         advance_to(&mut executor, &action_id, ActionState::Approved);
         assert_eq!(
-            executor.reset_and_commit(&action_id).unwrap(),
+            executor
+                .reset_and_commit(
+                    &action_id,
+                    &AuthorizationProof::for_test(RiskLevel::Recovery),
+                )
+                .unwrap(),
             StagingResult::Committed
         );
         let record = executor.load_record(&action_id).unwrap();
@@ -851,7 +890,12 @@ mod tests {
             .unwrap();
         advance_to(&mut executor, &action_id, ActionState::Approved);
         assert_eq!(
-            executor.reset_and_commit(&action_id).unwrap(),
+            executor
+                .reset_and_commit(
+                    &action_id,
+                    &AuthorizationProof::for_test(RiskLevel::Recovery),
+                )
+                .unwrap(),
             StagingResult::RolledBack
         );
         let record = executor.load_record(&action_id).unwrap();
@@ -875,7 +919,10 @@ mod tests {
         // Only GuardianChecked — reset must not proceed without approval.
         advance_to(&mut executor, &action_id, ActionState::GuardianChecked);
         assert_eq!(
-            executor.reset_and_commit(&action_id),
+            executor.reset_and_commit(
+                &action_id,
+                &AuthorizationProof::for_test(RiskLevel::Recovery),
+            ),
             Err(StagingError::CheckpointFailed)
         );
         assert_eq!(
@@ -910,7 +957,12 @@ mod tests {
             .unwrap();
         advance_to(&mut executor, &action_id, ActionState::Approved);
         assert_eq!(
-            executor.reset_and_commit(&action_id).unwrap(),
+            executor
+                .reset_and_commit(
+                    &action_id,
+                    &AuthorizationProof::for_test(RiskLevel::Recovery),
+                )
+                .unwrap(),
             StagingResult::RolledBack
         );
         assert_eq!(
@@ -1004,7 +1056,13 @@ mod tests {
             .unwrap();
         prestage(&mut executor, &action_id);
         assert_eq!(
-            executor.stage_and_commit(&action_id, "mt7921e").unwrap(),
+            executor
+                .stage_and_commit(
+                    &action_id,
+                    "mt7921e",
+                    &AuthorizationProof::for_test(RiskLevel::Staged),
+                )
+                .unwrap(),
             StagingResult::RolledBack
         );
         assert_eq!(
@@ -1028,7 +1086,11 @@ mod tests {
             .unwrap();
         prestage(&mut executor, &action_id);
         assert_eq!(
-            executor.stage_and_commit(&action_id, "mt7921e"),
+            executor.stage_and_commit(
+                &action_id,
+                "mt7921e",
+                &AuthorizationProof::for_test(RiskLevel::Staged),
+            ),
             Err(StagingError::RollbackFailed)
         );
         assert_eq!(
@@ -1166,12 +1228,7 @@ mod tests {
         std::fs::read_dir(dir.path())
             .expect("state directory")
             .filter_map(Result::ok)
-            .filter(|entry| {
-                entry
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with("pending-")
-            })
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("pending-"))
             .count()
     }
 }

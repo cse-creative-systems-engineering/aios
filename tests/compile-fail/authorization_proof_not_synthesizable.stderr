@@ -1,0 +1,10 @@
+error[E0624]: associated function `new` is private
+  --> tests/compile-fail/authorization_proof_not_synthesizable.rs:12:34
+   |
+12 |     let _p = AuthorizationProof::new(uuid::Uuid::nil(), RiskLevel::Staged);
+   |                                  ^^^ private associated function
+   |
+  ::: src/broker.rs
+   |
+   |     fn new(request_id: uuid::Uuid, risk: RiskLevel) -> Self {
+   |     ------------------------------------------------------- private associated function defined here

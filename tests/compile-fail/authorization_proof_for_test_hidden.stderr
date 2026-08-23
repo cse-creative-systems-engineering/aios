@@ -1,0 +1,5 @@
+error[E0599]: no associated function or constant named `for_test` found for struct `AuthorizationProof` in the current scope
+ --> tests/compile-fail/authorization_proof_for_test_hidden.rs:9:34
+  |
+9 |     let _p = AuthorizationProof::for_test(RiskLevel::Staged);
+  |                                  ^^^^^^^^ associated function or constant not found in `AuthorizationProof`

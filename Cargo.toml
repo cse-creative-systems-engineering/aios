@@ -17,6 +17,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 [dev-dependencies]
 fantoccini = "0.22.1"
 tempfile = "3"
+trybuild = "1"
 
 [profile.dev]
 debug = 1

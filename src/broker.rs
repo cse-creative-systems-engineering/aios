@@ -12,8 +12,72 @@ use crate::protocol::{
     ToolStatus, UserDecision, UserResponse, now,
 };
 use std::collections::{HashMap, HashSet};
+use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot};
+
+/// A compile-time proof that `PolicyBroker::authorize` allowed a specific
+/// tool request. Non-constructible outside `broker.rs` (its only field is
+/// private and there is no public constructor), so any code that accepts
+/// `&AuthorizationProof` is statically guaranteed to have gone through the
+/// broker's audit path (ADR-0010 §1.1 — type-level authorization).
+///
+/// This is the type-level counterpart of the runtime `PolicyVerdict::Allow`:
+/// a verdict is data (loggable, cacheable, forgeable in tests without
+/// discipline), whereas a `AuthorizationProof` is a value only the broker
+/// can mint.
+///
+/// Escape hatches:
+/// * `AuthorizationProof::for_test` — `#[cfg(test)]` only, used by executor
+///   unit tests that construct actions without a live broker.
+/// * `AuthorizationProof::for_recovery` — `pub(crate)`, used by startup
+///   recovery when replaying a previously-authorized on-disk action whose
+///   original proof was consumed pre-crash (the persisted `ActionRecord` is
+///   the evidence of prior authorization).
+#[derive(Clone, Debug)]
+pub struct AuthorizationProof {
+    request_id: uuid::Uuid,
+    risk: RiskLevel,
+    _private: PhantomData<()>,
+}
+
+impl AuthorizationProof {
+    /// Mint a proof. Private to `broker.rs` — the only production call site
+    /// is `PolicyBroker::authorize`.
+    fn new(request_id: uuid::Uuid, risk: RiskLevel) -> Self {
+        Self {
+            request_id,
+            risk,
+            _private: PhantomData,
+        }
+    }
+
+    /// The request whose authorization this proof witnesses.
+    pub fn request_id(&self) -> uuid::Uuid {
+        self.request_id
+    }
+
+    /// The risk level the broker authorized. Executor may cross-check this
+    /// against the `ActionRecord.risk` as a defense-in-depth runtime
+    /// invariant on top of the compile-time property.
+    pub fn risk(&self) -> RiskLevel {
+        self.risk
+    }
+
+    /// Crate-private escape hatch for startup recovery paths in
+    /// `StagedExecutor`. Recovery replays a persisted on-disk action that
+    /// was authorized before the crash; the on-disk `ActionRecord` (which
+    /// has already passed `PolicyValidated`) is the underlying evidence.
+    pub(crate) fn for_recovery(request_id: uuid::Uuid, risk: RiskLevel) -> Self {
+        Self::new(request_id, risk)
+    }
+
+    /// Test-only escape hatch. Never compiled into a release binary.
+    #[cfg(test)]
+    pub fn for_test(risk: RiskLevel) -> Self {
+        Self::new(uuid::Uuid::nil(), risk)
+    }
+}
 
 pub type SpecialistCall = (ToolRequest, oneshot::Sender<ToolResult>);
 
@@ -282,6 +346,35 @@ impl PolicyBroker {
         verdict
     }
 
+    /// Type-level authorization: run the full audit path (same as
+    /// `evaluate`) and, on `Allow`, mint an `AuthorizationProof` that
+    /// downstream executor calls require as evidence of authorization.
+    ///
+    /// This is the preferred entry point for the broker's request path
+    /// (see `LocalBroker::request_tool`). `evaluate` remains available for
+    /// pure inspection / advisory checks (e.g. UI dry-runs) that must not
+    /// mint proofs.
+    ///
+    /// The audit entry is written before proof minting, so a proof only
+    /// exists in memory if the corresponding `Allow` decision is durably
+    /// recorded (ADR-0009 fail-closed audit).
+    pub fn authorize(&mut self, request: &ToolRequest) -> Result<AuthorizationProof, DenyReason> {
+        let verdict = self.evaluate(request);
+        match verdict {
+            PolicyVerdict::Allow => {
+                // Tool must exist — `evaluate_inner` returns `UnknownTool`
+                // otherwise, so we cannot reach here with a missing tool.
+                let risk = self
+                    .tool_registry
+                    .get(&request.tool_id)
+                    .map(|t| t.risk_level)
+                    .expect("authorize: registry returned Allow for unknown tool");
+                Ok(AuthorizationProof::new(request.request_id, risk))
+            }
+            PolicyVerdict::Deny(reason) => Err(reason),
+        }
+    }
+
     fn evaluate_inner(&mut self, request: &ToolRequest) -> PolicyVerdict {
         let now = (self.clock)();
 
@@ -335,16 +428,24 @@ impl PolicyBroker {
         // Resource state check — for file workspace/artifacts prefix
         // capabilities the exact subpath need not be pre-registered; the
         // prefix state covers the subtree (ADR-0008).
-        let state = self.resource_states.get(&request.resource).copied().or_else(|| {
-            let s = request.resource.as_str();
-            if s.starts_with("file:/workspace") {
-                self.resource_states.get(&ResourceId("file:/workspace".into())).copied()
-            } else if s.starts_with("file:/artifacts") {
-                self.resource_states.get(&ResourceId("file:/artifacts".into())).copied()
-            } else {
-                None
-            }
-        });
+        let state = self
+            .resource_states
+            .get(&request.resource)
+            .copied()
+            .or_else(|| {
+                let s = request.resource.as_str();
+                if s.starts_with("file:/workspace") {
+                    self.resource_states
+                        .get(&ResourceId("file:/workspace".into()))
+                        .copied()
+                } else if s.starts_with("file:/artifacts") {
+                    self.resource_states
+                        .get(&ResourceId("file:/artifacts".into()))
+                        .copied()
+                } else {
+                    None
+                }
+            });
         match state {
             None => return PolicyVerdict::Deny(DenyReason::AmbiguousCapability),
             Some(ResourceState::Removed) => {
@@ -382,15 +483,12 @@ impl PolicyBroker {
         }
         // Token must also be among the tool's required capabilities (prefix-aware).
         let token_covers_required = tool.required_capabilities.iter().any(|req| {
-            crate::capability::capability_covers(
-                &token.capability,
-                &req.resource,
-                req.operation,
-            ) || crate::capability::capability_covers(
-                req,
-                &token.capability.resource,
-                token.capability.operation,
-            )
+            crate::capability::capability_covers(&token.capability, &req.resource, req.operation)
+                || crate::capability::capability_covers(
+                    req,
+                    &token.capability.resource,
+                    token.capability.operation,
+                )
         });
         // For prefix tools the required capability is the prefix itself; token
         // covering the request is sufficient. Fall back to exact check for
@@ -408,7 +506,11 @@ impl PolicyBroker {
                 .resource
                 .as_str()
                 .starts_with("file:/workspace")
-                || token.capability.resource.as_str().starts_with("file:/artifacts");
+                || token
+                    .capability
+                    .resource
+                    .as_str()
+                    .starts_with("file:/artifacts");
             if !is_file_prefix {
                 return PolicyVerdict::Deny(DenyReason::MissingCapability);
             }
@@ -440,12 +542,12 @@ impl PolicyBroker {
                         });
                     }
                     match g.review(request) {
-                    crate::protocol::GuardianVerdict::Allow => {}
-                    crate::protocol::GuardianVerdict::Block(reason) => {
-                        return PolicyVerdict::Deny(DenyReason::GuardianBlocked(reason));
+                        crate::protocol::GuardianVerdict::Allow => {}
+                        crate::protocol::GuardianVerdict::Block(reason) => {
+                            return PolicyVerdict::Deny(DenyReason::GuardianBlocked(reason));
+                        }
                     }
-                    }
-                },
+                }
             }
         }
 
@@ -650,7 +752,11 @@ impl LocalBroker {
             .map_err(|_| BrokerError::ChannelClosed("specialist reply".into()))
     }
 
-    fn run_staged(&self, request: ToolRequest) -> Result<ToolResult, BrokerError> {
+    fn run_staged(
+        &self,
+        request: ToolRequest,
+        proof: AuthorizationProof,
+    ) -> Result<ToolResult, BrokerError> {
         let executor = self
             .executor
             .lock()
@@ -661,29 +767,10 @@ impl LocalBroker {
             .lock()
             .map_err(|_| BrokerError::Internal("executor poisoned".into()))?;
 
-        let risk = {
-            let core = self
-                .core
-                .lock()
-                .map_err(|_| BrokerError::Internal("broker lock poisoned".into()))?;
-            match core.tool_registry.get(&request.tool_id) {
-                Some(t) => t.risk_level,
-                None => {
-                    return Ok(ToolResult {
-                        envelope: result_envelope(&request),
-                        request_id: request.request_id,
-                        status: ToolStatus::Failed,
-                        data: None,
-                        error: Some(ToolError {
-                            code: ToolErrorCode::OperationNotSupported,
-                            message: format!("tool {} unknown", request.tool_id),
-                            recoverable: false,
-                        }),
-                        health_impact: None,
-                    });
-                }
-            }
-        };
+        // Prefer the risk carried by the authorization proof — it is
+        // guaranteed to match the tool registry at authorize()-time and
+        // cannot be recomputed inconsistently here.
+        let risk = proof.risk();
 
         let steps: [(ActionState, &str); 5] = [
             (ActionState::ImpactAnalyzed, "impact analyzed"),
@@ -766,9 +853,9 @@ impl LocalBroker {
         };
 
         let result = if request.operation == Operation::Reset {
-            ex.reset_and_commit(&action_id)
+            ex.reset_and_commit(&action_id, &proof)
         } else {
-            ex.stage_and_commit(&action_id, &candidate)
+            ex.stage_and_commit(&action_id, &candidate, &proof)
         };
 
         match result {
@@ -838,45 +925,28 @@ impl BrokerClient for LocalBroker {
             .lock()
             .map_err(|_| BrokerError::Internal("resource lock poisoned".into()))?;
 
-        let risk = {
-            let core = self
-                .core
-                .lock()
-                .map_err(|_| BrokerError::Internal("broker lock poisoned".into()))?;
-            match core.tool_registry.get(&request.tool_id) {
-                Some(t) => t.risk_level,
-                None => {
-                    return Ok(ToolResult {
-                        envelope: result_envelope(&request),
-                        request_id: request.request_id,
-                        status: ToolStatus::Failed,
-                        data: None,
-                        error: Some(ToolError {
-                            code: ToolErrorCode::OperationNotSupported,
-                            message: format!("tool {} not registered", request.tool_id),
-                            recoverable: false,
-                        }),
-                        health_impact: None,
-                    });
-                }
-            }
-        };
-
-        let verdict = {
+        // The old ceremonial "tool exists?" pre-check is now redundant —
+        // `authorize` returns `Err(UnknownTool)` if the tool is not
+        // registered, and we surface that below with the same failure code.
+        let auth = {
             let mut core = self
                 .core
                 .lock()
                 .map_err(|_| BrokerError::Internal("broker lock poisoned".into()))?;
-            core.evaluate(&request)
+            core.authorize(&request)
         };
 
-        match verdict {
-            PolicyVerdict::Deny(reason) => Ok(denied_result(&request, reason)),
-            PolicyVerdict::Allow => {
-                if risk.as_u8() <= 1 {
+        match auth {
+            Err(reason) => Ok(denied_result(&request, reason)),
+            Ok(proof) => {
+                if proof.risk().as_u8() <= 1 {
+                    // Routine/read-only tools bypass the staged executor;
+                    // the audit entry written by `authorize` is the record.
+                    // The proof is dropped here — no executor call takes it.
+                    let _ = proof;
                     self.forward_to_specialist(request)
                 } else {
-                    self.run_staged(request)
+                    self.run_staged(request, proof)
                 }
             }
         }
@@ -1163,6 +1233,92 @@ mod tests {
             broker.evaluate(&req),
             PolicyVerdict::Deny(DenyReason::GuardianBlocked(_))
         ));
+    }
+
+    // ADR-0010 §1.1 — the type-level authorization path must refuse to
+    // mint a proof when the guardian blocks. Absence of a proof is the
+    // compile-time signal that downstream executor calls must not proceed.
+    #[test]
+    fn authorize_denies_when_guardian_blocks() {
+        let (mut broker, principal, token) = basic_broker();
+        broker.register_principal(
+            principal.clone(),
+            vec![Capability {
+                resource: ResourceId("device:wifi0".into()),
+                operation: Operation::KernelModule,
+            }],
+            Clearance(RiskLevel::Critical),
+        );
+        broker.register_tool(ToolDefinition {
+            tool_id: "wifi.load_module".into(),
+            specialist_package: "wifi.specialist".into(),
+            risk_level: RiskLevel::Critical,
+            required_capabilities: vec![Capability {
+                resource: ResourceId("device:wifi0".into()),
+                operation: Operation::KernelModule,
+            }],
+            description: "load a kernel module".into(),
+        });
+        let mut guardian = Guardian::new();
+        guardian.add_rule(crate::guardian::InvariantRule {
+            id: "TEST-BLOCK".into(),
+            description: "block".into(),
+            severity: crate::guardian::InvariantSeverity::Safety,
+            check: crate::guardian::InvariantCheck::BlockOperation(Operation::KernelModule),
+        });
+        broker.set_guardian(guardian);
+        let module_token = CapabilityToken {
+            capability: Capability {
+                resource: ResourceId("device:wifi0".into()),
+                operation: Operation::KernelModule,
+            },
+            ..token
+        };
+        let req = request_for(
+            &principal,
+            &module_token,
+            Operation::KernelModule,
+            "wifi.load_module",
+            ToolParameters::KernelModule {
+                action: "load".into(),
+                module: "iwlwifi-next".into(),
+            },
+            1,
+        );
+        let result = broker.authorize(&req);
+        assert!(
+            matches!(result, Err(DenyReason::GuardianBlocked(_))),
+            "expected GuardianBlocked, got {result:?}"
+        );
+        // Audit entry must be written even on Deny (fail-closed audit).
+        assert_eq!(broker.audit_entries().len(), 1);
+        assert!(matches!(
+            broker.audit_entries()[0].decision,
+            PolicyVerdict::Deny(DenyReason::GuardianBlocked(_))
+        ));
+    }
+
+    // ADR-0010 §1.1 — on Allow, `authorize` mints a proof whose risk
+    // matches the tool registry.
+    #[test]
+    fn authorize_mints_proof_on_allow() {
+        let (mut broker, principal, token) = basic_broker();
+        broker.register_principal(
+            principal.clone(),
+            vec![token.capability.clone()],
+            Clearance(RiskLevel::ReadOnly),
+        );
+        let req = request_for(
+            &principal,
+            &token,
+            Operation::Observe,
+            "wifi.observe_device",
+            ToolParameters::Observe { fields: vec![] },
+            1,
+        );
+        let proof = broker.authorize(&req).expect("authorize should allow");
+        assert_eq!(proof.risk(), RiskLevel::ReadOnly);
+        assert_eq!(proof.request_id(), req.request_id);
     }
 
     #[test]
@@ -1776,10 +1932,7 @@ mod tests {
             .request_tool(request)
             .expect("broker response");
         assert_eq!(result.status, ToolStatus::Denied);
-        let msg = result
-            .error
-            .expect("denial carries a reason")
-            .message;
+        let msg = result.error.expect("denial carries a reason").message;
         assert!(msg.contains("approval"), "denied: {msg}");
     }
 

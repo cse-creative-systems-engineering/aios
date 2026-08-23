@@ -1,0 +1,11 @@
+error[E0451]: fields `request_id`, `risk` and `_private` of struct `AuthorizationProof` are private
+  --> tests/compile-fail/authorization_proof_struct_literal.rs:9:9
+   |
+ 8 |     let _p = AuthorizationProof {
+   |              ------------------ in this type
+ 9 |         request_id: uuid::Uuid::nil(),
+   |         ^^^^^^^^^^ private field
+10 |         risk: RiskLevel::Staged,
+   |         ^^^^ private field
+11 |         _private: std::marker::PhantomData,
+   |         ^^^^^^^^ private field
