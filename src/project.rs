@@ -33,10 +33,36 @@ pub fn find_template(slug: &str) -> Option<&'static ProjectTemplate> {
 }
 
 pub fn scaffold_files(slug: &str, project: &str, date: &str) -> Option<Vec<(String, String)>> {
+    scaffold_files_with_port(slug, project, date, None)
+}
+
+pub fn scaffold_files_with_port(slug: &str, project: &str, date: &str, port: Option<u16>) -> Option<Vec<(String, String)>> {
     let tmpl = find_template(slug)?;
+    let port = port.unwrap_or(8000);
     Some(tmpl.files.iter().map(|(name, content)| {
-        (format!("file:/workspace/projects/{project}/{date}/{name}"), content.to_string())
+        let mut c = content.to_string();
+        if *name == "server.py" || *name =="README.md" {
+            c = c.replace("8000", &port.to_string());
+        }
+        (format!("file:/workspace/projects/{project}/{date}/{name}"), c)
     }).collect())
+}
+
+pub fn extract_port(text: &str) -> Option<u16> {
+    let lower = text.to_ascii_lowercase();
+    // look for "port 3004" or ":3004"
+    for token in lower.split_whitespace() {
+        let t = token.trim_matches(|c: char| !c.is_ascii_digit());
+        if let Ok(n) = t.parse::<u16>() { if n >= 1024 && n <= 65535 { if lower.contains(&format!("port {n}")) || lower.contains(&format!(":{n}")) || lower.contains(&format!("port={n}")) { return Some(n); } } }
+    }
+    // fallback regex-like: scan for 4-digit numbers near "port"
+    if let Some(idx) = lower.find("port") {
+        let snippet = &lower[idx..idx+20.min(lower.len()-idx)];
+        for word in snippet.split(|c: char| !c.is_ascii_digit()) {
+            if let Ok(n) = word.parse::<u16>() { if n >= 1024 { return Some(n); } }
+        }
+    }
+    None
 }
 
 #[cfg(test)]

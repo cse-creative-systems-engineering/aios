@@ -517,29 +517,10 @@ pub(crate) fn required_specialist_calls(messages: &[ModelMessage]) -> Vec<ToolCa
     if prompt.contains("network") || prompt.contains("wifi") || prompt.contains("internet") {
         add(&mut calls, "network.observe_network", "all");
     }
-    // Workspace co-partner (Stage 1/3): heuristic file/web triggers for natural
-    // language so the full UX works without forced JSON. The model can still
-    // emit precise tool_calls; this just seeds evidence for intent that mentions
-    // files or web URLs.
-    if prompt.contains("file:") || prompt.contains("workspace") || prompt.contains("create file") || prompt.contains("write file") || prompt.contains(".py") || prompt.contains(".rs") || prompt.contains(".html") || prompt.contains(".txt") || prompt.contains(".md") {
-        // Try to extract a file path from the original prompt (preserve case).
-        // Look for file:/workspace/... or bare <name>.<ext>
-        let path = extract_file_path(&original).unwrap_or_else(|| "file:/workspace/hello.py".to_string());
-        // Content after "with content" or after the path — keep simple: if prompt
-        // mentions "hello" use a hello world, otherwise empty (health will still pass).
-        let content = extract_file_content(&original).unwrap_or_else(|| "hello from aios".to_string());
-        add(&mut calls, "files.write_file", &format!("{path} {content}"));
-    }
-    if prompt.contains("scaffold project") || prompt.contains("scaffold") {
-        // Project scaffold: `scaffold project demo as python html server` -> python-html template
-        let (slug, project) = if prompt.contains("rust") { ("rust-cli", extract_project_name(&original).unwrap_or_else(|| "demo".into())) } else { ("python-html", extract_project_name(&original).unwrap_or_else(|| "demo".into())) };
-        let date = crate::session::SessionStore::today();
-        if let Some(files) = crate::project::scaffold_files(slug, &project, &date) {
-            for (path, content) in files {
-                add(&mut calls, "files.write_file", &format!("{path} {content}"));
-            }
-        }
-    }
+    // Workspace co-partner: no auto file writes — files/web are
+    // orchestrated by Aios via tool_calls (advertised in model_tool_instructions).
+    // required_specialist_calls only seeds read-only diagnostics; creation is
+    // gated on the model emitting files.* / web.* calls.
     if prompt.contains("http://") || prompt.contains("https://") || prompt.contains("fetch") || prompt.contains("docs.rs") || prompt.contains("tokio") {
         if let Some(url) = extract_url(&original) {
             add(&mut calls, "web.fetch_url", &url);
