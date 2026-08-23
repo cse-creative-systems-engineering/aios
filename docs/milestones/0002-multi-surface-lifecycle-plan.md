@@ -1,7 +1,13 @@
 # Multi-Surface Lifecycle Plan
 
-**Status:** Planned work
+**Status:** ✅ Shipped on `main` at `003f70a` (multi-surface) and `4ff3d63`
+(adaptive budgets). Create, coexist, per-card drag, per-card close, and
+unioned click-through are live. The natural-language surface-edit path
+(revise:<id>) remains a v0.2 follow-up and is scoped in the grounding
+snapshot 2026-08-22_00-15-00 “Open Work” section — tracking there, not
+blocking this milestone.
 **Created:** 2026-08-17
+**Shipped:** 2026-08-22 (multi-surface commit `003f70a`)
 **Starting checkpoint:** `8afcded` on `main`
 
 This is the next implementation plan after the working desktop surface

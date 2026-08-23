@@ -30,6 +30,8 @@ Updated whenever a document's status changes.
 | `decisions/0006-model-gateway.md` | ✅ Accepted | 100% |
 | `decisions/0007-groundless-generation-model.md` | ✅ Accepted | 100% |
 | `decisions/0008-workspace-co-partner-branch-and-scope.md` | ✅ Accepted | 100% |
+| `decisions/0009-session-day-buckets.md` | ✅ Accepted | 100% |
+| `decisions/0010-execution.md` | ✅ Accepted | 100% |
 | `security-model.md` | Draft — frozen for M1 | Passed adversarial review (round 2) |
 | `capability-model.md` | Draft — frozen for M1 | Fixes applied, dead types removed; risk-4 gate aligned with state machine; broker resource-state plumbing noted |
 | `message-protocol.md` | Draft — frozen for M1 | Fixes applied; duplicate `Deny` removed, `Escalate`/`Modified` variants dropped, audit-loop termination defined |
@@ -38,10 +40,12 @@ Updated whenever a document's status changes.
 | `agent-packages.md` | Draft — frozen for M1 | Mermaid/enum/manifest aligned |
 | `model-routing.md` | Draft — updated for M3 | Gateway architecture added (ADR-0006); §6 renumbered |
 | `human-interaction.md` | Draft — frozen for M1 | New — consolidates approval/escalation/facade trust; `Modified` decision removed (see message-protocol) |
-| `implementation-roadmap.md` | Draft — updated for M8 | M0–M7 complete; M8 desktop foundation working, lifecycle planned |
+| `implementation-roadmap.md` | Draft — updated for M11 | M0–M9 complete; M8 shipped incl. 0002 multi-surface + 0003 sidebar admin; M10 session day-buckets and M11 execution primitive in progress on `feature/session-day-buckets` |
+| `milestones/0001-generative-surface-desktop-foundation.md` | ✅ Shipped | Desktop foundation live on `main` |
+| `milestones/0002-multi-surface-lifecycle-plan.md` | ✅ Shipped at `003f70a` | Multi-surface canvas, per-card drag/close, unioned InputRect. Natural-language edit path is v0.2. |
+| `milestones/0003-sidebar-administration-panel.md` | ✅ Shipped | Provider registry, per-role assignment, backend-status rail, settings overlay, ultra-premium visual system. ADR-0010 toggles extend in-place. |
 | `milestones/0004-workspace-co-partner.md` | ✅ Complete — merged to `main` at `32ffc0f` | Staged file/web + artifact, `cargo test --lib` 410 |
-| `milestones/0005-session-day-buckets.md` | 📝 Drafted — docs only | Planned; branch `feature/session-day-buckets` |
-| `decisions/0009-session-day-buckets.md` | 📝 Drafted — docs only | Branch rule for day-buckets, `SessionStore` + `Project` |
+| `milestones/0005-session-day-buckets.md` | 🔶 In progress on `feature/session-day-buckets` | Toggle UI live; SessionStore persistence + project scaffolding pending. |
 | `testing-strategy.md` | Draft — frozen for M1 | Test code reconciled with protocol |
 | `observability.md` | Draft — frozen for M1 | May need refinement during implementation; retention advisory note and recursive-log-avoidance added |
 | `modules/` | 📝 Drafted | 19 of 19 module specs written (wifi, storage, network, drivers, graphics, memory, power-thermal, security, processes, packages, boot-recovery, block-disk, filesystem, files-data, gpu, display, session, bluetooth, wired-lan) |
@@ -60,22 +64,28 @@ Design docs:  17 of 20 frozen or accepted  (85%)
 Core contracts: 8 of 8 drafted              (100%)
   (SEC, CAP, MSG, ASM, GRAPH, PKG, MODEL, HI)
 Human interaction: 1 of 1 drafted           (100%)
-ADRs: 8 accepted                             (8 of expected ~15-20)
+ADRs: 10 accepted                            (10 of expected ~15-20)
 Module specs: 19 of 19 drafted + 1 stub     (web-fetch stub)
 ```
 
-Implementation status is tracked in `implementation-roadmap.md` and the M8
+Implementation status is tracked in `implementation-roadmap.md` and the
 milestone documents. Current:
-M0–M7 are **complete**. All ten M7 specialists (Storage, Network, Drivers,
-Graphics, Memory, Power/thermal, Security/identity, Processes, Packages,
-Boot/recovery) are wired through the broker with read-only observe/diagnose
-tools, coordinator boot registration, and broker round-trip tests. The current
-library baseline is 438 passed, 1 ignored. The M8 desktop foundation is
-working end to end: live evidence, groundless surface generation, value
-fidelity, transparent rendering, movement, click-through, and sidebar docking.
-The next M8 work is the multi-surface lifecycle, documented in
-`milestones/0002-multi-surface-lifecycle-plan.md`, followed by the premium
-sidebar workstream in `ui.md`.
+
+M0–M9 are **complete on `main`**. All ten M7 specialists (Storage, Network,
+Drivers, Graphics, Memory, Power/thermal, Security/identity, Processes,
+Packages, Boot/recovery) are wired through the broker. M8 shipped its
+foundation (`0001`), multi-surface lifecycle (`0002` at `003f70a`), and the
+premium sidebar administration panel (`0003`, incl. provider registry,
+per-role model assignment, backend-status rail, settings overlay). M9
+(`0004-workspace-co-partner`) merged to `main` at `32ffc0f` with staged
+`file:/workspace` + `file:/artifacts` + `web:fetch`.
+
+**In progress on `feature/session-day-buckets`:** M10 (session day-buckets,
+SessionStore persistence, `project.scaffold`, always-on awareness) and M11
+(execution primitive `exec.run` per ADR-0010, Guardian denylist, approval
+modes, verifier toggle, sudoers.d installer). The library baseline on this
+branch is 413 passed, 1 ignored (411 at the M9 merge `32ffc0f`; +3 added on
+this branch — accounted for in `docs/test-ledger.md`).
 
 ## Dependency Graph
 
@@ -204,3 +214,7 @@ Row 8 (done):     modules/wifi.md, modules/storage.md, ... (all 19 module specs
 | 0004 | Two-dimensional authorization (capability × tool risk level) | Accepted | 2026-08-09 |
 | 0005 | Freeze triage — decided, undeveloped | Accepted | 2026-08-09 |
 | 0006 | Universal OpenAI-compatible gateway backend | Accepted | 2026-08-12 |
+| 0007 | Groundless generative-surface model controlled by Aios | Accepted | 2026-08-16 |
+| 0008 | Workspace co-partner branch and scope | Accepted | 2026-08-22 |
+| 0009 | Session day-buckets and project persistence | Accepted | 2026-08-22 |
+| 0010 | Typed execution primitive and approval modes | Accepted | 2026-08-22 |
