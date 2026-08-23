@@ -374,6 +374,12 @@ pub(crate) fn tool_parameters(operation: Operation, args: &str) -> crate::protoc
             symptom: args.into(),
         },
         Operation::Query => crate::protocol::ToolParameters::Query { query: args.into() },
+        Operation::Execute => crate::protocol::ToolParameters::Execute { command: args.into() },
+        Operation::Serve => {
+            let port = crate::project::extract_port(args).unwrap_or(3000);
+            let msg = if args.to_ascii_lowercase().contains("hello") { "hello world".to_string() } else { args.to_string() };
+            crate::protocol::ToolParameters::Serve { port, message: msg }
+        },
         Operation::Stage => crate::protocol::ToolParameters::Stage {
             change: serde_json::json!({ "module": args.trim() }),
         },

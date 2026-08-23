@@ -620,6 +620,17 @@ function renderComposer(view: SidebarView): string {
         <svg viewBox="0 0 18 18" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9l10-5-3 10-2.5-4.5z"/><path d="M4 9l4.5.5"/></svg>
       </button>
     </div>
+    <div class="prompt-controls">
+      <button type="button" class="verifier-toggle" id="verifier-toggle" aria-label="Toggle verifier" data-verifier="on">
+        <span class="verifier-dot"></span>
+        <span class="verifier-label">Verifier · On</span>
+      </button>
+      <div class="approval-segment" id="approval-segment" role="group" aria-label="Approval mode">
+        <button type="button" class="approval-btn" data-approval="default" aria-pressed="false">Default</button>
+        <button type="button" class="approval-btn is-active" data-approval="auto" aria-pressed="true">Auto</button>
+        <button type="button" class="approval-btn" data-approval="yolo" aria-pressed="false">YOLO</button>
+      </div>
+    </div>
     <div class="prompt-hint">${hint}</div>
   </form>`;
 }

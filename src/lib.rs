@@ -35,6 +35,7 @@ pub mod tools;
 pub mod verifier;
 pub mod web;
 pub mod session;
+pub mod exec;
 pub mod project;
 pub mod wifi;
 pub mod wifi_driver;

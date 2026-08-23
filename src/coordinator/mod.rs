@@ -1036,6 +1036,7 @@ impl Coordinator {
         {
             use crate::files::{FilesSpecialist, FileDriver};
             use crate::web::{WebSpecialist, MockFetcher, LiveFetcher};
+            use crate::exec::ExecSpecialist;
             // Files
             {
                 let specialist = {
@@ -1093,6 +1094,28 @@ impl Coordinator {
                 for cap in caps {
                     coordinator.broker.grant_capability(&coordinator.session_principal, cap);
                 }
+                coordinator.session_tokens = coordinator.broker.client(coordinator.session_principal.clone()).capability_tokens(&coordinator.session_principal);
+            }
+            // Exec — any bash command via proper planner/verifier route
+            {
+                let specialist = {
+                    let mut graph = coordinator.graph.write().expect("graph lock");
+                    crate::exec::ExecSpecialist::instantiate(&mut graph).expect("exec specialist")
+                };
+                let definitions = specialist.tool_definitions();
+                let principal = crate::capability::PrincipalId::agent(crate::exec::PACKAGE_ID, specialist.specialist.to_string());
+                let caps: Vec<_> = definitions.iter().flat_map(|d| d.required_capabilities.clone()).collect();
+                for def in definitions {
+                    let tool_id = def.tool_id.clone();
+                    let sp = ExecSpecialist { specialist: specialist.specialist.clone() };
+                    let arc_sp = std::sync::Arc::new(sp);
+                    coordinator.broker.register_tool(def);
+                    coordinator.broker.spawn_specialist(&tool_id, std::sync::Arc::new(move |req| arc_sp.handle_exec(&req)));
+                }
+                coordinator.broker.register_principal(principal.clone(), caps.clone(), crate::capability::Clearance::max());
+                coordinator.broker.set_resource_state(crate::capability::ResourceId(crate::exec::EXEC_RESOURCE.into()), crate::capability::ResourceState::Available);
+                coordinator.broker.set_resource_owner(crate::capability::ResourceId(crate::exec::EXEC_RESOURCE.into()), principal.clone());
+                for cap in caps { coordinator.broker.grant_capability(&coordinator.session_principal, cap); }
                 coordinator.session_tokens = coordinator.broker.client(coordinator.session_principal.clone()).capability_tokens(&coordinator.session_principal);
             }
         }

@@ -157,6 +157,8 @@ pub enum ToolParameters {
     Rollback { checkpoint: CheckpointRef },
     Fetch { url: String },
     Search { query: String },
+    Serve { port: u16, message: String },
+    Execute { command: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

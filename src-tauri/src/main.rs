@@ -33,6 +33,8 @@ struct AppState {
     sidebar_status: Arc<Mutex<Option<SidebarStatusResponse>>>,
     graph_snapshot: Arc<Mutex<Option<SystemGraphSnapshot>>>,
     app: tauri::AppHandle,
+    verifier_enabled: Arc<Mutex<bool>>,
+    approval_mode: Arc<Mutex<String>>,
 }
 
 struct TauriProgressReporter {
@@ -606,6 +608,26 @@ async fn role_route(
 }
 
 #[tauri::command]
+fn get_verifier_enabled(state: tauri::State<'_, AppState>) -> bool {
+    *state.verifier_enabled.lock().unwrap()
+}
+#[tauri::command]
+fn set_verifier_enabled(enabled: bool, state: tauri::State<'_, AppState>) -> bool {
+    *state.verifier_enabled.lock().unwrap() = enabled;
+    enabled
+}
+#[tauri::command]
+fn get_approval_mode(state: tauri::State<'_, AppState>) -> String {
+    state.approval_mode.lock().unwrap().clone()
+}
+#[tauri::command]
+fn set_approval_mode(mode: String, state: tauri::State<'_, AppState>) -> String {
+    let m = match mode.as_str() { "default" | "auto" | "yolo" => mode, _ => "auto".to_string() };
+    *state.approval_mode.lock().unwrap() = m.clone();
+    m
+}
+
+#[tauri::command]
 async fn submit_prompt(
     prompt: String,
     state: tauri::State<'_, AppState>,
@@ -903,9 +925,12 @@ fn main() {    #[cfg(target_os = "linux")]
                 sidebar_status,
                 graph_snapshot,
                 app: app.handle().clone(),
+                verifier_enabled: Arc::new(Mutex::new(true)),
+                approval_mode: Arc::new(Mutex::new("auto".to_string())),
             });
             Ok(())
         })
+
         .invoke_handler(tauri::generate_handler![
             add_provider,
             backend_status,
@@ -923,7 +948,11 @@ fn main() {    #[cfg(target_os = "linux")]
             set_input_region,
             close_surface,
             submit_prompt,
-            system_graph
+            system_graph,
+            get_verifier_enabled,
+            set_verifier_enabled,
+            get_approval_mode,
+            set_approval_mode
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri app");
