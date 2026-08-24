@@ -11,6 +11,20 @@ and focused documents for the task instead of relying on the snapshot alone.
 Check `git status --short` before editing and preserve unrelated worktree
 changes.
 
+## Grounding snapshot discipline (mandatory)
+
+Every working session that changes code under `src/`, `src-tauri/`, `frontend/src/`, or `tests/`
+MUST end by running:
+
+    scripts/new-grounding.sh "one-line summary of what changed"
+
+then filling in the generated snapshot and committing it together with the
+code. CI fails (`scripts/check-docs.sh`) if any commit touches code without a
+newer snapshot existing. Do not treat this as optional cleanup — the snapshot
+is how the next session (human or agent) recovers context.
+
+Docs-only, graphify-only, and formatting-only commits are exempt.
+
 ## graphify
 
 This repo carries a knowledge graph built with `graphify` (a code-knowledge-graph tool) in `graphify-out/`. It has god nodes, community structure, and cross-file relationships, and is kept fresh automatically. Prefer it over grepping raw files.

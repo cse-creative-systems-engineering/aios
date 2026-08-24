@@ -35,3 +35,14 @@ jobs:
 
       - name: Test
         run: cargo test --all-features
+
+  docs:
+    name: Grounding snapshot freshness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # check-docs.sh needs full history for commit dates
+
+      - name: Check grounding snapshot is newer than last code change
+        run: bash scripts/check-docs.sh
