@@ -6,6 +6,7 @@ Start here before making changes or answering questions about the repository.
 
 Read the latest dated grounding snapshot:
 
+- [`project_grounding_2026-08-24_20-05-00.md`](docs/grounding/project_grounding_2026-08-24_20-05-00.md) — workspace co-partner stage 1+4 landed (files, web, artifact scaffold), docs freshness automation
 - [`project_grounding_2026-08-22_00-15-00.md`](docs/grounding/project_grounding_2026-08-22_00-15-00.md) — multi-surface canvas shipped, provider-health fix for empty answers, snap env sanitizers
 - [`project_grounding_2026-08-21_20-35-47.md`](docs/grounding/project_grounding_2026-08-21_20-35-47.md) — groundless surfaces validated live on a real desktop, provider teardown fix, fidelity gate unit tolerance
 - [`project_grounding_2026-08-21_17-21-55.md`](docs/grounding/project_grounding_2026-08-21_17-21-55.md) — coordinator modularization, surface harness, Tauri desktop shell, and the graphify knowledge graph
