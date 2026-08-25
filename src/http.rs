@@ -86,37 +86,111 @@ impl HttpBackend {
                     "target"
                 ),
                 function_tool("wifi_diagnose_fault", "Diagnose a Wi-Fi fault", "target"),
-                function_tool("storage_observe_storage", "Observe storage and filesystem state", "target"),
-                function_tool("storage_diagnose_fault", "Diagnose storage faults", "target"),
+                function_tool(
+                    "storage_observe_storage",
+                    "Observe storage and filesystem state",
+                    "target"
+                ),
+                function_tool(
+                    "storage_diagnose_fault",
+                    "Diagnose storage faults",
+                    "target"
+                ),
                 function_tool("network_observe_network", "Observe network state", "target"),
-                function_tool("network_diagnose_fault", "Diagnose network faults", "target"),
-                function_tool("drivers_observe_device", "Observe device and driver state", "target"),
-                function_tool("drivers_diagnose_fault", "Diagnose device and driver faults", "target"),
-                function_tool("graphics_observe_graphics", "Observe graphics state", "target"),
-                function_tool("graphics_diagnose_fault", "Diagnose graphics faults", "target"),
-                function_tool("memory_observe_memory", "Observe memory and swap state", "target"),
+                function_tool(
+                    "network_diagnose_fault",
+                    "Diagnose network faults",
+                    "target"
+                ),
+                function_tool(
+                    "drivers_observe_device",
+                    "Observe device and driver state",
+                    "target"
+                ),
+                function_tool(
+                    "drivers_diagnose_fault",
+                    "Diagnose device and driver faults",
+                    "target"
+                ),
+                function_tool(
+                    "graphics_observe_graphics",
+                    "Observe graphics state",
+                    "target"
+                ),
+                function_tool(
+                    "graphics_diagnose_fault",
+                    "Diagnose graphics faults",
+                    "target"
+                ),
+                function_tool(
+                    "memory_observe_memory",
+                    "Observe memory and swap state",
+                    "target"
+                ),
                 function_tool("memory_diagnose_fault", "Diagnose memory faults", "target"),
-                function_tool("processes_observe_process", "Observe system and per-process CPU state", "target"),
-                function_tool("processes_diagnose_fault", "Diagnose process faults", "target"),
-                function_tool("power_observe_thermal", "Observe thermal and power state", "target"),
-                function_tool("power_diagnose_fault", "Diagnose thermal and power faults", "target"),
-                function_tool("security_observe_security", "Observe security state", "target"),
-                function_tool("security_diagnose_fault", "Diagnose security faults", "target"),
-                function_tool("packages_observe_package", "Observe package state", "target"),
-                function_tool("packages_diagnose_fault", "Diagnose package faults", "target"),
-                function_tool("boot_observe_boot", "Observe boot and recovery state", "target"),
-                function_tool("boot_diagnose_fault", "Diagnose boot and recovery faults", "target"),
+                function_tool(
+                    "processes_observe_process",
+                    "Observe system and per-process CPU state",
+                    "target"
+                ),
+                function_tool(
+                    "processes_diagnose_fault",
+                    "Diagnose process faults",
+                    "target"
+                ),
+                function_tool(
+                    "power_observe_thermal",
+                    "Observe thermal and power state",
+                    "target"
+                ),
+                function_tool(
+                    "power_diagnose_fault",
+                    "Diagnose thermal and power faults",
+                    "target"
+                ),
+                function_tool(
+                    "security_observe_security",
+                    "Observe security state",
+                    "target"
+                ),
+                function_tool(
+                    "security_diagnose_fault",
+                    "Diagnose security faults",
+                    "target"
+                ),
+                function_tool(
+                    "packages_observe_package",
+                    "Observe package state",
+                    "target"
+                ),
+                function_tool(
+                    "packages_diagnose_fault",
+                    "Diagnose package faults",
+                    "target"
+                ),
+                function_tool(
+                    "boot_observe_boot",
+                    "Observe boot and recovery state",
+                    "target"
+                ),
+                function_tool(
+                    "boot_diagnose_fault",
+                    "Diagnose boot and recovery faults",
+                    "target"
+                ),
             ]);
             body["tool_choice"] = json!("auto");
         }
         if let Some(seed) = request.seed {
             body["seed"] = json!(seed);
         }
-        // OpenRouter's normalized reasoning switch. Providers that cannot
-        // disable thinking drop the field, so the request stays valid
-        // everywhere; where it is honored, budget goes to the answer.
+        // OpenRouter's normalized reasoning switch. Sending `enabled: false`
+        // hard-fails on providers that mandate reasoning (e.g. stealth/ox-alpha
+        // returns HTTP 400 "Reasoning is mandatory"). The safe universal
+        // signal is `effort: minimal` — honored where supported, ignored by
+        // providers that don't know the field, and never rejected.
         if request.reasoning_disabled {
-            body["reasoning"] = json!({ "enabled": false });
+            body["reasoning"] = json!({ "effort": "minimal" });
         }
         body
     }
@@ -381,8 +455,7 @@ mod tests {
         let body = r#"{"error":{"message":"Provider returned error","code":400,"metadata":{"raw":"ERROR","provider_name":"Stealth","is_byok":false}}}"#;
         assert!(HttpBackend::status_error(400, body.to_string()).recoverable);
         // A real request problem stays non-recoverable.
-        let client_error =
-            r#"{"error":{"message":"no endpoints found matching your request"}}"#;
+        let client_error = r#"{"error":{"message":"no endpoints found matching your request"}}"#;
         assert!(!HttpBackend::status_error(400, client_error.to_string()).recoverable);
         assert!(HttpBackend::status_error(502, String::new()).recoverable);
         assert!(!HttpBackend::status_error(401, String::new()).recoverable);
@@ -432,12 +505,12 @@ mod tests {
         let body = backend.request_body(&request());
         assert!(body.get("reasoning").is_none());
 
-        // Flagged: OpenRouter's normalized switch; non-supporting
-        // providers drop the field server-side.
+        // Flagged: OpenRouter effort-based signal; providers that mandate
+        // reasoning accept it, non-supporting providers drop the field.
         let mut quiet = request();
         quiet.reasoning_disabled = true;
         let body = backend.request_body(&quiet);
-        assert_eq!(body["reasoning"]["enabled"], false);
+        assert_eq!(body["reasoning"]["effort"], "minimal");
     }
 
     #[test]

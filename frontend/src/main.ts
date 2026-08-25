@@ -184,7 +184,7 @@ function bindSelectCloser(): void {
   selectCloserBound = true;
   document.addEventListener('pointerdown', (event) => {
     const target = event.target as Element;
-    const item = target.closest?.('.aios-select-list li');
+    const item = target.closest?.('.aios-select-list li') as (HTMLElement & { dataset: DOMStringMap }) | null;
     if (item) {
       const box = item.closest<HTMLElement>('.aios-select');
       if (box) pickSelectOption(box, item.dataset.value ?? '', item.textContent ?? '');

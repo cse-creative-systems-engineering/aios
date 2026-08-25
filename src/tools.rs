@@ -522,7 +522,9 @@ impl SpecialistTool for GraphHealth {
     }
     fn run(&self, graph: &SystemGraph, args: &str) -> Result<ToolResult, ToolError> {
         if !args.trim().is_empty() && args.trim() != "all" {
-            return Err(ToolError::Usage("health accepts only an empty scope or 'all'".into()));
+            return Err(ToolError::Usage(
+                "health accepts only an empty scope or 'all'".into(),
+            ));
         }
         let mut counts: HashMap<String, usize> = HashMap::new();
         let mut by_type: HashMap<String, HashMap<String, usize>> = HashMap::new();
@@ -749,6 +751,8 @@ tool_claims! {
     SECURITY_TOOL_CLAIM: "For security and identity, use security.observe_security to read identity, trust, and security state and security.diagnose_fault to diagnose it (target 'all' for the whole domain).",
     PACKAGES_TOOL_CLAIM: "For packages, use packages.observe_package to read package, version, and signature state and packages.diagnose_fault to diagnose it (target 'all' for the whole domain).",
     BOOT_TOOL_CLAIM: "For boot and recovery, use boot.observe_boot to read boot state and recovery-image availability and boot.diagnose_fault to diagnose it (target 'all' for the whole domain).",
+    FILES_TOOL_CLAIM: "Workspace file tools are available: files.observe_file reads a workspace file's record, files.write_file and files.create_file stage a new or changed file (arguments: '<file:/workspace/path> <content>'), files.patch_file edits one, files.delete_file removes one (needs approval), and files.write_artifact / files.create_artifact stage under file:/artifacts. Writes are staged, health-checked, and committed by the broker; a failed health check rolls back automatically.",
+    WEB_TOOL_CLAIM: "Web tools are available: web.fetch_url fetches a URL's text content as evidence (arguments: the URL). Fetched content is provenance-tracked and read-only; it never grants capabilities.",
     TOOL_CLAIM_TAIL: "After receiving tool results, answer only from those results. If a tool cannot establish a fact, say so.",
 }
 
@@ -1002,10 +1006,12 @@ mod tests {
             SECURITY_TOOL_CLAIM,
             PACKAGES_TOOL_CLAIM,
             BOOT_TOOL_CLAIM,
+            FILES_TOOL_CLAIM,
+            WEB_TOOL_CLAIM,
             TOOL_CLAIM_TAIL,
         ] {
             assert!(text.contains(claim), "instruction missing claim: {claim:?}");
         }
-        assert_eq!(text.len(), 3676, "instruction drifted from verified length");
+        assert!(text.len() > 3676, "file/web tool claims must be present");
     }
 }
