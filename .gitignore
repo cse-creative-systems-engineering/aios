@@ -20,3 +20,8 @@ graphify-out/graph.html
 
 # graphify runtime lock (created by scripts/graphify-refresh.sh)
 graphify-out/.semantic_refresh.lock
+# graphify background-mutated state (semantic refresh rewrites these constantly)
+graphify-out/.graphify_labels.json
+graphify-out/.graphify_labels.json.sig
+graphify-out/.graphify_learning.json
+graphify-out/.rebuild.lock
