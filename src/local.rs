@@ -1,6 +1,6 @@
 use crate::model::{
     FinishReason, GenerationError, GenerationRequest, GenerationResponse, ModelBackend, ModelId,
-    ModelMessage, ModelRole, ProviderId,
+    ModelMessage, ModelRole, ProviderId, ReasoningControl,
 };
 use llama_cpp_2::TokenToStringError;
 use llama_cpp_2::context::params::LlamaContextParams;
@@ -247,7 +247,7 @@ mod tests {
             temperature: 0.0,
             seed: Some(0),
             model: None,
-        reasoning_disabled: false,
+            reasoning: ReasoningControl::Low,
         }
     }
 

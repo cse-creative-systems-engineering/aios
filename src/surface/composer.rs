@@ -14,7 +14,7 @@
 
 use crate::model::{
     AgentRole, GatewayError, GenerationRequest, ModelGateway, ModelMessage, ModelRole, ModelTask,
-    RoutingDecision,
+    ReasoningControl, RoutingDecision,
 };
 use crate::planner::strip_think;
 use crate::protocol::DataClassification;
@@ -44,7 +44,21 @@ impl std::error::Error for SurfaceComposeError {}
 
 impl From<GatewayError> for SurfaceComposeError {
     fn from(e: GatewayError) -> Self {
-        SurfaceComposeError::Gateway(e)
+        // The budget retry already ran; if the provider still returned no
+        // visible content, that is semantically an empty response, not a
+        // transport failure — surface it as EmptyResponse so callers (and
+        // tests) see one consistent error kind for "model said nothing".
+        match e {
+            GatewayError::Generation {
+                empty_content: true,
+                message,
+                ..
+            } => {
+                let _ = message;
+                SurfaceComposeError::EmptyResponse
+            }
+            other => SurfaceComposeError::Gateway(other),
+        }
     }
 }
 
@@ -94,7 +108,7 @@ pub fn compose_unconstrained_html(
         temperature: 0.7,
         seed: None,
         model: None,
-        reasoning_disabled: false,
+        reasoning: ReasoningControl::Low,
     };
     // Ox (stealth/ox-alpha) requires reasoning.enabled, others ignore it.
     // Keep reasoning enabled so the provider does not 400; budget retry handles empty content.
@@ -118,8 +132,14 @@ pub fn coverage_gaps(intent: &str, evidence: &[ToolResult]) -> Vec<String> {
     const DOMAINS: &[(&str, &[&str])] = &[
         ("processes", &["cpu", "process", "service"]),
         ("memory", &["ram", "memory", "swap"]),
-        ("storage", &["disk", "storage", "drive", "filesystem", "partition"]),
-        ("network", &["network", "wifi", "internet", "ethernet", "wireless"]),
+        (
+            "storage",
+            &["disk", "storage", "drive", "filesystem", "partition"],
+        ),
+        (
+            "network",
+            &["network", "wifi", "internet", "ethernet", "wireless"],
+        ),
         ("graphics", &["gpu", "graphics"]),
         ("power", &["thermal", "temperature", "fan", "heat"]),
         ("security", &["security", "identity", "firewall"]),
@@ -156,7 +176,9 @@ pub fn verify_value_fidelity(html: &str, evidence: &[ToolResult]) -> Result<(), 
     }
     for (field, content) in markers {
         let Some(expected) = fields.get(&field) else {
-            return Err(format!("generated value '{field}' is not in specialist data"));
+            return Err(format!(
+                "generated value '{field}' is not in specialist data"
+            ));
         };
         if !value_matches(&content, expected) {
             return Err(format!(
@@ -303,7 +325,9 @@ fn content_numbers(text: &str) -> Vec<f64> {
     let bytes = text.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i].is_ascii_digit() || (bytes[i] == b'.' && i + 1 < bytes.len() && bytes[i + 1].is_ascii_digit()) {
+        if bytes[i].is_ascii_digit()
+            || (bytes[i] == b'.' && i + 1 < bytes.len() && bytes[i + 1].is_ascii_digit())
+        {
             let start = i;
             let mut end = i;
             while end < bytes.len() && (bytes[end].is_ascii_digit() || bytes[end] == b'.') {

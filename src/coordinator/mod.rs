@@ -18,6 +18,7 @@ use crate::http::HttpBackend;
 use crate::local::LocalLlama;
 use crate::memory::MemorySpecialist;
 use crate::model::{
+    ReasoningControl,
     AgentRole, ConnectivityProbe, ConnectivityState, ModelEntry, ModelGateway, ModelId,
     ModelMessage, ModelRegistry, ModelRole, ModelTask, ProviderId, RoutingDecision, RoutingError,
 };
@@ -1738,7 +1739,7 @@ pub fn send_direct(coordinator: &Coordinator, text: &str) -> Result<String, Agen
         // Chat keeps thinking enabled — it earns its tokens here. Only the
         // budget retry adapts, for models that think longer than the
         // configured allowance.
-        reasoning_disabled: false,
+        reasoning: ReasoningControl::Low,
     };
     let response = crate::model::submit_with_budget_retry(&coordinator.gateway, &task, request)
         .map_err(AgentError::from)?;

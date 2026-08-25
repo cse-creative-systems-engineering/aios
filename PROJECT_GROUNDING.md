@@ -6,6 +6,7 @@ Start here before making changes or answering questions about the repository.
 
 Read the latest dated grounding snapshot:
 
+- [`project_grounding_2026-08-25_18-00-38.md`](docs/grounding/project_grounding_2026-08-25_18-00-38.md) — ReasoningControl effort levels, empty-content retry hardening
 - [`project_grounding_2026-08-25_17-35-59.md`](docs/grounding/project_grounding_2026-08-25_17-35-59.md) — exec.run sandboxed per ADR-0010 Phase 2: bwrap boundary wired, fd bug fixed, suite green
 - [`project_grounding_2026-08-25_17-10-37.md`](docs/grounding/project_grounding_2026-08-25_17-10-37.md) — merge session-day-buckets: sessions, persistence, exec stub (ADR-0010)
 - [`project_grounding_2026-08-24_19-57-17.md`](docs/grounding/project_grounding_2026-08-24_19-57-17.md) — read-only file tool handlers registered at boot

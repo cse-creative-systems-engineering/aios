@@ -1,6 +1,6 @@
 use crate::model::{
     FinishReason, GenerationError, GenerationRequest, GenerationResponse, ModelBackend, ModelId,
-    ModelRole, ProviderId, ProviderTier,
+    ModelRole, ProviderId, ProviderTier, ReasoningControl,
 };
 use serde_json::{Value, json};
 
@@ -184,13 +184,16 @@ impl HttpBackend {
         if let Some(seed) = request.seed {
             body["seed"] = json!(seed);
         }
-        // OpenRouter's normalized reasoning switch. Sending `enabled: false`
-        // hard-fails on providers that mandate reasoning (e.g. stealth/ox-alpha
-        // returns HTTP 400 "Reasoning is mandatory"). The safe universal
-        // signal is `effort: minimal` — honored where supported, ignored by
-        // providers that don't know the field, and never rejected.
-        if request.reasoning_disabled {
-            body["reasoning"] = json!({ "effort": "minimal" });
+        // OpenRouter's normalized reasoning switch. `enabled: false` and
+        // `effort: none` hard-fail on providers that mandate reasoning
+        // (stealth/ox-alpha returns HTTP 400), so Aios never sends them.
+        // An explicit effort level keeps a mandatory-reasoning model from
+        // spending its default share of max_tokens before any visible
+        // output; providers without support ignore the field.
+        match request.reasoning {
+            ReasoningControl::ProviderDefault => {}
+            ReasoningControl::Minimal => body["reasoning"] = json!({ "effort": "minimal" }),
+            ReasoningControl::Low => body["reasoning"] = json!({ "effort": "low" }),
         }
         body
     }
@@ -208,25 +211,36 @@ impl HttpBackend {
         let message = choice
             .get("message")
             .ok_or_else(|| GenerationError::new("choice has no message", false))?;
-        let text = match message.get("content").and_then(Value::as_str) {
-            Some(content) => content.to_string(),
-            None => message
-                .get("tool_calls")
-                .map(|calls| json!({ "tool_calls": calls }).to_string())
-                .ok_or_else(|| {
-                    // Flagged so the budget-retry helper can re-request with
-                    // more room instead of surfacing this straight away.
-                    GenerationError::empty_content(
-                        "model returned no visible content; its full token budget may have \
-                         been spent before any output",
-                    )
-                })?,
-        };
-        let finish_reason = match choice
+        // Read once here so the empty-content error can name it: a
+        // "length" finish with no visible text is the reasoning-overflow
+        // signature, and the log should say so without replaying traffic.
+        let finish_reason_raw = choice
             .get("finish_reason")
             .and_then(Value::as_str)
-            .unwrap_or("stop")
-        {
+            .unwrap_or("stop");
+        // An empty string is as invisible as a null: some providers return
+        // "" instead of omitting content when hidden reasoning consumed the
+        // whole budget. Both must reach the budget-retry helper, so both
+        // are flagged empty_content rather than flowing through as "".
+        let visible = message
+            .get("content")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|trimmed| !trimmed.is_empty())
+            .map(str::to_string);
+        let text = match visible {
+            Some(text) => text,
+            None => match message.get("tool_calls").filter(|calls| !calls.is_null()) {
+                Some(calls) => json!({ "tool_calls": calls }).to_string(),
+                None => {
+                    return Err(GenerationError::empty_content(format!(
+                        "model returned no visible content (finish_reason={finish_reason_raw}); \
+                         its token budget was likely spent on hidden reasoning before any output"
+                    )))
+                }
+            },
+        };
+        let finish_reason = match finish_reason_raw {
             "length" => FinishReason::Length,
             "content_filter" => FinishReason::Error,
             _ => FinishReason::Stop,
@@ -324,6 +338,11 @@ impl ModelBackend for HttpBackend {
                 let text = response
                     .into_string()
                     .map_err(|e| GenerationError::new(format!("read response: {e}"), true))?;
+                // Keep the body for the failure dump below: a 200 that fails
+                // parsing (e.g. no visible content) carries the finish_reason
+                // and usage numbers needed to diagnose budget overflow, and
+                // discarding them makes every incident undiagnosable.
+                response_body = text.clone();
                 self.parse_response(&text)
             }
             Err(ureq::Error::Status(code, response)) => {
@@ -393,7 +412,7 @@ mod tests {
             temperature: 0.2,
             seed: None,
             model: None,
-            reasoning_disabled: false,
+            reasoning: ReasoningControl::ProviderDefault,
         }
     }
 
@@ -508,7 +527,7 @@ mod tests {
         // Flagged: OpenRouter effort-based signal; providers that mandate
         // reasoning accept it, non-supporting providers drop the field.
         let mut quiet = request();
-        quiet.reasoning_disabled = true;
+        quiet.reasoning = ReasoningControl::Minimal;
         let body = backend.request_body(&quiet);
         assert_eq!(body["reasoning"]["effort"], "minimal");
     }
