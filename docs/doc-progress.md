@@ -67,7 +67,7 @@ Design docs:  17 of 20 frozen or accepted  (85%)
 Core contracts: 8 of 8 drafted              (100%)
   (SEC, CAP, MSG, ASM, GRAPH, PKG, MODEL, HI)
 Human interaction: 1 of 1 drafted           (100%)
-ADRs: 10 accepted, 1 proposed              (11 of expected ~15-20)
+ADRs: 11 accepted                            (11 of expected ~15-20)
 Module specs: 19 of 19 drafted + 1 stub     (web-fetch stub)
 ```
 
@@ -221,6 +221,6 @@ Row 8 (done):     modules/wifi.md, modules/storage.md, ... (all 19 module specs
 | 0008 | Workspace co-partner scope and branch rule | Accepted | 2026-08-22 |
 | 0009 | Session day-buckets | Accepted | 2026-08-22 |
 | 0010 | Typed execution primitive (exec.run) | Accepted | 2026-08-22 |
-| 0011 | Windows platform support | Proposed | 2026-08-25 |
+| 0011 | Windows platform support | Accepted | 2026-08-25 |
 | 0009 | Session day-buckets and project persistence | Accepted | 2026-08-22 |
 | 0010 | Typed execution primitive and approval modes | Accepted | 2026-08-22 |

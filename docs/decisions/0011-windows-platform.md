@@ -1,6 +1,6 @@
 # ADR-0011: Windows Platform Support
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-08-25
 **Amends:** ADR-0001 (Aios v0.1 runs above Linux in user space)
 **Related:** security-model.md §1 (TCB), capability-model.md, milestone 0004+ (co-partner)
