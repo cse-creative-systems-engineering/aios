@@ -17,22 +17,51 @@ pub struct Facade {
 impl Facade {
     pub fn boot() -> Result<Self, BootError> {
         let coordinator = Coordinator::boot()?;
-        Ok(Self::new(coordinator))
+        Ok(Self::new_with_restore(coordinator))
     }
 
     pub fn new(coordinator: Coordinator) -> Self {
+        Self::new_with_restore(coordinator)
+    }
+
+    pub fn new_with_restore(coordinator: Coordinator) -> Self {
         let max_history = coordinator
             .config
             .shell
             .as_ref()
             .map(|s| s.history_len)
             .unwrap_or(20);
+        let mut history = VecDeque::new();
+        let mut last_tool_results = Vec::new();
+        // Restore prior day's session if present (ADR-0009 Stage 1)
+        let config_dir = crate::coordinator::config_dir_for(&coordinator.config);
+        let store = crate::session::SessionStore::new(&config_dir);
+        let today = crate::session::SessionStore::today();
+        if let Some(snap) = store.load(&today) {
+            for h in snap.history { history.push_back(h); }
+            for r in snap.tool_results { last_tool_results.push(r.into()); }
+            // Surfaces are restored via src-tauri worker separately; we keep them here for completeness
+        }
         Self {
             coordinator,
-            history: VecDeque::new(),
+            history,
             max_history,
-            last_tool_results: Vec::new(),
+            last_tool_results,
         }
+    }
+
+    fn persist_session(&self) {
+        let config_dir = crate::coordinator::config_dir_for(&self.coordinator.config);
+        let store = crate::session::SessionStore::new(&config_dir);
+        let today = crate::session::SessionStore::today();
+        let snap = crate::session::SessionSnapshot {
+            id: today.clone(),
+            history: self.history.iter().cloned().collect(),
+            tool_results: self.last_tool_results.iter().map(|r| r.into()).collect(),
+            surfaces: Vec::new(), // surfaces persisted in src-tauri worker per ADR-0009 Stage 2
+            updated_at: crate::protocol::now(),
+        };
+        let _ = store.save(&snap);
     }
 
     pub fn banner(&self) -> String {
@@ -223,6 +252,7 @@ impl Facade {
         while self.history.len() > self.max_history {
             self.history.pop_front();
         }
+        self.persist_session();
 
         let mut messages = vec![crate::model::ModelMessage::new(
             crate::model::ModelRole::System,
@@ -247,6 +277,7 @@ impl Facade {
                 while self.history.len() > self.max_history {
                     self.history.pop_front();
                 }
+                self.persist_session();
                 answer
             }
             Err(e) => {

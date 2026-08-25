@@ -99,6 +99,8 @@ pub enum Operation {
     Delete,
     Fetch,
     StageEnv,
+    Serve,
+    Execute,
 }
 
 impl Operation {
@@ -111,7 +113,8 @@ impl Operation {
             | Operation::Write
             | Operation::Create
             | Operation::Patch
-            | Operation::StageEnv => RiskLevel::Staged,
+            | Operation::StageEnv
+            | Operation::Serve | Operation::Execute => RiskLevel::Staged,
             Operation::FirmwareWrite
             | Operation::BootConfig
             | Operation::KernelModule

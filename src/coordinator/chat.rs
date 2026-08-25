@@ -387,6 +387,18 @@ pub(crate) fn tool_parameters(operation: Operation, args: &str) -> crate::protoc
             symptom: args.into(),
         },
         Operation::Query => crate::protocol::ToolParameters::Query { query: args.into() },
+        Operation::Execute => crate::protocol::ToolParameters::Execute {
+            command: args.into(),
+        },
+        Operation::Serve => {
+            let port = crate::project::extract_port(args).unwrap_or(3000);
+            let msg = if args.to_ascii_lowercase().contains("hello") {
+                "hello world".to_string()
+            } else {
+                args.to_string()
+            };
+            crate::protocol::ToolParameters::Serve { port, message: msg }
+        }
         Operation::Stage => crate::protocol::ToolParameters::Stage {
             change: serde_json::json!({ "module": args.trim() }),
         },
@@ -614,6 +626,26 @@ fn extract_file_content(original: &str) -> Option<String> {
     // If prompt contains "hello" keep hello world
     if lower.contains("hello") {
         return Some("hello from aios\nprint('hi')".to_string());
+    }
+    None
+}
+
+fn extract_project_name(original: &str) -> Option<String> {
+    for token in original.split_whitespace() {
+        let t = token.trim_matches(|c: char| c == '"' || c == '\'' || c == ',' || c == ';');
+        if t.to_ascii_lowercase() == "project" {
+            // next token is name
+            let idx = original.to_ascii_lowercase().find("project").unwrap();
+            let after = original[idx + 7..].trim();
+            let name = after
+                .split_whitespace()
+                .next()
+                .unwrap_or("demo")
+                .trim_matches(|c: char| c == '"' || c == '\'' || c == ',');
+            if !name.is_empty() {
+                return Some(name.to_string());
+            }
+        }
     }
     None
 }

@@ -1,8 +1,9 @@
 # Sidebar Administration Panel
 
-**Status:** Planned work
+**Status:** ✅ Shipped on `main`. Provider registry (add/remove/`set_provider_credential` write-only/`discover_models`), per-role model assignment (`set_role_assignment` + `set_role_group_assignment`), backend/provider/operation/surface status rail, settings overlay, and the ultra-premium visual system are live. The approval-mode + verifier toggle work from ADR-0010 extends this milestone in-place; it does not reopen it.
 **Created:** 2026-08-17
-**Prerequisites:** `0002-multi-surface-lifecycle-plan.md`
+**Shipped:** 2026-08-22 (progressive across the sidebar workstream; toggles land on `feature/session-day-buckets`)
+**Prerequisites:** `0002-multi-surface-lifecycle-plan.md` (satisfied)
 
 ## Purpose
 

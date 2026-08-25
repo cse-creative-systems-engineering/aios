@@ -137,21 +137,37 @@ Operations are the typed actions an agent can request on a resource.
 
 ### 3.1 Operation classes
 
-| Operation | Description | Default risk level |
-|---|---|---|
-| `observe` | Read device state, health, or telemetry | 0 |
-| `diagnose` | Analyze a fault or condition | 0 |
-| `query` | Query a service or configuration | 0 |
-| `restart` | Restart a service or device | 1 |
-| `configure` | Change non-destructive configuration | 1 |
-| `stage` | Stage a change for testing (driver, config, firmware) | 2 |
-| `commit` | Commit a staged change to production | 2 |
-| `firmware_write` | Write firmware to a device | 3 |
-| `boot_config` | Modify boot configuration | 3 |
-| `kernel_module` | Load or unload a kernel module | 3 |
-| `reset` | Reset a device to known state | 4 |
-| `quarantine` | Quarantine a device or service | 4 |
-| `rollback` | Roll back to a previous checkpoint | 4 |
+| Operation | Description | Default risk level | Introduced |
+|---|---|---|---|
+| `observe` | Read device state, health, or telemetry | 0 | M1 |
+| `diagnose` | Analyze a fault or condition | 0 | M1 |
+| `query` | Query a service or configuration | 0 | M1 |
+| `restart` | Restart a service or device | 1 | M1 |
+| `configure` | Change non-destructive configuration | 1 | M1 |
+| `fetch` | Fetch content from a `web:` resource | 1 | ADR-0008 |
+| `stage` | Stage a change for testing (driver, config, firmware) | 2 | M1 |
+| `commit` | Commit a staged change to production | 2 | M1 |
+| `write` | Write to a `file:/workspace` or `file:/artifacts` resource | 2 | ADR-0008 |
+| `create` | Create a new file under a workspace/artifacts prefix | 2 | ADR-0008 |
+| `patch` | Diff-aware patch of an existing workspace file | 2 | ADR-0008 |
+| `stage_env` | Stage a development-environment change (venv, toolchain) | 2 | ADR-0008 |
+| `execute` | Invoke a program via the `exec:command` primitive | 2 | ADR-0010 |
+| `serve` | Supervise a long-running process (reserved; specialist TBD) | 2 | ADR-0010 |
+| `firmware_write` | Write firmware to a device | 3 | M1 |
+| `boot_config` | Modify boot configuration | 3 | M1 |
+| `kernel_module` | Load or unload a kernel module | 3 | M1 |
+| `delete` | Delete a file under a workspace/artifacts prefix | 3 | ADR-0008 |
+| `reset` | Reset a device to known state | 4 | M1 |
+| `quarantine` | Quarantine a device or service | 4 | M1 |
+| `rollback` | Roll back to a previous checkpoint | 4 | M1 |
+
+The operations introduced in ADR-0008 (`fetch`, `write`, `create`, `patch`,
+`stage_env`, `delete`) and ADR-0010 (`execute`, `serve`) share the same
+capability × clearance model as the M1 operations. Their risk levels are
+authoritative from the tool registry, not the request. `execute` additionally
+runs inside a user-space sandbox (ADR-0010 §3.1) that is the actual safety
+boundary for shell invocation, with a Guardian pattern list (`EXEC-P-001..005`,
+ADR-0010 §3.2) as defense-in-depth and audit-log clarity above it.
 
 ### 3.2 Capability scope
 
@@ -177,6 +193,20 @@ or package revision.
 
 This is a deliberate choice: precision over efficiency. Token cost is not a
 design constraint for safety systems.
+
+**Prefix exceptions (documented).** Three resources are treated as prefixes
+rather than per-resource identifiers, and only these three:
+
+| Resource | Semantics | Justification |
+|---|---|---|
+| `file:/workspace` | Capability implies the entire `~/workspace` subtree. | ADR-0008 — the workspace is one unit of user consent. |
+| `file:/artifacts` | Capability implies the entire artifact staging subtree. | ADR-0008 — artifacts are one unit of user consent. |
+| `web:fetch` | Single pseudo-resource; not per-URL. | ADR-0008 — URL space is unbounded; `DataPolicy` gates content. |
+| `exec:command` | Single pseudo-resource; not per-command. | ADR-0010 — command space is unbounded; Guardian denylist gates content. |
+
+Every other resource class (`device:`, `driver:`, `firmware:`, `boot:`,
+`secret:`, `process:`, `graph:`, `service:`, `network:`, `file:/etc`,
+`file:/usr`, …) remains per-resource. Adding a new prefix requires an ADR.
 
 ---
 

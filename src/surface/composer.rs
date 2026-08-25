@@ -94,10 +94,10 @@ pub fn compose_unconstrained_html(
         temperature: 0.7,
         seed: None,
         model: None,
-        reasoning_disabled: true,
+        reasoning_disabled: false,
     };
-    // Composition wants markup, not deliberation, so thinking is switched
-    // off where the provider supports it; if it comes back empty anyway,
+    // Ox (stealth/ox-alpha) requires reasoning.enabled, others ignore it.
+    // Keep reasoning enabled so the provider does not 400; budget retry handles empty content.
     // the budget retry gives the same prompt more room exactly once.
     let response = crate::model::submit_with_budget_retry(gateway, &task, request)?;
     let html = strip_think(response.response.text.trim());
