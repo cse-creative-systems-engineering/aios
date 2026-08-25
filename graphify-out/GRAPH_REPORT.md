@@ -1,16 +1,16 @@
 # Graph Report - aios  (2026-08-25)
 
 ## Corpus Check
-- 189 files · ~315,008 words
+- 192 files · ~315,550 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 3106 nodes · 7930 edges · 258 communities (113 shown, 145 thin omitted)
+- 3124 nodes · 7949 edges · 266 communities (121 shown, 145 thin omitted)
 - Extraction: 99% EXTRACTED · 1% INFERRED · 0% AMBIGUOUS · INFERRED: 90 edges (avg confidence: 0.78)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `04b9395e`
+- Built from commit: `85042205`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -48,29 +48,29 @@
 - web.rs
 - Coordinator
 - boot.rs
-- Result
+- Checkpoint
 - packages.rs
 - sidebar.ts
-- Checkpoint
-- GenerationRequest
-- evidence.rs
 - PrincipalId
+- ModelId
+- evidence.rs
+- PolicyBroker
 - .refresh_catalogue
 - main.ts
 - GenerativeWidget
 - executor.rs
 - package.json
-- StagedExecutor
-- Guardian
+- action.rs
+- EdgeId
 - Vec
 - planner.rs
-- ToolRequest
+- Guardian
 - AgentError
 - wifi.rs
 - .chat_with_tools_outcome
-- MockPlanner
+- ToolRequest
 - model.rs
-- action.rs
+- MockWifiDriver
 - tauri.conf.json
 - NodeType
 - verifier.rs
@@ -88,12 +88,12 @@
 - definitions
 - stub_provider.rs
 - String
-- ModelId
+- RoutingError
 - properties
-- .fmt
+- Implementation Roadmap
 - permissions
 - permissions
-- project.rs
+- PROJECT_GROUNDING.md
 - graphify
 - Surface Harness
 - default.json
@@ -105,11 +105,11 @@
 - CapabilityRemote
 - graphify
 - sidebar.rs
-- resolve_local_model_path
+- BootError
 - .grant_consent
 - ApprovalItem
 - graphify-refresh.sh
-- .fmt
+- Grounding Snapshot: Coordinator Modularization, Surface Harness, and Graphify
 - ui_file_artifact.rs
 - pickSelectOption
 - Q: Which surface generation path is Aios's intended architecture?
@@ -159,9 +159,9 @@
 - ExitCode
 - Facade
 - Formatter
-- From
+- Grounding Snapshot: ReasoningControl effort levels, empty-content retry hardening
 - Aios Frontend
-- GatewayError
+- Self
 - GenerationError
 - GenerationRequest
 - GenerationResponse
@@ -174,7 +174,7 @@
 - LayoutMode
 - ModelBackend
 - ModelEntry
-- ModelGateway
+- Grounding Snapshot: http timeout 180s default; plain-text CoT stripping
 - ModelId
 - ModelRegistry
 - Value
@@ -184,9 +184,9 @@
 - Planner
 - AsRef
 - ProviderId
-- ProviderTier
+- Grounding Snapshot: repo cleanup: untrack build artifacts, ignore graphify churn files
 - RegistryError
-- CompositeDriver
+- Result
 - RiskLevel
 - RoutingDecision
 - RoutingError
@@ -262,6 +262,14 @@
 - Sync
 - Timestamp
 - Uuid
+- Project Grounding
+- Default
+- HashMap
+- PathBuf
+- TempDir
+- Arc
+- From
+- desktop-schema.json
 
 ## God Nodes (most connected - your core abstractions)
 1. `ResourceId` - 148 edges
@@ -278,13 +286,13 @@
 ## Surprising Connections (you probably didn't know these)
 - `harness_direct_broker()` --calls--> `Clearance`  [INFERRED]
   tests/harness_drive.rs → src/capability.rs
-- `harness_direct_broker()` --calls--> `ResourceId`  [INFERRED]
-  tests/harness_drive.rs → src/capability.rs
-- `write_surface_trace()` --references--> `RoutingDecision`  [EXTRACTED]
-  src-tauri/src/main.rs → src/model.rs
 - `build_graph_snapshot()` --references--> `Facade`  [EXTRACTED]
   src-tauri/src/main.rs → src/facade.rs
 - `handle_prompt()` --references--> `Facade`  [EXTRACTED]
+  src-tauri/src/main.rs → src/facade.rs
+- `refresh_graph_snapshot()` --references--> `Facade`  [EXTRACTED]
+  src-tauri/src/main.rs → src/facade.rs
+- `refresh_sidebar_status()` --references--> `Facade`  [EXTRACTED]
   src-tauri/src/main.rs → src/facade.rs
 
 ## Import Cycles
@@ -315,7 +323,7 @@
 - **Capability Enforcement System** — docs/capability-model.md, docs/action-state-machine.md, docs/human-interaction.md, src/coordinator [INFERRED]
 - **Surface Lifecycle Management** — docs/grounding/project_grounding_2026-08-21_17-21-55.md, src/surface, docs_modules_files_data_md, docs_modules_drivers_md [INFERRED]
 
-## Communities (258 total, 145 thin omitted)
+## Communities (266 total, 145 thin omitted)
 
 ### Community 0 - "tools.rs"
 Cohesion: 0.07
@@ -330,32 +338,32 @@ Cohesion: 0.05
 Nodes (53): F, SplitWhitespace, audit_logs_chat_attempt(), audit_records_boot_and_commands(), bare_chat_goes_to_model(), consent_commands_roundtrip(), direct_model_query(), Facade (+45 more)
 
 ### Community 3 - "NodeId"
-Cohesion: 0.09
-Nodes (40): add_edge_requires_both_endpoints(), add_node_rejects_duplicate(), dependencies_and_dependents_track_both_directions(), edge(), EdgeId, EdgeMetadata, EdgeProvenance, EdgeType (+32 more)
+Cohesion: 0.10
+Nodes (38): Timestamp, print_hardware_report(), add_edge_requires_both_endpoints(), add_node_rejects_duplicate(), dependencies_and_dependents_track_both_directions(), edge(), EdgeMetadata, EdgeProvenance (+30 more)
 
 ### Community 4 - "protocol.rs"
-Cohesion: 0.08
-Nodes (60): ApprovalId, AuditEntryId, CheckpointRef, MessageId, PlanHash, PlanId, RequestId, ActionPlan (+52 more)
+Cohesion: 0.07
+Nodes (62): ApprovalId, AuditEntryId, CheckpointRef, MessageId, PlanHash, PlanId, RequestId, ActionPlan (+54 more)
 
 ### Community 5 - "tests.rs"
 Cohesion: 0.07
-Nodes (64): NodeId, tool_arguments(), boot_device(), boot_recovery_diagnose_reports_domain_invariants(), boot_recovery_observe_runs_through_broker(), boots_http_provider_and_status_shows_it(), broker_rolls_back_staged_request_when_health_fails(), broker_runs_staged_commit_through_booted_executor() (+56 more)
+Nodes (63): NodeId, tool_arguments(), boot_device(), boot_recovery_diagnose_reports_domain_invariants(), boot_recovery_observe_runs_through_broker(), boots_http_provider_and_status_shows_it(), broker_rolls_back_staged_request_when_health_fails(), broker_runs_staged_commit_through_booted_executor() (+55 more)
 
 ### Community 6 - "wifi_driver.rs"
 Cohesion: 0.08
-Nodes (33): checkpoint_captures_active_module(), driver(), DriverControl, fake_sysfs(), health_check_reflects_link_state(), LinuxDriverControl, live_control(), live_control_plans_mutations_without_executing() (+25 more)
+Nodes (35): ResourceDriver, Send, checkpoint_captures_active_module(), driver(), DriverControl, fake_sysfs(), health_check_reflects_link_state(), LinuxDriverControl (+27 more)
 
 ### Community 7 - "sandbox.rs"
 Cohesion: 0.06
 Nodes (50): Child, Client, Command, Drop, Output, bubblewrap_argv_confines_and_binds_roots(), BubblewrapSandbox, bwrap_available() (+42 more)
 
 ### Community 8 - "config.rs"
-Cohesion: 0.09
-Nodes (35): AiosConfig, api_key_resolved_from_env(), ConfigError, default_ctx(), default_http_timeout_ms(), default_max_tokens(), default_threads(), dirs_home() (+27 more)
+Cohesion: 0.07
+Nodes (46): Default, HashMap, ModelCapability, PathBuf, ProviderTier, AiosConfig, api_key_resolved_from_env(), ConfigError (+38 more)
 
 ### Community 9 - "ResourceId"
-Cohesion: 0.10
-Nodes (33): tool(), Capability, capability_covers(), Operation, resource_covers(), ResourceId, RiskLevel, HashMap (+25 more)
+Cohesion: 0.16
+Nodes (25): tool(), Operation, ResourceId, RiskLevel, Vec, ToolDefinition, tool(), Vec (+17 more)
 
 ### Community 10 - "composer.rs"
 Cohesion: 0.07
@@ -386,28 +394,28 @@ Cohesion: 0.07
 Nodes (51): err_result(), exec_runs_echo(), ExecSpecialist, guardian_pattern_check(), guardian_patterns_deny_before_spawn(), indirect_rm_still_confined_by_sandbox(), request_with(), NodeId (+43 more)
 
 ### Community 17 - "discovery.rs"
-Cohesion: 0.13
-Nodes (34): device_firmware_attributes_create_nodes_and_edges(), devices_without_firmware_attributes_get_no_firmware_node(), discovered_nodes_go_stale_after_ttl(), DiscoveredService, discovery(), discovery_adds_dependency_edges(), DiscoveryEvent, DiscoveryOptions (+26 more)
+Cohesion: 0.12
+Nodes (40): device_firmware_attributes_create_nodes_and_edges(), devices_without_firmware_attributes_get_no_firmware_node(), discovered_nodes_go_stale_after_ttl(), DiscoveredService, discovery(), discovery_adds_dependency_edges(), DiscoveryEvent, DiscoveryOptions (+32 more)
 
 ### Community 18 - "broker.rs"
 Cohesion: 0.16
 Nodes (33): Runtime, allows_with_valid_capability(), approval_channel_accepts_only_user_approval(), approval_channel_rejection_and_expiry_are_fail_closed(), approval_is_required_and_plan_hash_is_bound(), approval_request_for(), approval_scope_for(), audit_broken_denies_everything() (+25 more)
 
 ### Community 19 - "ProviderId"
-Cohesion: 0.12
-Nodes (13): Duration, DataPolicy, ModelEntry, ModelProvenance, ModelRegistry, ProviderHealth, ProviderId, ResourceRequirements (+5 more)
+Cohesion: 0.11
+Nodes (14): Duration, DataPolicy, lan_model(), ModelEntry, ModelProvenance, ModelRegistry, ProviderHealth, ProviderId (+6 more)
 
 ### Community 20 - "SysfsDiscovery"
-Cohesion: 0.23
-Nodes (17): DiscoveryError, filesystem_usage(), parse_diskstat(), parse_meminfo(), parse_pressure(), parse_pressure_and_vmstat_key_their_fields(), parse_vmstat(), Display (+9 more)
+Cohesion: 0.27
+Nodes (10): DiscoveryError, filesystem_usage(), Display, Error, Formatter, Option, Path, Result (+2 more)
 
 ### Community 21 - "http.rs"
 Cohesion: 0.13
 Nodes (27): Agent, auth_header_sent_when_key_present(), backend(), empty_choices_is_error(), function_tool(), function_tool_no_args(), generate_hits_endpoint_and_parses(), health_check_against_live_server() (+19 more)
 
 ### Community 22 - "Aios"
-Cohesion: 0.06
-Nodes (40): Archive README, Current State, Grounding Snapshot: Coordinator Modularization, Surface Harness, and Graphify, Open Work, Relevant Paths, Verification, Current State, Grounding Snapshot: Groundless Surfaces Validated Live, Provider Teardown Fix (+32 more)
+Cohesion: 0.17
+Nodes (12): Aios, Architecture, in one diagram, Building, Contributing, Knowledge graph for agents (graphify), License, The documents, The problem I'm trying to solve (+4 more)
 
 ### Community 23 - "power.rs"
 Cohesion: 0.11
@@ -426,12 +434,12 @@ Cohesion: 0.12
 Nodes (29): diagnose_flags_missing_capacity_evidence(), discovers_memory_nodes_and_ecc_sensors(), exposes_only_read_only_tools(), health_counts_capacity_evidence(), instantiates_with_owns_edges_for_each_resource(), is_ecc_sensor(), is_memory_node(), memory_graph() (+21 more)
 
 ### Community 27 - "graphics.rs"
-Cohesion: 0.11
-Nodes (29): diagnose_flags_missing_gpu_state(), discovers_gpu_display_and_session(), exposes_only_read_only_tools(), graphics_graph(), GraphicsError, GraphicsHealth, GraphicsSpecialist, health_counts_state_evidence() (+21 more)
+Cohesion: 0.12
+Nodes (28): diagnose_flags_missing_gpu_state(), discovers_gpu_display_and_session(), exposes_only_read_only_tools(), graphics_graph(), GraphicsError, GraphicsHealth, GraphicsSpecialist, health_counts_state_evidence() (+20 more)
 
 ### Community 28 - "network.rs"
 Cohesion: 0.12
-Nodes (28): diagnose_flags_missing_connectivity(), discovers_wired_and_bluetooth_excludes_wireless(), exposes_only_read_only_tools(), health_counts_link_and_backing_evidence(), instantiates_with_owns_edges_skipping_wifi_owned(), is_bluetooth_controller(), is_wired_interface(), is_wireless() (+20 more)
+Nodes (29): diagnose_flags_missing_connectivity(), discovers_wired_and_bluetooth_excludes_wireless(), exposes_only_read_only_tools(), health_counts_link_and_backing_evidence(), instantiates_with_owns_edges_skipping_wifi_owned(), is_bluetooth_controller(), is_wired_interface(), is_wireless() (+21 more)
 
 ### Community 29 - "security.rs"
 Cohesion: 0.13
@@ -439,19 +447,19 @@ Nodes (26): diagnose_flags_missing_verified_evidence(), discovers_security_nodes
 
 ### Community 30 - "web.rs"
 Cohesion: 0.12
-Nodes (28): Arc, err_result(), fetch_rejects_non_http_scheme(), fetch_requires_capability(), fetch_strips_secret_lines(), fetch_url_returns_content_with_provenance(), Fetcher, is_allowed_url() (+20 more)
+Nodes (27): err_result(), fetch_rejects_non_http_scheme(), fetch_requires_capability(), fetch_strips_secret_lines(), fetch_url_returns_content_with_provenance(), Fetcher, is_allowed_url(), LiveFetcher (+19 more)
 
 ### Community 31 - "Coordinator"
 Cohesion: 0.09
 Nodes (27): AuditLog, BootRecoverySpecialist, Broker, CapabilityToken, DriversSpecialist, GraphicsSpecialist, GraphPhase, MemorySpecialist (+19 more)
 
 ### Community 32 - "boot.rs"
-Cohesion: 0.12
-Nodes (27): boot_graph(), BootRecoveryError, BootRecoveryHealth, BootRecoverySpecialist, diagnose_flags_unhealthy_nodes(), discovers_boot_nodes(), exposes_only_read_only_tools(), health_counts_healthy_nodes() (+19 more)
+Cohesion: 0.13
+Nodes (26): boot_graph(), BootRecoveryError, BootRecoveryHealth, BootRecoverySpecialist, diagnose_flags_unhealthy_nodes(), discovers_boot_nodes(), exposes_only_read_only_tools(), health_counts_healthy_nodes() (+18 more)
 
-### Community 33 - "Result"
-Cohesion: 0.22
-Nodes (9): CheckpointError, HealthError, RollbackError, StageError, MockDriver, ActionId, Result, StagingError (+1 more)
+### Community 33 - "Checkpoint"
+Cohesion: 0.17
+Nodes (15): Checkpoint, CheckpointError, CommitError, MockDriver, ActionId, Arc, Mutex, Option (+7 more)
 
 ### Community 34 - "packages.rs"
 Cohesion: 0.13
@@ -461,21 +469,21 @@ Nodes (26): diagnose_flags_missing_signature_evidence(), discovers_package_nodes
 Cohesion: 0.08
 Nodes (34): computeActiveNodeIds(), EvidenceItem, GRAPH_LAYER_Y, GraphEdge, GraphNode, graphReadout(), healthClass(), INSPECTOR (+26 more)
 
-### Community 36 - "Checkpoint"
-Cohesion: 0.21
-Nodes (8): Checkpoint, CommitError, MockWifiDriver, ActionId, Arc, AtomicBool, Default, Result
+### Community 36 - "PrincipalId"
+Cohesion: 0.08
+Nodes (24): SpecialistHandler, build_request(), Into, String, Vec, Capability, capability_covers(), CapabilityToken (+16 more)
 
-### Community 37 - "GenerationRequest"
+### Community 37 - "ModelId"
 Cohesion: 0.11
-Nodes (20): AsRef, LlamaBackend, LlamaChatMessage, LlamaModel, LlamaToken, chat_messages(), chat_messages_maps_roles(), loads_and_generates_real_model() (+12 more)
+Nodes (22): AsRef, LlamaBackend, LlamaChatMessage, LlamaModel, LlamaToken, chat_messages(), chat_messages_maps_roles(), loads_and_generates_real_model() (+14 more)
 
 ### Community 38 - "evidence.rs"
 Cohesion: 0.14
 Nodes (27): cross_tool_reference_fails(), empty_results_give_empty_index(), empty_value_never_matches(), evidence_brief(), evidence_brief_quotes_keys_and_tools(), EvidenceEntry, EvidenceIndex, exact_copy_passes() (+19 more)
 
-### Community 39 - "PrincipalId"
+### Community 39 - "PolicyBroker"
 Cohesion: 0.06
-Nodes (33): Fn, SpecialistCall, BrokerClient, LocalBroker, PolicyBroker, Arc, Box, Default (+25 more)
+Nodes (36): Fn, SpecialistCall, BrokerClient, BrokerError, denied_result(), error_code_for(), LocalBroker, PolicyBroker (+28 more)
 
 ### Community 40 - ".refresh_catalogue"
 Cohesion: 0.15
@@ -491,62 +499,62 @@ Nodes (27): ApprovalItem, app(), render_approval_item(), render_widget(), Elemen
 
 ### Community 43 - "executor.rs"
 Cohesion: 0.20
-Nodes (25): advance_to(), checkpoint_count(), checkpoint_verification_failure_enters_failed_and_retains_checkpoint(), failed_action_can_be_manually_recovered_from_retained_checkpoint(), fresh(), fresh_fault(), health_check_error_rolls_back(), health_check_failure_triggers_rollback() (+17 more)
+Nodes (24): advance_to(), checkpoint_count(), checkpoint_verification_failure_enters_failed_and_retains_checkpoint(), failed_action_can_be_manually_recovered_from_retained_checkpoint(), fresh(), fresh_fault(), health_check_error_rolls_back(), health_check_failure_triggers_rollback() (+16 more)
 
 ### Community 44 - "package.json"
 Cohesion: 0.07
 Nodes (28): autoprefixer, author, dependencies, @tauri-apps/api, @tauri-apps/cli, description, devDependencies, autoprefixer (+20 more)
 
-### Community 45 - "StagedExecutor"
-Cohesion: 0.20
-Nodes (12): ActionState, can_transition(), RecoveryOutcome, TransitionError, Arc, Box, Mutex, Option (+4 more)
+### Community 45 - "action.rs"
+Cohesion: 0.15
+Nodes (14): ActionError, ActionState, ActionStore, can_transition(), CheckpointState, PendingTransition, RecoveryOutcome, Option (+6 more)
 
-### Community 46 - "Guardian"
-Cohesion: 0.16
-Nodes (18): Guardian, guardian_allows_boot_config_with_fallback_image(), guardian_allows_read_only_operations(), guardian_allows_tested_firmware(), guardian_blocks_boot_config_without_fallback(), guardian_blocks_untested_driver_load(), guardian_blocks_untested_firmware(), InvariantCheck (+10 more)
+### Community 46 - "EdgeId"
+Cohesion: 0.40
+Nodes (4): EdgeId, Default, Self, Uuid
 
 ### Community 47 - "Vec"
-Cohesion: 0.15
-Nodes (16): DataClassification, AgentRole, ConsentRecord, deregister_provider_drops_only_that_provider(), internet_model(), lan_model(), local_model(), ModelCapability (+8 more)
+Cohesion: 0.18
+Nodes (14): DataClassification, AgentRole, ConsentRecord, deregister_provider_drops_only_that_provider(), internet_model(), local_model(), ModelCapability, ModelTask (+6 more)
 
 ### Community 48 - "planner.rs"
-Cohesion: 0.12
-Nodes (24): empty_steps_still_parses(), extract_json(), extracts_json_from_prose(), format_plan(), garbage_becomes_freeform(), GeneratedPlan, missing_intent_falls_back(), multiple_calls_parsed_in_order() (+16 more)
+Cohesion: 0.11
+Nodes (27): empty_steps_still_parses(), extract_json(), extracts_json_from_prose(), format_plan(), garbage_becomes_freeform(), GeneratedPlan, missing_intent_falls_back(), multiple_calls_parsed_in_order() (+19 more)
 
-### Community 49 - "ToolRequest"
-Cohesion: 0.15
-Nodes (17): SpecialistHandler, BrokerError, build_request(), denied_result(), error_code_for(), result_envelope(), Display, Formatter (+9 more)
+### Community 49 - "Guardian"
+Cohesion: 0.17
+Nodes (18): Guardian, guardian_allows_boot_config_with_fallback_image(), guardian_allows_read_only_operations(), guardian_allows_tested_firmware(), guardian_blocks_boot_config_without_fallback(), guardian_blocks_untested_driver_load(), guardian_blocks_untested_firmware(), InvariantCheck (+10 more)
 
 ### Community 50 - "AgentError"
-Cohesion: 0.21
-Nodes (12): AgentError, Planner, Arc, Display, Error, Formatter, From, Result (+4 more)
+Cohesion: 0.18
+Nodes (15): AgentRole, Arc, From, GatewayError, ModelGateway, ModelMessage, AgentError, Planner (+7 more)
 
 ### Community 51 - "wifi.rs"
-Cohesion: 0.17
-Nodes (18): diagnose_flags_missing_driver(), discovers_and_instantiates_from_seeded_graph(), exposes_bounded_tools_with_declared_risk(), health_reports_missing_dependencies_as_false(), health_sees_two_hop_driver_and_network_service(), observe_returns_device_state_metrics(), Display, Error (+10 more)
+Cohesion: 0.16
+Nodes (19): diagnose_flags_missing_driver(), discovers_and_instantiates_from_seeded_graph(), exposes_bounded_tools_with_declared_risk(), health_reports_missing_dependencies_as_false(), health_sees_two_hop_driver_and_network_service(), observe_returns_device_state_metrics(), Display, Error (+11 more)
 
 ### Community 52 - ".chat_with_tools_outcome"
-Cohesion: 0.20
-Nodes (17): Coordinator, extract_file_content(), extract_file_path(), extract_project_name(), extract_url(), operation_for_tool(), protocol_tool_result(), quote_value() (+9 more)
+Cohesion: 0.19
+Nodes (18): Coordinator, extract_file_content(), extract_file_path(), extract_project_name(), extract_url(), operation_for_tool(), protocol_tool_result(), quote_value() (+10 more)
 
-### Community 53 - "MockPlanner"
-Cohesion: 0.20
-Nodes (12): err_result(), MockPlanner, MockVerificationAgent, ok_result(), Capability, Option, Self, String (+4 more)
+### Community 53 - "ToolRequest"
+Cohesion: 0.26
+Nodes (11): err_result(), MockPlanner, MockVerificationAgent, ok_result(), Capability, Option, ToolResult, Vec (+3 more)
 
 ### Community 54 - "model.rs"
-Cohesion: 0.11
-Nodes (22): Default, Send, FakeProbe, combine(), ConnectivityProbe, ConnectivityState, FinishReason, GatewayResponse (+14 more)
+Cohesion: 0.12
+Nodes (21): Send, FakeProbe, combine(), ConnectivityProbe, ConnectivityState, FinishReason, GatewayResponse, GenerationResponse (+13 more)
 
-### Community 55 - "action.rs"
-Cohesion: 0.15
-Nodes (11): ActionError, ActionStore, CheckpointState, PendingTransition, ResetError, Option, Send, String (+3 more)
+### Community 55 - "MockWifiDriver"
+Cohesion: 0.12
+Nodes (12): HealthError, ResetError, RollbackError, StageError, MockWifiDriver, ActionId, Arc, AtomicBool (+4 more)
 
 ### Community 56 - "tauri.conf.json"
 Cohesion: 0.10
 Nodes (20): assets/128x128@2x.png, assets/128x128.png, assets/32x32.png, app, security, windows, build, beforeBuildCommand (+12 more)
 
 ### Community 57 - "NodeType"
-Cohesion: 0.22
+Cohesion: 0.24
 Nodes (19): process_health(), NodeType, count_health(), counts_health_and_never_hides_stale(), graph_with(), is_healthy(), PanelSnapshot, render() (+11 more)
 
 ### Community 58 - "verifier.rs"
@@ -554,12 +562,12 @@ Cohesion: 0.19
 Nodes (18): format_review(), garbage_becomes_freeform(), loose_review(), parse_review(), parses_approve(), parses_approve_with_conditions(), parses_reject(), review_formats_verdict() (+10 more)
 
 ### Community 59 - "Testing Strategy"
-Cohesion: 0.38
+Cohesion: 0.28
 Nodes (14): Action State Machine, Agent Packages, Architecture Vision, Capability Model, Bespoke Graph Snapshot, Coordinator Modularization Snapshot, Human Interaction, Testing Strategy (+6 more)
 
 ### Community 60 - ".boot_with_probe"
-Cohesion: 0.18
-Nodes (12): AiosConfig, Box, ConfigError, BootError, config_dir_for(), Display, Error, Formatter (+4 more)
+Cohesion: 0.23
+Nodes (9): AiosConfig, Box, ProviderConfig, config_dir_for(), expand_path(), resolve_local_model_path(), Path, seed_boot_domain() (+1 more)
 
 ### Community 61 - ".new"
 Cohesion: 0.22
@@ -578,7 +586,7 @@ Cohesion: 0.11
 Nodes (17): anyOf, definitions, Number, PermissionEntry, Target, Value, description, anyOf (+9 more)
 
 ### Community 65 - "MockBackend"
-Cohesion: 0.16
+Cohesion: 0.15
 Nodes (7): AtomicBool, AtomicU32, Mutex, MockBackend, ProviderTier, ReasoningControl, tier_allows()
 
 ### Community 66 - "widgets.rs"
@@ -598,8 +606,8 @@ Cohesion: 0.20
 Nodes (15): build_demo_plan(), build_graph(), describe(), kernel_module_request(), main(), register_principals(), register_tools(), Option (+7 more)
 
 ### Community 70 - "definitions"
-Cohesion: 0.11
-Nodes (17): anyOf, definitions, Number, PermissionEntry, Target, Value, description, anyOf (+9 more)
+Cohesion: 0.12
+Nodes (16): definitions, Identifier, Number, PermissionEntry, Target, Value, description, oneOf (+8 more)
 
 ### Community 71 - "stub_provider.rs"
 Cohesion: 0.25
@@ -609,13 +617,17 @@ Nodes (12): escape_html(), fields_from_body(), main(), openai_response(), respon
 Cohesion: 0.19
 Nodes (10): DiscoveredModel, ChatOutcome, classification_help(), ProviderCatalogue, providers_text(), String, ToolResult, Vec (+2 more)
 
-### Community 73 - "ModelId"
-Cohesion: 0.15
-Nodes (14): Into, GatewayError, GenerationError, ModelId, ModelMessage, ModelRole, RegistryError, RoutingError (+6 more)
+### Community 73 - "RoutingError"
+Cohesion: 0.25
+Nodes (7): GatewayError, RegistryError, RoutingError, Display, Error, Formatter, Result
 
 ### Community 74 - "properties"
-Cohesion: 0.12
-Nodes (17): properties, Identifier, default, description, type, description, oneOf, type (+9 more)
+Cohesion: 0.14
+Nodes (14): properties, default, description, type, type, default, description, type (+6 more)
+
+### Community 75 - "Implementation Roadmap"
+Cohesion: 0.44
+Nodes (10): Archive README, Implementation Roadmap, Message Protocol, Model Routing, Observability, Requirements, Security Model, Specialist Depth Plan (+2 more)
 
 ### Community 76 - "permissions"
 Cohesion: 0.17
@@ -625,9 +637,9 @@ Nodes (12): $ref, array, null, description, items, type, uniqueItems, descriptio
 Cohesion: 0.17
 Nodes (12): $ref, array, null, description, items, type, uniqueItems, description (+4 more)
 
-### Community 78 - "project.rs"
-Cohesion: 0.35
-Nodes (10): HashMap, extract_port(), find_template(), ProjectTemplate, Option, String, Vec, scaffold_files() (+2 more)
+### Community 78 - "PROJECT_GROUNDING.md"
+Cohesion: 0.29
+Nodes (4): Current State, Grounding Snapshot: Groundless Surfaces Validated Live, Provider Teardown Fix, Open Work, Relevant Paths
 
 ### Community 79 - "graphify"
 Cohesion: 0.18
@@ -673,9 +685,9 @@ Nodes (7): graphify, How to query it, Keeping it fresh (hooks), Repository Worki
 Cohesion: 0.43
 Nodes (7): ApprovalQueue(), ChatInput(), ChatMessages(), Element, Scope, Sidebar(), SidebarHeader()
 
-### Community 90 - "resolve_local_model_path"
-Cohesion: 0.28
-Nodes (6): PathBuf, ProviderConfig, expand_path(), resolve_local_model_path(), Path, harness_direct_broker()
+### Community 90 - "BootError"
+Cohesion: 0.33
+Nodes (5): ConfigError, BootError, Display, Error, Formatter
 
 ### Community 91 - ".grant_consent"
 Cohesion: 0.29
@@ -688,6 +700,10 @@ Nodes (5): ApprovalItem, ApprovalQueue(), Element, String, Vec
 ### Community 93 - "graphify-refresh.sh"
 Cohesion: 0.33
 Nodes (5): GRAPHIFY_OPENAI_MODEL, OPENAI_API_KEY, OPENAI_BASE_URL, PATH, graphify-refresh.sh script
+
+### Community 94 - "Grounding Snapshot: Coordinator Modularization, Surface Harness, and Graphify"
+Cohesion: 0.40
+Nodes (5): Current State, Grounding Snapshot: Coordinator Modularization, Surface Harness, and Graphify, Open Work, Relevant Paths, Verification
 
 ### Community 95 - "ui_file_artifact.rs"
 Cohesion: 0.53
@@ -721,29 +737,53 @@ Nodes (3): Element, Scope, SettingsPanel()
 Cohesion: 0.67
 Nodes (3): loadProviderCatalog(), updateProviderCatalog(), updateRolesCatalog()
 
-### Community 178 - "CompositeDriver"
-Cohesion: 0.12
-Nodes (14): ActionId, Checkpoint, CheckpointError, CommitError, FileDriver, HealthError, ResetError, ResourceDriver (+6 more)
+### Community 148 - "Grounding Snapshot: ReasoningControl effort levels, empty-content retry hardening"
+Cohesion: 0.40
+Nodes (4): Current State, Grounding Snapshot: ReasoningControl effort levels, empty-content retry hardening, Open Work, Relevant Paths
+
+### Community 152 - "Self"
+Cohesion: 0.29
+Nodes (6): Into, GenerationError, ModelMessage, ModelRole, Self, String
+
+### Community 165 - "Grounding Snapshot: http timeout 180s default; plain-text CoT stripping"
+Cohesion: 0.40
+Nodes (4): Current State, Grounding Snapshot: http timeout 180s default; plain-text CoT stripping, Open Work, Relevant Paths
+
+### Community 176 - "Grounding Snapshot: repo cleanup: untrack build artifacts, ignore graphify churn files"
+Cohesion: 0.40
+Nodes (4): Current State, Grounding Snapshot: repo cleanup: untrack build artifacts, ignore graphify churn files, Open Work, Relevant Paths
+
+### Community 178 - "Result"
+Cohesion: 0.13
+Nodes (16): ActionId, Checkpoint, CheckpointError, CommitError, FileDriver, HealthError, ResetError, ResourceDriver (+8 more)
+
+### Community 258 - "Project Grounding"
+Cohesion: 0.40
+Nodes (5): Latest Snapshot, Project Grounding, Re-grounding Order, Sidebar Layout Design (2026-08-17), Snapshot Maintenance
+
+### Community 265 - "desktop-schema.json"
+Cohesion: 0.40
+Nodes (4): anyOf, description, $schema, title
 
 ## Knowledge Gaps
-- **242 isolated node(s):** `Latest Snapshot`, `Sidebar Layout Design (2026-08-17)`, `Re-grounding Order`, `Snapshot Maintenance`, `Current State` (+237 more)
+- **248 isolated node(s):** `Latest Snapshot`, `Sidebar Layout Design (2026-08-17)`, `Re-grounding Order`, `Snapshot Maintenance`, `Current State` (+243 more)
   These have ≤1 connection - possible missing edges or undocumented components.
 - **145 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `ResourceId` connect `ResourceId` to `protocol.rs`, `tests.rs`, `wifi_driver.rs`, `harness.rs`, `processes.rs`, `ActionRecord`, `files.rs`, `broker.rs`, `power.rs`, `storage.rs`, `drivers.rs`, `memory.rs`, `graphics.rs`, `network.rs`, `security.rs`, `web.rs`, `boot.rs`, `Result`, `packages.rs`, `Checkpoint`, `PrincipalId`, `executor.rs`, `ToolRequest`, `.chat_with_tools_outcome`, `MockPlanner`, `Coordinator`, `src/main.rs`, `.fmt`, `resolve_local_model_path`?**
-  _High betweenness centrality (0.069) - this node is a cross-community bridge._
-- **Why does `SystemGraph` connect `NodeId` to `boot.rs`, `packages.rs`, `Coordinator`, `src/main.rs`, `harness.rs`, `network.rs`, `processes.rs`, `discovery.rs`, `wifi.rs`, `SysfsDiscovery`, `power.rs`, `storage.rs`, `drivers.rs`, `memory.rs`, `graphics.rs`, `.boot_with_probe`, `security.rs`, `NodeType`?**
-  _High betweenness centrality (0.050) - this node is a cross-community bridge._
-- **Why does `ModelId` connect `ModelId` to `GenerationRequest`, `hub.rs`, `Vec`, `ProviderId`, `http.rs`, `model.rs`, `.new`?**
-  _High betweenness centrality (0.038) - this node is a cross-community bridge._
+- **Why does `ResourceId` connect `ResourceId` to `protocol.rs`, `tests.rs`, `wifi_driver.rs`, `harness.rs`, `processes.rs`, `ActionRecord`, `files.rs`, `broker.rs`, `power.rs`, `storage.rs`, `drivers.rs`, `memory.rs`, `graphics.rs`, `network.rs`, `security.rs`, `web.rs`, `boot.rs`, `Checkpoint`, `packages.rs`, `PrincipalId`, `PolicyBroker`, `executor.rs`, `wifi.rs`, `.chat_with_tools_outcome`, `ToolRequest`, `MockWifiDriver`, `Coordinator`, `src/main.rs`?**
+  _High betweenness centrality (0.080) - this node is a cross-community bridge._
+- **Why does `SystemGraph` connect `NodeId` to `harness.rs`, `processes.rs`, `discovery.rs`, `SysfsDiscovery`, `power.rs`, `storage.rs`, `drivers.rs`, `memory.rs`, `graphics.rs`, `network.rs`, `security.rs`, `boot.rs`, `packages.rs`, `EdgeId`, `wifi.rs`, `NodeType`, `.boot_with_probe`, `Coordinator`, `src/main.rs`?**
+  _High betweenness centrality (0.043) - this node is a cross-community bridge._
+- **Why does `NodeId` connect `NodeId` to `boot.rs`, `packages.rs`, `Coordinator`, `src/main.rs`, `harness.rs`, `processes.rs`, `discovery.rs`, `wifi.rs`, `SysfsDiscovery`, `power.rs`, `storage.rs`, `drivers.rs`, `memory.rs`, `graphics.rs`, `network.rs`, `security.rs`, `NodeType`?**
+  _High betweenness centrality (0.031) - this node is a cross-community bridge._
 - **Are the 7 inferred relationships involving `ResourceId` (e.g. with `.run_tool_as()` and `exec_runs_echo()`) actually correct?**
   _`ResourceId` has 7 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 7 inferred relationships involving `NodeId` (e.g. with `.ensure_control_plane_edges()` and `.ensure_control_plane_nodes()`) actually correct?**
   _`NodeId` has 7 INFERRED edges - model-reasoned connections that need verification._
 - **What connects `Latest Snapshot`, `Sidebar Layout Design (2026-08-17)`, `Re-grounding Order` to the rest of the system?**
-  _242 weakly-connected nodes found - possible documentation gaps or missing edges._
+  _248 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `tools.rs` be split into smaller, more focused modules?**
   _Cohesion score 0.06526610644257703 - nodes in this community are weakly interconnected._
