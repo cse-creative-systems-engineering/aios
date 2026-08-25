@@ -1,6 +1,6 @@
 use crate::model::{
-    ReasoningControl,
     AgentRole, GatewayError, GenerationRequest, ModelGateway, ModelMessage, ModelRole, ModelTask,
+    ReasoningControl,
 };
 use crate::protocol::DataClassification;
 use serde::Deserialize;
@@ -58,6 +58,16 @@ pub fn submit(
 }
 
 pub fn strip_think(text: &str) -> String {
+    // Tagged reasoning (Qwen-style <think> blocks).
+    let stripped = strip_tagged_think(text);
+    // Untagged deliberation: some models (nemotron free tier etc.) emit
+    // their whole planning process as plain text before the answer. When a
+    // recognizable preamble exists, everything before the final answer
+    // section is dropped; otherwise the text passes through untouched.
+    strip_plain_preamble(&stripped)
+}
+
+fn strip_tagged_think(text: &str) -> String {
     if !text.contains("<think>") {
         return text.to_string();
     }
@@ -88,6 +98,48 @@ pub fn strip_think(text: &str) -> String {
         }
     }
     result.trim().to_string()
+}
+
+/// Known plain-text deliberation openers. Only strips when the opener sits
+/// at the very start of a line, so an answer that merely mentions these
+/// phrases mid-sentence is never mangled.
+fn strip_plain_preamble(text: &str) -> String {
+    const OPENERS: &[&str] = &[
+        "Here's a thinking process",
+        "Here is my thinking process",
+        "Let me think through this",
+        "Thinking process:",
+        "Okay, let's think",
+        "First, let me analyze",
+    ];
+    for opener in OPENERS {
+        if let Some(pos) = text.find(opener) {
+            let at_line_start = pos == 0 || text.as_bytes()[pos - 1] == b'\n';
+            if !at_line_start {
+                continue;
+            }
+            // The answer usually follows after the deliberation ends. Prefer
+            // an explicit answer marker if the model emits one.
+            for marker in ["\nAnswer:", "\n**Answer", "\nFinal answer"] {
+                if let Some(idx) = text[pos..].find(marker) {
+                    let after = &text[pos + idx..];
+                    return after
+                        .trim_start_matches(|c| c == '\n' || c == '*')
+                        .trim_start()
+                        .to_string();
+                }
+            }
+            // No marker: fall back to the last paragraph block, which for
+            // deliberation-then-answer models is the actual answer.
+            if let Some(last_blank) = text.rfind("\n\n") {
+                let tail = text[last_blank..].trim().to_string();
+                if !tail.is_empty() && tail.len() < text.len() / 2 {
+                    return tail;
+                }
+            }
+        }
+    }
+    text.to_string()
 }
 
 pub struct Planner {
@@ -559,6 +611,19 @@ mod strip_think_tests {
             strip_think("<think>x</think>first<think>y</think>second"),
             "firstsecond"
         );
+    }
+
+    #[test]
+    fn strips_nemotron_style_plain_deliberation() {
+        let text = "Here's a thinking process:\n\n1. **Analyze User Input:**\n   - the user wants cpu data\n2. **Extract facts:**\n   - utilization 11.9%\n\nSystem-wide CPU utilization is 11.9% across 32 cores.";
+        let out = strip_think(text);
+        assert_eq!(out, "System-wide CPU utilization is 11.9% across 32 cores.");
+    }
+
+    #[test]
+    fn plain_answer_with_similar_phrase_mid_sentence_untouched() {
+        let text = "The plan works. Here's a thinking process you can follow at home.";
+        assert_eq!(strip_think(text), text);
     }
 }
 

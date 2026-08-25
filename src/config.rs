@@ -168,7 +168,10 @@ pub struct ProviderConfig {
 }
 
 const fn default_http_timeout_ms() -> u64 {
-    10_000
+    // Reasoning models routinely think for 1–3 minutes before emitting
+    // visible output; free-tier providers queue on top of that. 10s killed
+    // every surface composition against them ("timed out reading response").
+    180_000
 }
 
 impl ProviderConfig {
@@ -232,7 +235,8 @@ impl ProviderConfig {
                 )));
             }
         }
-        parse_tier(&self.tier).map_err(|e| ConfigError::InvalidProvider(format!("{}: {e}", self.id)))?;
+        parse_tier(&self.tier)
+            .map_err(|e| ConfigError::InvalidProvider(format!("{}: {e}", self.id)))?;
         Ok(())
     }
 
