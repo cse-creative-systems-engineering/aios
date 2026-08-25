@@ -6,6 +6,11 @@ Start here before making changes or answering questions about the repository.
 
 Read the latest dated grounding snapshot:
 
+- [`project_grounding_2026-08-25_18-03-08.md`](docs/grounding/project_grounding_2026-08-25_18-03-08.md) — knowledge graph refresh + graphify project skill registration
+- [`project_grounding_2026-08-25_18-00-38.md`](docs/grounding/project_grounding_2026-08-25_18-00-38.md) — ReasoningControl effort levels, empty-content retry hardening
+- [`project_grounding_2026-08-25_17-35-59.md`](docs/grounding/project_grounding_2026-08-25_17-35-59.md) — exec.run sandboxed per ADR-0010 Phase 2: bwrap boundary wired, fd bug fixed, suite green
+- [`project_grounding_2026-08-25_17-10-37.md`](docs/grounding/project_grounding_2026-08-25_17-10-37.md) — merge session-day-buckets: sessions, persistence, exec stub (ADR-0010)
+- [`project_grounding_2026-08-24_19-57-17.md`](docs/grounding/project_grounding_2026-08-24_19-57-17.md) — read-only file tool handlers registered at boot
 - [`project_grounding_2026-08-24_20-05-00.md`](docs/grounding/project_grounding_2026-08-24_20-05-00.md) — workspace co-partner stage 1+4 landed (files, web, artifact scaffold), docs freshness automation
 - [`project_grounding_2026-08-22_00-15-00.md`](docs/grounding/project_grounding_2026-08-22_00-15-00.md) — multi-surface canvas shipped, provider-health fix for empty answers, snap env sanitizers
 - [`project_grounding_2026-08-21_20-35-47.md`](docs/grounding/project_grounding_2026-08-21_20-35-47.md) — groundless surfaces validated live on a real desktop, provider teardown fix, fidelity gate unit tolerance

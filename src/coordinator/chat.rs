@@ -42,9 +42,9 @@ impl Coordinator {
         }
         let required_calls = required_specialist_calls(&messages);
         for call in &required_calls {
-            let result = self
-                .run_tool_as("planner", call)
-                .map_err(|error| AgentError::Format(format!("required specialist failed: {error}")))?;
+            let result = self.run_tool_as("planner", call).map_err(|error| {
+                AgentError::Format(format!("required specialist failed: {error}"))
+            })?;
             let content = format!("tool {} result:\n{}", result.tool, result.text);
             tool_results.push(result);
             messages.push(ModelMessage::new(ModelRole::User, content));
@@ -76,8 +76,10 @@ impl Coordinator {
             }
 
             messages.push(ModelMessage::new(ModelRole::Assistant, &answer));
+            let mut executed_any = false;
             for call in calls {
                 let result = self.run_tool_as("planner", &call);
+                executed_any = true;
                 let content = match result {
                     Ok(result) => {
                         let content = format!("tool {} result:\n{}", result.tool, result.text);
@@ -87,15 +89,20 @@ impl Coordinator {
                     Err(error) => format!("tool {} error: {}", call.name, error),
                 };
                 messages.push(ModelMessage::new(ModelRole::User, content));
+            }
+            // Multi-step work (Stage 4): after results, the planner may issue
+            // further tool calls (observe → fetch → write → verify). Only near
+            // the cap do we force a grounded answer instead of another round.
+            if turn + 2 == MAX_TOOL_TURNS {
                 messages.push(ModelMessage::new(
                     ModelRole::User,
-                    "The tool result above is complete and authoritative. Do not call another tool. Answer the original user question now using only the returned evidence. If the evidence does not contain the requested metric, say that it is unavailable.",
+                    "This is the final planning round. Do not call another tool. Answer the original user question now using only the returned evidence. If the evidence does not contain the requested metric, say that it is unavailable.",
                 ));
-            }
-            if turn + 1 == MAX_TOOL_TURNS {
-                self.record_audit("planner", "tool_loop", "chat", "turn cap reached");
+            } else if !executed_any {
+                // Defensive: no calls parsed but loop continued — bail out
+                // visibly rather than spin (fail-fast per ADR-0003).
                 return Err(AgentError::Format(
-                    "tool-call turn cap reached before a grounded answer".into(),
+                    "tool-call loop continued without executing any call".into(),
                 ));
             }
             self.report(
@@ -207,7 +214,11 @@ impl Coordinator {
             // Files: resource is the file path (first token of args). Must be a
             // `file:/workspace/...` or `file:/artifacts/...` resource (ADR-0008).
             let arg = call.arguments.trim();
-            let path = arg.split_whitespace().next().unwrap_or("file:/workspace").trim();
+            let path = arg
+                .split_whitespace()
+                .next()
+                .unwrap_or("file:/workspace")
+                .trim();
             // Allow bare filenames by prefixing workspace.
             let resource_str = if path.starts_with("file:") {
                 path.to_string()
@@ -258,7 +269,9 @@ impl Coordinator {
         let token = self
             .session_tokens
             .iter()
-            .find(|token| crate::capability::capability_covers(&token.capability, &resource, operation))
+            .find(|token| {
+                crate::capability::capability_covers(&token.capability, &resource, operation)
+            })
             .cloned()
             .ok_or_else(|| {
                 ToolError::Permission(format!("no session token for {operation:?} on {resource}"))
@@ -374,6 +387,18 @@ pub(crate) fn tool_parameters(operation: Operation, args: &str) -> crate::protoc
             symptom: args.into(),
         },
         Operation::Query => crate::protocol::ToolParameters::Query { query: args.into() },
+        Operation::Execute => crate::protocol::ToolParameters::Execute {
+            command: args.into(),
+        },
+        Operation::Serve => {
+            let port = crate::project::extract_port(args).unwrap_or(3000);
+            let msg = if args.to_ascii_lowercase().contains("hello") {
+                "hello world".to_string()
+            } else {
+                args.to_string()
+            };
+            crate::protocol::ToolParameters::Serve { port, message: msg }
+        }
         Operation::Stage => crate::protocol::ToolParameters::Stage {
             change: serde_json::json!({ "module": args.trim() }),
         },
@@ -397,7 +422,9 @@ pub(crate) fn tool_parameters(operation: Operation, args: &str) -> crate::protoc
         Operation::Delete => crate::protocol::ToolParameters::Stage {
             change: serde_json::json!({ "path": args.trim(), "content": "" }),
         },
-        Operation::Fetch => crate::protocol::ToolParameters::Fetch { url: args.trim().into() },
+        Operation::Fetch => crate::protocol::ToolParameters::Fetch {
+            url: args.trim().into(),
+        },
         _ => crate::protocol::ToolParameters::Query { query: args.into() },
     }
 }
@@ -432,7 +459,10 @@ pub(crate) fn protocol_tool_result(
             if let Some(text) = data.get("text").and_then(|v| v.as_str()) {
                 text.to_string()
             } else if let Some(content) = data.get("content").and_then(|v| v.as_str()) {
-                let url = data.get("fetched_from").and_then(|v| v.as_str()).unwrap_or("");
+                let url = data
+                    .get("fetched_from")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 if url.is_empty() {
                     content.to_string()
                 } else {
@@ -458,7 +488,10 @@ pub(crate) fn protocol_tool_result(
             "confidence={confidence} findings=[{}]",
             findings.join(" | ")
         ),
-        Some(crate::protocol::ToolData::CommitResult { committed, health_verified }) => {
+        Some(crate::protocol::ToolData::CommitResult {
+            committed,
+            health_verified,
+        }) => {
             format!("committed={committed} health_verified={health_verified} tool={name}")
         }
         Some(crate::protocol::ToolData::StagedChange { id, checkpoint }) => {
@@ -517,20 +550,26 @@ pub(crate) fn required_specialist_calls(messages: &[ModelMessage]) -> Vec<ToolCa
     if prompt.contains("network") || prompt.contains("wifi") || prompt.contains("internet") {
         add(&mut calls, "network.observe_network", "all");
     }
-    // Workspace co-partner (Stage 1/3): heuristic file/web triggers for natural
-    // language so the full UX works without forced JSON. The model can still
-    // emit precise tool_calls; this just seeds evidence for intent that mentions
-    // files or web URLs.
-    if prompt.contains("file:") || prompt.contains("workspace") || prompt.contains("create file") || prompt.contains("write file") || prompt.contains(".py") || prompt.contains(".rs") || prompt.contains(".html") || prompt.contains(".txt") || prompt.contains(".md") {
-        // Try to extract a file path from the original prompt (preserve case).
-        // Look for file:/workspace/... or bare <name>.<ext>
-        let path = extract_file_path(&original).unwrap_or_else(|| "file:/workspace/hello.py".to_string());
-        // Content after "with content" or after the path — keep simple: if prompt
-        // mentions "hello" use a hello world, otherwise empty (health will still pass).
-        let content = extract_file_content(&original).unwrap_or_else(|| "hello from aios".to_string());
-        add(&mut calls, "files.write_file", &format!("{path} {content}"));
+    // Workspace co-partner (Stage 1/3): heuristic read-only evidence triggers
+    // only. Mutating file writes are NOT heuristically triggered — the model
+    // must emit an explicit files.write_file/create_file tool call now that
+    // the tool claims advertise them. A prompt merely mentioning a filename
+    // must never silently stage a write (ADR-0003: no silent actions).
+    if prompt.contains("file:")
+        || prompt.contains("workspace")
+        || prompt.contains("read file")
+        || prompt.contains("show file")
+        || prompt.contains("observe file")
+    {
+        let path = extract_file_path(&original).unwrap_or_else(|| "file:/workspace".to_string());
+        add(&mut calls, "files.observe_file", &path);
     }
-    if prompt.contains("http://") || prompt.contains("https://") || prompt.contains("fetch") || prompt.contains("docs.rs") || prompt.contains("tokio") {
+    if prompt.contains("http://")
+        || prompt.contains("https://")
+        || prompt.contains("fetch")
+        || prompt.contains("docs.rs")
+        || prompt.contains("tokio")
+    {
         if let Some(url) = extract_url(&original) {
             add(&mut calls, "web.fetch_url", &url);
         } else if prompt.contains("tokio") {
@@ -543,7 +582,8 @@ pub(crate) fn required_specialist_calls(messages: &[ModelMessage]) -> Vec<ToolCa
 fn extract_file_path(original: &str) -> Option<String> {
     // Prefer explicit file:/workspace/... or file:/artifacts/...
     for token in original.split_whitespace() {
-        let t = token.trim_matches(|c: char| c == '"' || c == '\'' || c == ',' || c == '.' || c == ';');
+        let t =
+            token.trim_matches(|c: char| c == '"' || c == '\'' || c == ',' || c == '.' || c == ';');
         if t.starts_with("file:/workspace") || t.starts_with("file:/artifacts") {
             return Some(t.to_string());
         }
@@ -553,7 +593,15 @@ fn extract_file_path(original: &str) -> Option<String> {
         let t = token.trim_matches(|c: char| c == '"' || c == '\'' || c == ',' || c == ';');
         if t.contains('.') && !t.contains("://") && t.len() < 64 {
             let lower = t.to_ascii_lowercase();
-            if lower.ends_with(".py") || lower.ends_with(".rs") || lower.ends_with(".html") || lower.ends_with(".txt") || lower.ends_with(".md") || lower.ends_with(".json") || lower.ends_with(".ts") || lower.ends_with(".js") {
+            if lower.ends_with(".py")
+                || lower.ends_with(".rs")
+                || lower.ends_with(".html")
+                || lower.ends_with(".txt")
+                || lower.ends_with(".md")
+                || lower.ends_with(".json")
+                || lower.ends_with(".ts")
+                || lower.ends_with(".js")
+            {
                 // Strip leading ./ or /
                 let name = t.trim_start_matches("./").trim_start_matches('/');
                 return Some(format!("file:/workspace/{name}"));
@@ -568,7 +616,9 @@ fn extract_file_content(original: &str) -> Option<String> {
     let lower = original.to_ascii_lowercase();
     if let Some(idx) = lower.find("with content") {
         let after = &original[idx + "with content".len()..].trim();
-        let content = after.trim_matches(|c: char| c == '"' || c == '\'' || c == ':' ).trim();
+        let content = after
+            .trim_matches(|c: char| c == '"' || c == '\'' || c == ':')
+            .trim();
         if !content.is_empty() {
             return Some(content.to_string());
         }
@@ -580,9 +630,30 @@ fn extract_file_content(original: &str) -> Option<String> {
     None
 }
 
+fn extract_project_name(original: &str) -> Option<String> {
+    for token in original.split_whitespace() {
+        let t = token.trim_matches(|c: char| c == '"' || c == '\'' || c == ',' || c == ';');
+        if t.to_ascii_lowercase() == "project" {
+            // next token is name
+            let idx = original.to_ascii_lowercase().find("project").unwrap();
+            let after = original[idx + 7..].trim();
+            let name = after
+                .split_whitespace()
+                .next()
+                .unwrap_or("demo")
+                .trim_matches(|c: char| c == '"' || c == '\'' || c == ',');
+            if !name.is_empty() {
+                return Some(name.to_string());
+            }
+        }
+    }
+    None
+}
+
 fn extract_url(original: &str) -> Option<String> {
     for token in original.split_whitespace() {
-        let t = token.trim_matches(|c: char| c == '"' || c == '\'' || c == ',' || c == ';' || c == ')');
+        let t =
+            token.trim_matches(|c: char| c == '"' || c == '\'' || c == ',' || c == ';' || c == ')');
         if t.starts_with("http://") || t.starts_with("https://") {
             return Some(t.to_string());
         }

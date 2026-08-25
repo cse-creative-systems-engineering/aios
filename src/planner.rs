@@ -1,4 +1,5 @@
 use crate::model::{
+    ReasoningControl,
     AgentRole, GatewayError, GenerationRequest, ModelGateway, ModelMessage, ModelRole, ModelTask,
 };
 use crate::protocol::DataClassification;
@@ -46,7 +47,7 @@ pub fn submit(
         model: None,
         // Planning benefits from reasoning; the budget retry covers models
         // that think longer than the configured allowance.
-        reasoning_disabled: false,
+        reasoning: ReasoningControl::Low,
     };
     let response = gateway.submit(&task, &request)?;
     let text = strip_think(response.response.text.trim());
@@ -405,6 +406,16 @@ fn normalize_tool_name(name: &str) -> String {
         "packages_diagnose_fault" => "packages.diagnose_fault".to_string(),
         "boot_observe_boot" => "boot.observe_boot".to_string(),
         "boot_diagnose_fault" => "boot.diagnose_fault".to_string(),
+        "files_observe_file" => "files.observe_file".to_string(),
+        "files_diagnose_file" => "files.diagnose_file".to_string(),
+        "files_write_file" => "files.write_file".to_string(),
+        "files_create_file" => "files.create_file".to_string(),
+        "files_patch_file" => "files.patch_file".to_string(),
+        "files_delete_file" => "files.delete_file".to_string(),
+        "files_write_artifact" => "files.write_artifact".to_string(),
+        "files_create_artifact" => "files.create_artifact".to_string(),
+        "web_fetch_url" => "web.fetch_url".to_string(),
+        "web_search_web" => "web.search_web".to_string(),
         other => other.to_string(),
     }
 }

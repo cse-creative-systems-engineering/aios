@@ -99,6 +99,27 @@ function restoreSidebarDom(snap: SidebarDomSnap): void {
 }
 
 function bindSidebar(): void {
+  // Toggles near chat input — ultra-premium compact
+  document.addEventListener('click', (e) => {
+    const v = (e.target as HTMLElement)?.closest('#verifier-toggle') as HTMLButtonElement | null;
+    if (v) {
+      const on = v.dataset.verifier === 'on';
+      const next = !on;
+      v.dataset.verifier = next ? 'on' : 'off';
+      const dot = v.querySelector('.verifier-dot') as HTMLElement | null;
+      const label = v.querySelector('.verifier-label') as HTMLElement | null;
+      if (label) label.textContent = next ? 'Verifier \u00b7 On' : 'Verifier \u00b7 Off';
+      v.setAttribute('aria-pressed', String(next));
+      void invoke('set_verifier_enabled', { enabled: next });
+    }
+    const a = (e.target as HTMLElement)?.closest('.approval-btn') as HTMLButtonElement | null;
+    if (a) {
+      const mode = a.dataset.approval as string;
+      document.querySelectorAll('.approval-btn').forEach(b => { (b as HTMLButtonElement).classList.remove('is-active'); b.setAttribute('aria-pressed','false'); });
+      a.classList.add('is-active'); a.setAttribute('aria-pressed','true');
+      void invoke('set_approval_mode', { mode });
+    }
+  });
   document.querySelector<HTMLFormElement>('#prompt-form')?.addEventListener('submit', submitPrompt);
   const promptEl = document.querySelector<HTMLTextAreaElement>('#prompt');
   promptEl?.addEventListener('pointerdown', () => {
@@ -184,7 +205,7 @@ function bindSelectCloser(): void {
   selectCloserBound = true;
   document.addEventListener('pointerdown', (event) => {
     const target = event.target as Element;
-    const item = target.closest?.('.aios-select-list li');
+    const item = target.closest?.('.aios-select-list li') as (HTMLElement & { dataset: DOMStringMap }) | null;
     if (item) {
       const box = item.closest<HTMLElement>('.aios-select');
       if (box) pickSelectOption(box, item.dataset.value ?? '', item.textContent ?? '');

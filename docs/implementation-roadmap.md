@@ -1,8 +1,9 @@
 # Aios Implementation Roadmap
 
-**Status:** Draft — updated for M8 (M0–M7 complete, M8 desktop foundation
-working; multi-surface lifecycle and premium sidebar remain planned in
-`docs/milestones/0002-multi-surface-lifecycle-plan.md`)
+**Status:** Draft — updated for M11 (M0–M9 complete on `main`; M10
+session-day-buckets and M11 execution primitive are in progress on
+`feature/session-day-buckets`; multi-surface lifecycle and premium sidebar
+are shipped per milestones 0002 and 0003)
 **Depends on:** architecture.md, requirements.md, security-model.md, capability-model.md, message-protocol.md, action-state-machine.md, system-graph.md, agent-packages.md, model-routing.md, all ADRs
 
 ## Purpose
@@ -44,13 +45,16 @@ graph TD
     M2 --> M8
     M7 --> M9[M9: Workspace Co-Partner]
     M8 --> M9
+    M9 --> M10[M10: Session Day-Buckets]
+    M10 --> M11[M11: Execution Primitive]
 
     classDef done fill:#2d7d46,color:#fff,stroke:#1a5c2e,stroke-width:2px
     classDef current fill:#d4a017,color:#fff,stroke:#a07c10,stroke-width:2px
     classDef planned fill:#4a90d9,color:#fff,stroke:#2a6db0,stroke-width:2px
 
-    class M0,M1,M2,M3,M4,M5,M6,M7 done
-    class M8,M9 current
+    class M0,M1,M2,M3,M4,M5,M6,M7,M9 done
+    class M8,M10,M11 current
+    class M11 planned
 ```
 
 ---
@@ -887,22 +891,24 @@ each specialist is built.
 
 ## Milestone 8: System State Panel and Aios UI
 
-**Status:** ✅ Desktop foundation complete. The resident docked UI, live
-evidence path, groundless generation, value validation, transparent canvas,
-click-through, and widget movement are working. Multi-surface lifecycle and
-sidebar redesign are planned in
-`docs/milestones/0002-multi-surface-lifecycle-plan.md`.
-**Estimated effort:** ongoing M8 workstream; current lifecycle and sidebar work
-are tracked in `docs/milestones/0002-multi-surface-lifecycle-plan.md` and
-`docs/ui.md`
-**Dependencies:** M2 (can run in parallel with M3–M6)
+**Status:** ✅ Complete. Desktop foundation, multi-surface lifecycle
+(`0002-multi-surface-lifecycle-plan.md`, shipped at `003f70a`), and the
+premium sidebar / administration panel (`0003-sidebar-administration-panel.md`,
+shipped) are all live on `main`. The resident docked UI, live evidence path,
+groundless generation, value validation, transparent canvas, click-through,
+per-card widget movement, `Vec<SurfaceCard>` accumulation with unioned
+`InputRect`, and the ultra-premium sidebar with provider registry, model
+assignment, backend-status rail, and approval/verifier toggles all ship on
+`main` today. Ongoing polish and the natural-language surface-edit path
+(revise:<id>) continue as v0.2 work but do not gate M8 completion.
+**Dependencies:** M2 (ran in parallel with M3–M6)
 
 ### Goal
 
-Maintain the resident sidebar and detached generated-surface presentation
-layer. The sidebar is the stable chat/control surface. Generated surfaces are
-transparent, movable, click-through presentation hosts. Screen vision and the
-premium sidebar redesign remain separate future workstreams.
+Maintain the resident sidebar as the stable chat/control/administration
+surface, and the detached generated-surface layer as transparent, movable,
+per-card presentation hosts that accumulate on the canvas. Screen vision
+remains a separate future workstream.
 
 ### Deliverables
 
@@ -930,8 +936,60 @@ premium sidebar redesign remain separate future workstreams.
 5. ✅ Failed actions are visible in the recovery view.
 6. ✅ All controls that change the system use the same broker/staging/rollback
    path as chat — the panel is read-only and introduces no privileged bypass.
-7. ✅ The current library baseline passes 438 tests, with one ignored
-   real-model test; desktop acceptance is recorded in the M8 milestone.
+7. ✅ The current library baseline passes 413 tests on `feature/session-day-buckets` (411 at M9 merge `32ffc0f`; +3 added on this branch — see `docs/test-ledger.md`), with one ignored real-model test; desktop acceptance is recorded in `milestones/0001-generative-surface-desktop-foundation.md`, `0002-multi-surface-lifecycle-plan.md`, and `0003-sidebar-administration-panel.md`.
+8. ✅ Multi-surface: two coexisting surfaces (CPU + RAM) drag independently, close independently, and clicks between them fall through to the desktop (verified in the `2026-08-22_00-15-00` grounding snapshot).
+9. ✅ Sidebar administration: provider registry, model assignment by role, backend/provider/operation/surface status, and the approval-mode + verifier toggles (ADR-0010) all present in the resident sidebar.
+
+---
+
+## Milestone 11: Execution Primitive and Approval Modes
+
+**Status:** 🔶 In progress on `feature/session-day-buckets` (per ADR-0010).
+**Estimated effort:** 1–2 weeks after M10's SessionStore lands.
+**Dependencies:** M9 (workspace files/web) and M10 (SessionStore for persistence).
+**Governing ADR:** [`decisions/0010-execution.md`](decisions/0010-execution.md), amending ADR-0008 §Consequences.
+
+### Goal
+
+Make Aios able to invoke programs — not just write files — without adding a
+new TCB path. A single typed primitive (`exec.run`, `RiskLevel::Staged`) runs
+through `Broker → Guardian → Staged executor → Audit`; the Guardian denylist
+gates brickable commands regardless of approval mode; the user picks the
+approval-friction level per session (`Default | Auto | YOLO`).
+
+### Deliverables
+
+- [x] `Operation::Execute` / `Operation::Serve` in `capability.rs` (risk 2)
+- [x] `src/exec.rs` — `ExecSpecialist`, `exec.run` tool, `sh -c` invocation, exit-code health
+- [x] Coordinator wiring: register tool, spawn specialist, grant capability, session token
+- [x] Frontend toggles: `Verifier` pill, `Default | Auto | YOLO` capsule, `set_verifier_enabled`/`set_approval_mode` Tauri commands
+- [ ] `src/sandbox.rs` — `trait Sandbox` with `BubblewrapSandbox`, `LandlockSandbox`, `NullSandbox` implementations; tier detection at boot; result cached in `BackendStatus` (ADR-0010 §3.1). This is the *primary* safety deliverable of M11.
+- [ ] `src/guardian.rs::EXEC_PATTERNS` — defense-in-depth pattern list `EXEC-P-001..005` (ADR-0010 §3.2), evaluated pre-sandbox for audit clarity
+- [ ] `src/broker.rs` approval-mode logic: `Default` → always ApprovalRequest, `Auto` → auto-approve safe risk-2 only, `YOLO` → auto-approve all Guardian-passing risk-2
+- [ ] Verifier skip wiring in `src/coordinator/mod.rs` for risk ≤2 when `verifier_enabled=false`; risk-3+ always runs verifier
+- [ ] `sudo -n` detection in `handle_exec` + `OperationNotSupported` hint when `/etc/sudoers.d/aios` is missing
+- [ ] `src/bin/install_sudoers.rs` helper that runs the `pkexec`-authenticated write for the allowlist in ADR-0010 §6
+- [ ] `src/config.rs` — persist `approval_mode`, `verifier_enabled` to `~/.aios/config.toml`, mirror into `sessions/{date}.json`
+- [ ] `BackendStatus` rail displays active mode + verifier state
+- [ ] Audit log records `AutoApproved(mode=…)` / `ExplicitApproval` / `verifier_skipped=true` per ADR-0010 §4
+
+### Acceptance criteria
+
+1. `cargo test --lib` includes `exec_denies_brickable`, `exec_mode_default_requires_approval`, `exec_mode_auto_auto_approves_safe`, `exec_mode_yolo_still_denies_brickable`, `verifier_skip_records_audit`, `sudo_missing_returns_unsupported`.
+2. `cargo test --test harness_drive` covers `files.write_file` → `exec.run cargo test` → committed under each of the three modes.
+3. Manual desktop baseline: `create python html server at port 3005 hello world` → model emits `files.write_file` then `exec.run` → exit 0 committed → `web.fetch http://127.0.0.1:3005` returns body. Mode toggle switches friction level on next prompt.
+4. `rm -rf /etc` typed by the model is denied in all three modes with a visible `Deny(EXEC-P-001)` before the sandbox spawns; `python -c "open('/etc/x','w')"` (not on the pattern list) is denied by the sandbox itself with a filesystem-permission error surfaced in the UI — proof the sandbox is the boundary, not the regex.
+5. `sudo -n false` (i.e. sudoers.d missing) → any `exec.run` with a leading `sudo` returns `OperationNotSupported` with a clear message; no interactive prompt is ever attempted.
+6. Modes and verifier state are persisted across `kill` → `boot` (relies on M10 SessionStore).
+7. No regression: full ADR-0008/0009 gates still pass.
+
+### What this milestone does NOT include
+
+- No interactive shells / PTY allocation.
+- No `bash -i`, `nsenter`, `unshare`, `chroot`, `setpriv`, `capsh`.
+- No long-running process supervision — that's the future `serve.specialist` (Milestone 0006 in the milestones/ directory), not M11.
+- No expansion of the sudoers.d allowlist beyond ADR-0010 §6 without a new ADR.
+- No override of risk-3+ approval by any mode.
 
 ---
 
@@ -948,11 +1006,14 @@ premium sidebar redesign remain separate future workstreams.
 | M6: First Hardware Specialist | ✅ Complete | 13–19 weeks | M4, M5 |
 | M7: Additional Specialists | ✅ Complete | +2–4 weeks per specialist | M6 |
 | M8: System State Panel | ✅ Terminal panel and resident docked UI complete; dynamic generative surface in progress | 15–22 weeks (parallel) | M2 |
-| M9: Workspace Co-Partner | 📝 Planned — docs only | 3–5 weeks (M9.1 files, M9.2 env, M9.3 web, M9.4 loop/artifacts) | M7, M8 |
+| M9: Workspace Co-Partner | ✅ Merged to `main` at `32ffc0f` | 3–5 weeks (M9.1 files, M9.2 env, M9.3 web, M9.4 loop/artifacts) | M7, M8 |
+| M10: Session Day-Buckets | 🔶 In progress on `feature/session-day-buckets` | 2–4 weeks (SessionStore, project scaffold, always-on awareness) | M9 |
+| M11: Execution Primitive | 🔶 In progress on `feature/session-day-buckets` (per ADR-0010) | 1–2 weeks (`exec.run`, Guardian denylist, approval modes, verifier toggle, sudoers.d) | M10 |
 
 **Estimated time to working v0.1 with Wi-Fi vertical slice:** 4–5 months  
 **Estimated time to full specialist coverage (8 modules):** 8–12 months  
-**Estimated time to co-partner MVP (files + env + fetch + loop):** +3–5 weeks after M8 on `feature/workspace-co-partner`
+**Estimated time to co-partner MVP (files + env + fetch + loop):** +3–5 weeks after M8 on `feature/workspace-co-partner`  
+**Estimated time to session persistence + execution primitive:** +3–6 weeks after M9 on `feature/session-day-buckets`
 
 ---
 

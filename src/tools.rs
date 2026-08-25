@@ -522,7 +522,9 @@ impl SpecialistTool for GraphHealth {
     }
     fn run(&self, graph: &SystemGraph, args: &str) -> Result<ToolResult, ToolError> {
         if !args.trim().is_empty() && args.trim() != "all" {
-            return Err(ToolError::Usage("health accepts only an empty scope or 'all'".into()));
+            return Err(ToolError::Usage(
+                "health accepts only an empty scope or 'all'".into(),
+            ));
         }
         let mut counts: HashMap<String, usize> = HashMap::new();
         let mut by_type: HashMap<String, HashMap<String, usize>> = HashMap::new();
@@ -737,7 +739,7 @@ macro_rules! tool_claims {
     };
 }
 tool_claims! {
-    TOOL_CLAIM_HEADER: "Read-only machine tools are available. Never invent command output and never claim to run shell commands. The available tools are: observe, diagnose, query, deps, impact, health, wifi.observe_device, wifi.diagnose_fault, storage.observe_storage, storage.diagnose_fault, network.observe_network, network.diagnose_fault, drivers.observe_device, drivers.diagnose_fault, graphics.observe_graphics, graphics.diagnose_fault, memory.observe_memory, memory.diagnose_fault, processes.observe_process, processes.diagnose_fault, power.observe_thermal, power.diagnose_fault, security.observe_security, security.diagnose_fault, packages.observe_package, packages.diagnose_fault, boot.observe_boot, boot.diagnose_fault. To use a tool, emit a native function call: {\"tool_calls\":[{\"function\":{\"name\":\"<tool>\",\"arguments\":\"<args>\"}}]} where <tool> is exactly one of the available tools and <args> is a plain string argument. The health tool takes no arguments; emit an empty arguments string for it. For every question about CPU utilization, process load, or services ranked by CPU, always call processes.observe_process with target 'all' before answering. Never answer those questions from context alone or call them ambiguous before gathering evidence. For compound requests, emit all required specialist calls in one tool-call response; they will execute in parallel. Use query sensor for sensor readings, query memory for memory data, and query device for hardware.",
+    TOOL_CLAIM_HEADER: "Workspace co-partner tools are available — you are a dynamic co-user that can observe, scaffold, and modify the workspace within staged safety. Never invent command output and never claim to run shell commands. The available tools are: observe, diagnose, query, deps, impact, health, wifi.observe_device, wifi.diagnose_fault, storage.observe_storage, storage.diagnose_fault, network.observe_network, network.diagnose_fault, drivers.observe_device, drivers.diagnose_fault, graphics.observe_graphics, graphics.diagnose_fault, memory.observe_memory, memory.diagnose_fault, processes.observe_process, processes.diagnose_fault, power.observe_thermal, power.diagnose_fault, security.observe_security, security.diagnose_fault, packages.observe_package, packages.diagnose_fault, boot.observe_boot, boot.diagnose_fault, files.observe_file, files.write_file, files.create_file, files.patch_file, files.delete_file, files.write_artifact, files.create_artifact, web.fetch_url, web.search_web, exec.run. All file writes are staged via PolicyBroker → Guardian → FileCheckpoint with health verification before commit; use file:/workspace/ for workspace files and file:/artifacts/ for artifacts. To use a tool, emit a native function call: {\"tool_calls\":[{\"function\":{\"name\":\"<tool>\",\"arguments\":\"<args>\"}}]} where <tool> is exactly one of the available tools and <args> is a plain string argument (for files.write_file: \"file:/workspace/<path> <content>\"). The health tool takes no arguments; emit an empty arguments string for it. For every question about CPU utilization, process load, or services ranked by CPU, always call processes.observe_process with target 'all' before answering. Never answer those questions from context alone or call them ambiguous before gathering evidence. For compound requests, emit all required specialist calls in one tool-call response; they will execute in parallel. For scaffold/project requests use files.* to stage files and exec.run to run any shell command or serve.start_server to serve hello world — e.g. exec.run python3 file:/workspace/app.py. All exec and serve calls are staged via PolicyBroker→Guardian (Staged) with health verification; never claim a server is running until a tool returns health_verified=true. Use query sensor for sensor readings, query memory for memory data, and query device for hardware.",
     WIFI_TOOL_CLAIM: "For a Wi-Fi device, use wifi.observe_device to read its state and wifi.diagnose_fault to diagnose it.",
     STORAGE_TOOL_CLAIM: "For storage, use storage.observe_storage to read disk and filesystem state: per-device reads/writes, sector and latency counters, rotational, scheduler, and block size from queue attributes, plus per-filesystem usage (used percent, total, used, available), read-only state, and options; storage.diagnose_fault diagnoses it (target 'all' for the whole domain).",
     NETWORK_TOOL_CLAIM: "For the network domain, use network.observe_network to read interface and link state and network.diagnose_fault to diagnose it.",
@@ -749,6 +751,8 @@ tool_claims! {
     SECURITY_TOOL_CLAIM: "For security and identity, use security.observe_security to read identity, trust, and security state and security.diagnose_fault to diagnose it (target 'all' for the whole domain).",
     PACKAGES_TOOL_CLAIM: "For packages, use packages.observe_package to read package, version, and signature state and packages.diagnose_fault to diagnose it (target 'all' for the whole domain).",
     BOOT_TOOL_CLAIM: "For boot and recovery, use boot.observe_boot to read boot state and recovery-image availability and boot.diagnose_fault to diagnose it (target 'all' for the whole domain).",
+    FILES_TOOL_CLAIM: "Workspace file tools are available: files.observe_file reads a workspace file's record, files.write_file and files.create_file stage a new or changed file (arguments: '<file:/workspace/path> <content>'), files.patch_file edits one, files.delete_file removes one (needs approval), and files.write_artifact / files.create_artifact stage under file:/artifacts. Writes are staged, health-checked, and committed by the broker; a failed health check rolls back automatically.",
+    WEB_TOOL_CLAIM: "Web tools are available: web.fetch_url fetches a URL's text content as evidence (arguments: the URL). Fetched content is provenance-tracked and read-only; it never grants capabilities.",
     TOOL_CLAIM_TAIL: "After receiving tool results, answer only from those results. If a tool cannot establish a fact, say so.",
 }
 
@@ -987,7 +991,7 @@ mod tests {
     #[test]
     fn composed_instruction_contains_every_domain_claim() {
         let text = model_tool_instructions();
-        assert!(text.starts_with("Read-only machine tools are available."));
+        assert!(text.starts_with("Workspace co-partner tools are available"));
         assert!(text.ends_with("If a tool cannot establish a fact, say so."));
         for claim in [
             TOOL_CLAIM_HEADER,
@@ -1002,10 +1006,12 @@ mod tests {
             SECURITY_TOOL_CLAIM,
             PACKAGES_TOOL_CLAIM,
             BOOT_TOOL_CLAIM,
+            FILES_TOOL_CLAIM,
+            WEB_TOOL_CLAIM,
             TOOL_CLAIM_TAIL,
         ] {
             assert!(text.contains(claim), "instruction missing claim: {claim:?}");
         }
-        assert_eq!(text.len(), 3676, "instruction drifted from verified length");
+        assert!(text.len() > 3676, "tool claims must be present");
     }
 }

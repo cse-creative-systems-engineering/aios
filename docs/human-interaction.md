@@ -330,17 +330,107 @@ invariants regardless of approval.
 
 ---
 
-## 8. References
+## 8. Approval Modes
+
+**Introduced by:** ADR-0010 (execution primitive).
+**Applies to:** `RiskLevel::Staged` (risk 2) tools only. Risk 3–4 always
+requires explicit approval and is unaffected by mode.
+
+### 8.1 Purpose
+
+The co-partner and exec primitive (ADR-0010) turn the user's expected
+prompt-to-work rate from a handful of approvals per session into potentially
+dozens. Requiring a full ApprovalRequest for every `files.write_file` or
+`exec.run cargo test` inside `~/workspace` is friction without safety gain
+— the Guardian denylist already gates the box-brickers.
+
+Approval modes let the user set the friction level per session while
+keeping the Guardian, capability system, and audit log intact.
+
+### 8.2 Modes
+
+| Mode | Behaviour for risk 2 | Behaviour for risk 3–4 | Guardian denylist |
+|---|---|---|---|
+| **Default** | Every call issues an `ApprovalRequest` bound to `plan_hash`. `expires_at` = 10 min. This is the ADR-0004 status quo. | Unchanged. | Enforced. |
+| **Auto** | Auto-approved *iff* the request does not match a Guardian denylist and does not touch `Protected`/`Secret` data classification. Denylist / classified match → falls back to `Default` (explicit approval). | Unchanged — `Auto` cannot escalate risk-3+. | Enforced. |
+| **YOLO** | Auto-approved for all risk-2 calls that pass the Guardian. Recorded as `AutoApproved(mode=YOLO)` in the audit log. | Unchanged — `YOLO` cannot escalate risk-3+. | Enforced. YOLO removes the risk-2 prompt only; it does **not** disable the denylist. |
+
+### 8.3 Invariants (must hold in every mode)
+
+- **INV-MODE-1:** The user-space sandbox (`Sandbox` trait, ADR-0010 §3.1) is
+  the primary safety boundary for `exec.run` in every mode. YOLO removes the
+  approval prompt; it does **not** remove the sandbox. Above the sandbox,
+  the Guardian pattern list (`EXEC-P-001..005`, ADR-0010 §3.2) and the
+  original invariants (`FIRMWARE-001`, `DRIVER-001`) run in every mode as
+  defense-in-depth and audit-log clarity. If the sandbox is unavailable
+  (no `bwrap`, no landlock), approval mode is forced to `Default` and the
+  YOLO/Auto controls are disabled at the UI level.
+- **INV-MODE-2:** Risk 3–4 always requires explicit `ApprovalRequest`.
+  Modes are a risk-2 concern only.
+- **INV-MODE-3:** Mode is user-owned. The model cannot request, observe, or
+  influence a mode change. The mode value is not present in any prompt
+  context sent to a model role.
+- **INV-MODE-4:** Mode changes take effect on the *next* prompt, never
+  mid-plan. Mid-plan switches would allow a compromised facade or a
+  prompt-injected model to influence approval semantics for actions it has
+  already proposed.
+- **INV-MODE-5:** The audit log records the mode in effect for every
+  action (`AutoApproved(mode=Auto)`, `AutoApproved(mode=YOLO)`, or
+  `ExplicitApproval`). No mode is silent.
+
+### 8.4 UI contract
+
+- The active mode is displayed in the sidebar's `BackendStatus` rail at
+  all times, never hidden behind a menu.
+- The mode selector sits beside the composer as a three-option capsule
+  (`Default | Auto | YOLO`). Switching is a single click; the new mode
+  takes effect from the next user prompt.
+- The YOLO label is deliberate. This is not a hidden power-user setting;
+  it is a first-class mode with a name that describes its trade-off.
+- The UI must not display the mode as a green/safe indicator. Auto and
+  YOLO are neutral; Default is the safe baseline. Colour semantics: Default
+  → accent, Auto → amber-neutral, YOLO → warning-neutral.
+
+### 8.5 Persistence
+
+- The mode is stored in `~/.aios/config.toml` as `approval_mode = "default" | "auto" | "yolo"` (default `"default"`).
+- It is also mirrored into `sessions/{date}.json` (ADR-0009 §3) so audit
+  playback can reconstruct which mode was in effect for each historical
+  action.
+- On corrupt / missing config, the mode falls back to `Default`
+  (fail-closed per ADR-0003).
+
+### 8.6 Related: Verifier toggle
+
+The Verifier is not TCB (its verdict is advisory to the Broker) but its
+advice is defense-in-depth for risk-3+ actions. The user may disable it
+for latency-sensitive risk-≤2 work:
+
+- Toggle stored alongside `approval_mode` in `~/.aios/config.toml`
+  (`verifier_enabled = true` by default).
+- When disabled, `Coordinator` skips `Verifier::review` for risk ≤2
+  and passes `VerifierVerdict::Skipped` to the Broker.
+- **Risk 3–4 always runs the verifier**, even when the toggle is off.
+  The toggle is a risk-2 latency knob, not an approval bypass.
+- Skipped verifications are recorded in the audit log as
+  `verifier_skipped=true`.
+
+---
+
+## 9. References
 
 - `docs/capability-model.md` — §5.2 step 5 (approval scope checking),
-  §1.1 (user principal)
+  §1.1 (user principal), §3.1 (operations incl. `execute`)
 - `docs/message-protocol.md` — §2.7 (Approval), §2.11 (ApprovalRequest),
   §2.12 (UserResponse)
 - `docs/action-state-machine.md` — §3.1 (GuardianChecked → Rejected for
   denial/timeout), §6.1 (crash recovery for Approved)
 - `docs/security-model.md` — §3.2 (facade intent reframing), §1.3
   (facade as non-TCB)
-- `docs/decisions/0005-freeze-triage.md` — P0-3 (facade trust channel
-  decision)
+- `docs/decisions/0004-two-dimensional-authorization.md` — capability × clearance
+- `docs/decisions/0005-freeze-triage.md` — P0-3 (facade trust channel decision)
+- `docs/decisions/0008-workspace-co-partner-branch-and-scope.md` — files/web scope
+- `docs/decisions/0009-session-day-buckets.md` — SessionStore persists mode + toggle
+- `docs/decisions/0010-execution.md` — exec primitive, approval modes, verifier toggle
 - `docs/requirements.md` — REQ-SAF-004 (approval doesn't bypass
   invariants), REQ-UX-001 (scoped approvals)

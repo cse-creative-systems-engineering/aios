@@ -675,6 +675,23 @@ impl ModelMessage {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReasoningControl {
+    /// Send no reasoning field; the provider applies its default effort.
+    /// Only for local backends and tests — internet reasoning models must
+    /// get an explicit level so their default cannot eat the token budget
+    /// before any visible output (OpenRouter allocates e.g. ~80% of
+    /// max_tokens to thinking at high effort).
+    ProviderDefault,
+    /// OpenRouter normalized `{"effort": "minimal"}` (~10% of max_tokens).
+    /// Providers that mandate reasoning accept it; others drop the field.
+    Minimal,
+    /// OpenRouter normalized `{"effort": "low"}` (~20% of max_tokens).
+    /// Used where some deliberation earns its keep: chat, planning,
+    /// verification.
+    Low,
+}
+
 #[derive(Clone, Debug)]
 pub struct GenerationRequest {
     pub task_id: Uuid,
@@ -686,12 +703,11 @@ pub struct GenerationRequest {
     /// role assignment; backends fall back to their registered default when
     /// absent.
     pub model: Option<String>,
-    /// Ask the provider not to think before answering. Surface composition
-    /// wants markup, not deliberation, and thinking burns the token budget
-    /// that was meant for the answer. Sent as OpenRouter's normalized
-    /// `reasoning.enabled=false`; providers without support ignore it, so
-    /// any model stays usable.
-    pub reasoning_disabled: bool,
+    /// How much hidden thinking the provider may do. Explicit on internet
+    /// requests because a mandatory-reasoning model left at its default
+    /// effort spends most of `max_tokens` before writing a single visible
+    /// token — the "no visible content" failure mode.
+    pub reasoning: ReasoningControl,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -748,8 +764,10 @@ impl GenerationError {
 /// its entire budget on hidden reasoning and returns nothing visible. This is
 /// deliberately NOT a correction loop: the prompt never changes, no fallback
 /// provider is tried, and a second failure surfaces as the original error.
-/// Aios stays model-agnostic — whatever the user assigns gets more room
-/// instead of a lecture about which models to pick.
+/// The retry also drops reasoning one level (Low → Minimal): doubling
+/// max_tokens alone raises the reasoning ceiling proportionally for
+/// effort-based providers, so the visible answer only gains room if the
+/// thinking share shrinks too.
 pub fn submit_with_budget_retry(
     gateway: &ModelGateway,
     task: &ModelTask,
@@ -763,6 +781,10 @@ pub fn submit_with_budget_retry(
         }) => {
             let retried = GenerationRequest {
                 max_tokens: request.max_tokens.saturating_mul(2).max(1),
+                reasoning: match request.reasoning {
+                    ReasoningControl::Low => ReasoningControl::Minimal,
+                    other => other,
+                },
                 ..request
             };
             gateway.submit(task, &retried)
@@ -1135,6 +1157,9 @@ mod tests {
         /// Every max_tokens value handed to `generate`, in call order. The
         /// budget-retry test asserts the second attempt doubled it.
         max_tokens_seen: std::sync::Mutex<Vec<u32>>,
+        /// Every reasoning control handed to `generate`, in call order. The
+        /// budget-retry test asserts the retry dropped Low to Minimal.
+        reasoning_seen: std::sync::Mutex<Vec<ReasoningControl>>,
         /// When > 0, the next calls return the empty-content error instead
         /// of a response: a reasoning model that spent its whole budget
         /// thinking and shipped nothing visible.
@@ -1152,6 +1177,7 @@ mod tests {
                 label,
                 last_model: std::sync::Mutex::new(None),
                 max_tokens_seen: std::sync::Mutex::new(Vec::new()),
+                reasoning_seen: std::sync::Mutex::new(Vec::new()),
                 empty_content_failures: std::sync::atomic::AtomicU32::new(0),
             })
         }
@@ -1166,6 +1192,7 @@ mod tests {
                 label,
                 last_model: std::sync::Mutex::new(None),
                 max_tokens_seen: std::sync::Mutex::new(Vec::new()),
+                reasoning_seen: std::sync::Mutex::new(Vec::new()),
                 empty_content_failures: std::sync::atomic::AtomicU32::new(0),
             })
         }
@@ -1185,6 +1212,7 @@ mod tests {
                 label,
                 last_model: std::sync::Mutex::new(None),
                 max_tokens_seen: std::sync::Mutex::new(Vec::new()),
+                reasoning_seen: std::sync::Mutex::new(Vec::new()),
                 empty_content_failures: std::sync::atomic::AtomicU32::new(0),
             })
         }
@@ -1217,6 +1245,7 @@ mod tests {
                 label,
                 last_model: std::sync::Mutex::new(None),
                 max_tokens_seen: std::sync::Mutex::new(Vec::new()),
+                reasoning_seen: std::sync::Mutex::new(Vec::new()),
                 empty_content_failures: std::sync::atomic::AtomicU32::new(n),
             })
         }
@@ -1232,6 +1261,13 @@ mod tests {
             self.max_tokens_seen
                 .lock()
                 .expect("tokens lock")
+                .clone()
+        }
+
+        fn sent_reasoning(&self) -> Vec<ReasoningControl> {
+            self.reasoning_seen
+                .lock()
+                .expect("reasoning lock")
                 .clone()
         }
     }
@@ -1258,6 +1294,10 @@ mod tests {
                 .lock()
                 .expect("tokens lock")
                 .push(request.max_tokens);
+            self.reasoning_seen
+                .lock()
+                .expect("reasoning lock")
+                .push(request.reasoning);
             let outstanding_empty = self
                 .empty_content_failures
                 .load(std::sync::atomic::Ordering::SeqCst);
@@ -1293,7 +1333,7 @@ mod tests {
             temperature: 0.7,
             seed: None,
             model: None,
-            reasoning_disabled: false,
+            reasoning: ReasoningControl::ProviderDefault,
         }
     }
 
@@ -1599,7 +1639,7 @@ mod tests {
         let task = ModelTask::new(AgentRole::Planner, DataClassification::Public);
         let mut req = request(&task);
         req.max_tokens = 64;
-        req.reasoning_disabled = true;
+        req.reasoning = ReasoningControl::Low;
 
         let response =
             submit_with_budget_retry(&gateway, &task, req).expect("budget retry recovers");
@@ -1608,6 +1648,12 @@ mod tests {
             openrouter.sent_max_tokens(),
             vec![64, 128],
             "empty content skips the gateway's identical retry and gets one doubled re-ask"
+        );
+        assert_eq!(
+            openrouter.sent_reasoning(),
+            vec![ReasoningControl::Low, ReasoningControl::Minimal],
+            "the retry drops effort one level: doubling max_tokens alone also doubles \
+             the reasoning ceiling on effort-based providers"
         );
     }
 
