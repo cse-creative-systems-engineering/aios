@@ -1,3 +1,8 @@
+// Unix-only for now (ADR-0011 W1): every test in this file boots a
+// Coordinator whose discovery layer reads real sysfs/procfs and fails
+// closed on Windows until the W3 Windows discovery backend lands
+// (ADR-0011 §W3). Revisit when `SystemScanner` gains a WMI implementation.
+#![cfg(unix)]
 use super::chat::tool_arguments;
 use super::*;
 use crate::broker::build_request;

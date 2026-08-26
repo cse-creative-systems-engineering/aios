@@ -51,6 +51,43 @@ incorrect at the time of writing. Verified 2026-08-22 by counting
 
 None.
 
+### `feature/windows/core-build` (W1 — first Windows MSVC baseline)
+
+- **Windows observed:** 345 passed, 0 failed, 1 ignored (`cargo test --lib`
+  on x86_64-pc-windows-msvc, rustc 1.98.0).
+- **Delta vs Linux `main @ 45deeb6`:** +1 added
+  (`session::tests::date_math_matches_known_utc_dates`), 0 retired,
+  0 newly ignored. **74 tests are now Unix-scoped** via `#[cfg(unix)]`;
+  they are unchanged and still run on Linux — re-baseline Linux on the
+  next CI run (expected: prior count + 1).
+
+#### Added (net +1)
+
+| Commit | Test | What it locks down |
+|---|---|---|
+| W1 | `session::tests::date_math_matches_known_utc_dates` | `SessionStore::date_from_days` civil-from-days math (epoch → `1970-01-01`, leap-year anchors). Replaces the old `date -u +%F` shell-out that silently degraded to `day-N` on Windows. |
+
+#### Unix-scoped (74) — not a retirement, a platform boundary
+
+Per ADR-0011 W1 these tests exercise Linux-runtime behavior that fails
+closed on Windows. They still run on Linux; none were deleted.
+
+| Where | Count | Why Unix-only |
+|---|---|---|
+| `coordinator/tests.rs` (whole file) | 41 | Every test boots a Coordinator whose discovery reads real sysfs/procfs; boot fails closed on Windows until the W3 scanner lands. |
+| `facade.rs` `mod tests` | 19 | Same boot dependency as coordinator tests. |
+| `discovery.rs` mock-sysfs tests | 12 | Fixture creates symlinks and PCI-named dirs (`0000:00:14.3`) whose colons are illegal in Windows filenames. |
+| `discovery.rs::service_populate_marks_health_by_state` | 1 | Fake systemctl is a `#!/bin/sh` script chmod'd with Unix permission bits. |
+| `exec.rs::exec_runs_echo` | 1 | Requires a spawn-capable sandbox tier; Windows has none until W4 (Job Objects/AppContainer), and `run_confined` correctly refuses unconfined execution. |
+
+#### Platform splits added (no behavior change on Linux)
+
+- `discovery.rs::filesystem_usage` — statvfs on Unix; returns `None` on
+  Windows (fail-closed: usage evidence absent, never fabricated).
+- `action.rs::sync_dir` — directory fsync on Unix; `Ok(())` on Windows
+  (NTFS metadata journaling provides rename durability; data is still
+  flushed by `write_file_synced` before rename on every platform).
+
 ## Coverage Gaps Known Now (Phase 1 targets)
 
 These are not test *regressions*, they are known-missing tests that Phase 1

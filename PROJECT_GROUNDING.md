@@ -6,6 +6,7 @@ Start here before making changes or answering questions about the repository.
 
 Read the latest dated grounding snapshot:
 
+- [`project_grounding_2026-08-25_20-52-50.md`](docs/grounding/project_grounding_2026-08-25_20-52-50.md) � W1: Windows MSVC library gate green
 - [`project_grounding_2026-08-25_18-43-11.md`](docs/grounding/project_grounding_2026-08-25_18-43-11.md) — repo cleanup: untrack build artifacts, ignore graphify churn files
 - [`project_grounding_2026-08-25_18-39-11.md`](docs/grounding/project_grounding_2026-08-25_18-39-11.md) — http timeout 180s default; plain-text CoT stripping
 - [`project_grounding_2026-08-25_18-03-08.md`](docs/grounding/project_grounding_2026-08-25_18-03-08.md) — knowledge graph refresh + graphify project skill registration

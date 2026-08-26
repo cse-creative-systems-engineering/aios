@@ -217,7 +217,12 @@ mod tests {
     use crate::protocol::{
         DataClassification, MessageEnvelope, MessageType, ToolParameters, ToolStatus,
     };
+    /// Unix-only: requires a sandbox tier that can spawn. On Windows no
+    /// sandbox exists yet (W4: Job Objects / AppContainer per ADR-0011), and
+    /// `run_confined` correctly refuses to execute unconfined, so a success
+    /// assertion cannot hold there.
     #[test]
+    #[cfg(unix)]
     fn exec_runs_echo() {
         let mut g = SystemGraph::new();
         let sp = ExecSpecialist::instantiate(&mut g).unwrap();

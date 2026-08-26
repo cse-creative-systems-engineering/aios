@@ -429,32 +429,38 @@ fn run_demo() {
         .len();
     println!("policy decisions logged -> {audit_count}");
 
-    let discovery = aios::discovery::SysfsDiscovery::new();
-    let mut graph = discovery.scan().expect("discovery scan");
-    aios::discovery::ServiceDiscovery::new()
-        .populate(&mut graph, aios::protocol::now())
-        .expect("service scan");
-    aios::discovery::print_hardware_report(&graph);
-    println!(
-        "services discovered -> {}",
-        graph.get_nodes_by_type(aios::graph::NodeType::Service).len()
-    );
-    println!(
-        "sensors discovered  -> {}",
-        graph.get_nodes_by_type(aios::graph::NodeType::Sensor).len()
-    );
-
-    let events = discovery.reconcile(&mut graph).expect("reconcile");
-    println!(
-        "reconcile cycle     -> {} change(s) since initial scan (graph has {} nodes)",
-        events.len(),
-        graph.nodes().len()
-    );
-    for event in events {
+    // Live discovery tail is Linux-only (ADR-0011 W1): sysfs/procfs do not
+    // exist on Windows, and the scan correctly fails closed there. The demo
+    // ends after the enforcement-plane section on Windows.
+    #[cfg(unix)]
+    {
+        let discovery = aios::discovery::SysfsDiscovery::new();
+        let mut graph = discovery.scan().expect("discovery scan");
+        aios::discovery::ServiceDiscovery::new()
+            .populate(&mut graph, aios::protocol::now())
+            .expect("service scan");
+        aios::discovery::print_hardware_report(&graph);
         println!(
-            "  event {:?} for {}",
-            event.event_type, event.node_id
+            "services discovered -> {}",
+            graph.get_nodes_by_type(aios::graph::NodeType::Service).len()
         );
+        println!(
+            "sensors discovered  -> {}",
+            graph.get_nodes_by_type(aios::graph::NodeType::Sensor).len()
+        );
+
+        let events = discovery.reconcile(&mut graph).expect("reconcile");
+        println!(
+            "reconcile cycle     -> {} change(s) since initial scan (graph has {} nodes)",
+            events.len(),
+            graph.nodes().len()
+        );
+        for event in events {
+            println!(
+                "  event {:?} for {}",
+                event.event_type, event.node_id
+            );
+        }
     }
 
     println!("== done ==");

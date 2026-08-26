@@ -260,6 +260,28 @@ cargo run            # in-process demo: broker, guardian, mock agents
 cargo run -- shell   # interactive shell against your real config and models
 ```
 
+### Windows (W1, per ADR-0011)
+
+The library builds and tests natively on Windows (`feature/windows/core-build`).
+Prerequisites:
+
+- **Visual Studio 2022 Build Tools** with the *Desktop development with C++*
+  workload (MSVC linker + Windows SDK) — `winget install Microsoft.VisualStudio.2022.BuildTools`
+- **Rust** stable with the `msvc` toolchain — `winget install Rustlang.Rustup`
+- **CMake** — compiles the bundled llama.cpp — `winget install Kitware.CMake`
+- **LLVM** — provides `libclang.dll` for llama-cpp-sys's bindgen step —
+  `winget install LLVM.LLVM`, then set `LIBCLANG_PATH=C:\Program Files\LLVM\bin`
+- **Node.js LTS** — frontend build gate — `winget install OpenJS.NodeJS.LTS`
+
+```powershell
+cargo test --lib     # W1 gate: library suite green on both platforms
+```
+
+Scope notes: discovery is Linux-only until W3 (boot fails closed on Windows —
+no silent empty graph), and `exec.run` has no sandbox tier on Windows until
+W4, so it refuses to spawn rather than run unconfined. The desktop shell
+(`src-tauri/`) still depends on GTK/X11 and is W2 work.
+
 The shell reads `~/.aios/config.toml`. Point the `[model] path` at a GGUF
 file, or leave providers empty and it runs degraded. Remote providers are
 `[[provider]]` entries with an OpenAI-compatible endpoint; see

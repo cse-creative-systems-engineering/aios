@@ -38,8 +38,12 @@ impl Facade {
         let store = crate::session::SessionStore::new(&config_dir);
         let today = crate::session::SessionStore::today();
         if let Some(snap) = store.load(&today) {
-            for h in snap.history { history.push_back(h); }
-            for r in snap.tool_results { last_tool_results.push(r.into()); }
+            for h in snap.history {
+                history.push_back(h);
+            }
+            for r in snap.tool_results {
+                last_tool_results.push(r.into());
+            }
             // Surfaces are restored via src-tauri worker separately; we keep them here for completeness
         }
         Self {
@@ -433,7 +437,10 @@ pub fn run_interactive() {
     }
 }
 
-#[cfg(test)]
+/// Unix-only for now (ADR-0011 W1): every test here boots a Coordinator,
+/// whose discovery layer reads real sysfs/procfs and fails closed on
+/// Windows until the W3 Windows scanner lands.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::config::{AiosConfig, ProviderConfig};

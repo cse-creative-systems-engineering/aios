@@ -1,1 +1,18 @@
+# Line-ending policy (ADR-0011 §4): sources pinned LF; CRLF never enters
+# the history. Normalization applies on commit for every text file; eol=lf
+# additionally keeps fresh checkouts LF so bash scripts and Rust sources
+# behave identically on Linux and Windows.
+* text=auto eol=lf
+
+# Windows line endings where genuinely required.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary assets — never normalized.
+*.png binary
+*.ico binary
+*.icns binary
+
+# Generated knowledge-graph state: keep the custom merge driver.
 graphify-out/graph.json merge=graphify

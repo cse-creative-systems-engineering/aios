@@ -36,6 +36,27 @@ jobs:
       - name: Test
         run: cargo test --all-features
 
+  windows:
+    name: Windows library gate (ADR-0011 W1)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # llama-cpp-sys's bindgen step needs libclang; the windows runner image
+      # ships LLVM but bindgen does not always find it without the hint.
+      - name: Point bindgen at libclang
+        shell: pwsh
+        run: 'echo "LIBCLANG_PATH=$((Get-Item ${env:ProgramFiles}/LLVM/bin).FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append'
+
+      - name: Test library
+        run: cargo test --lib
+
   docs:
     name: Grounding snapshot freshness
     runs-on: ubuntu-latest

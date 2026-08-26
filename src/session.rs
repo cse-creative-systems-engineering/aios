@@ -30,10 +30,20 @@ pub struct StoredSurface {
 }
 
 impl From<&crate::tools::ToolResult> for StoredToolResult {
-    fn from(r: &crate::tools::ToolResult) -> Self { Self { tool: r.tool.to_string(), text: r.text.clone() } }
+    fn from(r: &crate::tools::ToolResult) -> Self {
+        Self {
+            tool: r.tool.to_string(),
+            text: r.text.clone(),
+        }
+    }
 }
 impl From<StoredToolResult> for crate::tools::ToolResult {
-    fn from(s: StoredToolResult) -> Self { Self { tool: Box::leak(s.tool.into_boxed_str()), text: s.text } }
+    fn from(s: StoredToolResult) -> Self {
+        Self {
+            tool: Box::leak(s.tool.into_boxed_str()),
+            text: s.text,
+        }
+    }
 }
 
 pub struct SessionStore {
@@ -42,22 +52,36 @@ pub struct SessionStore {
 
 impl SessionStore {
     pub fn new(config_dir: &Path) -> Self {
-        Self { dir: config_dir.join("sessions") }
-    }
-    pub fn path_for(&self, date: &str) -> PathBuf { self.dir.join(format!("{date}.json")) }
-    pub fn today() -> String {
-        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-        // YYYY-MM-DD in UTC — simple, deterministic
-        let days = secs / 86400;
-        // Use chrono-like calc via time crate? keep simple: use `date` command fallback
-        // For now use `chrono` if available, else fallback to UTC days -> string via `time`
-        // To avoid dep, shell out to `date -u +%F` if secs is 0? Simpler: use `time` crate already via `crate::protocol::now`?
-        // We'll just use `format` of days since epoch mod, but that's not calendar. Use `chrono` via `time` crate if present.
-        // Fallback: use `std::process::Command` date
-        if let Ok(out) = std::process::Command::new("date").arg("-u").arg("+%F").output() {
-            if let Ok(s) = String::from_utf8(out.stdout) { return s.trim().to_string(); }
+        Self {
+            dir: config_dir.join("sessions"),
         }
-        format!("day-{days}")
+    }
+    pub fn path_for(&self, date: &str) -> PathBuf {
+        self.dir.join(format!("{date}.json"))
+    }
+    pub fn today() -> String {
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        Self::date_from_days((secs / 86400) as i64)
+    }
+    /// Convert days since the Unix epoch to a `YYYY-MM-DD` UTC calendar date
+    /// (Howard Hinnant's civil-from-days algorithm). Pure integer math — no
+    /// libc, no external `date` binary — so day-bucket naming is identical
+    /// on Linux and Windows (ADR-0011 W1).
+    pub fn date_from_days(days: i64) -> String {
+        let z = days + 719_468;
+        let era = z.div_euclid(146_097);
+        let doe = z.rem_euclid(146_097);
+        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+        let y = yoe + era * 400;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let d = doy - (153 * mp + 2) / 5 + 1;
+        let m = if mp < 10 { mp + 3 } else { mp - 9 };
+        let y = if m <= 2 { y + 1 } else { y };
+        format!("{y:04}-{m:02}-{d:02}")
     }
     pub fn load(&self, date: &str) -> Option<SessionSnapshot> {
         let path = self.path_for(date);
@@ -77,11 +101,19 @@ impl SessionStore {
         }
         std::fs::rename(&tmp, &path)?;
         // fsync dir
-        if let Ok(dir) = std::fs::File::open(&self.dir) { let _ = dir.sync_all(); }
+        if let Ok(dir) = std::fs::File::open(&self.dir) {
+            let _ = dir.sync_all();
+        }
         Ok(())
     }
     pub fn load_or_default(&self, date: &str) -> SessionSnapshot {
-        self.load(date).unwrap_or_else(|| SessionSnapshot { id: date.to_string(), history: Vec::new(), tool_results: Vec::new(), surfaces: Vec::new(), updated_at: crate::protocol::now() })
+        self.load(date).unwrap_or_else(|| SessionSnapshot {
+            id: date.to_string(),
+            history: Vec::new(),
+            tool_results: Vec::new(),
+            surfaces: Vec::new(),
+            updated_at: crate::protocol::now(),
+        })
     }
 }
 
@@ -89,10 +121,30 @@ impl SessionStore {
 mod tests {
     use super::*;
     #[test]
+    fn date_math_matches_known_utc_dates() {
+        assert_eq!(SessionStore::date_from_days(0), "1970-01-01");
+        // 54 years incl. 13 leap days -> 2024-01-01.
+        assert_eq!(SessionStore::date_from_days(19_723), "2024-01-01");
+        // Leap 2024 (366) + 2025 (365) + 236 days into 2026 -> 2026-08-25.
+        assert_eq!(SessionStore::date_from_days(20_690), "2026-08-25");
+    }
+    #[test]
     fn roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let store = SessionStore::new(dir.path());
-        let snap = SessionSnapshot { id: "2026-08-22".into(), history: vec!["user: hi".into()], tool_results: vec![StoredToolResult { tool: "files.write_file".into(), text: "committed=true".into() }], surfaces: vec![StoredSurface { id: "surface-1".into(), html: "<div>hi</div>".into() }], updated_at: 1 };
+        let snap = SessionSnapshot {
+            id: "2026-08-22".into(),
+            history: vec!["user: hi".into()],
+            tool_results: vec![StoredToolResult {
+                tool: "files.write_file".into(),
+                text: "committed=true".into(),
+            }],
+            surfaces: vec![StoredSurface {
+                id: "surface-1".into(),
+                html: "<div>hi</div>".into(),
+            }],
+            updated_at: 1,
+        };
         store.save(&snap).unwrap();
         let loaded = store.load("2026-08-22").unwrap();
         assert_eq!(loaded.history[0], "user: hi");

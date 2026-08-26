@@ -381,8 +381,9 @@ impl ActionStore for FileActionStore {
     fn delete_checkpoint(&self, checkpoint_id: &CheckpointId) -> Result<(), PersistenceError> {
         let path = self.dir.join(format!("checkpoint-{}.json", checkpoint_id));
         match std::fs::remove_file(path) {
-            Ok(()) => sync_dir(&self.dir)
-                .map_err(|e| PersistenceError::StorageFailed(e.to_string())),
+            Ok(()) => {
+                sync_dir(&self.dir).map_err(|e| PersistenceError::StorageFailed(e.to_string()))
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(PersistenceError::StorageFailed(e.to_string())),
         }
@@ -412,8 +413,9 @@ impl ActionStore for FileActionStore {
     fn clear_pending_transition(&self, action_id: &ActionId) -> Result<(), PersistenceError> {
         let path = self.dir.join(format!("pending-{action_id}.json"));
         match std::fs::remove_file(path) {
-            Ok(()) => sync_dir(&self.dir)
-                .map_err(|e| PersistenceError::StorageFailed(e.to_string())),
+            Ok(()) => {
+                sync_dir(&self.dir).map_err(|e| PersistenceError::StorageFailed(e.to_string()))
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(PersistenceError::StorageFailed(e.to_string())),
         }
@@ -441,8 +443,21 @@ fn write_file_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 
 /// fsync a directory so a rename/remove within it is durable across power
 /// loss (action-state-machine.md §5.3).
+///
+/// Unix: open the directory and fsync it — the POSIX way to flush a rename.
+/// Windows: directory handles cannot be opened this way (`Access is denied`,
+/// os error 5); rename/remove durability is instead provided by NTFS metadata
+/// journaling. This is a documented platform difference (ADR-0011 W1), not a
+/// silent fallback: the data itself is still flushed by `write_file_synced`
+/// before the rename on every platform.
+#[cfg(unix)]
 fn sync_dir(dir: &Path) -> std::io::Result<()> {
     std::fs::File::open(dir)?.sync_all()
+}
+
+#[cfg(windows)]
+fn sync_dir(_dir: &Path) -> std::io::Result<()> {
+    Ok(())
 }
 
 #[cfg(test)]

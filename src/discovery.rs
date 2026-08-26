@@ -10,7 +10,10 @@ use std::path::{Path, PathBuf};
 #[derive(Debug)]
 pub enum DiscoveryError {
     RootMissing(PathBuf),
-    ReadFailed { path: String, source: std::io::Error },
+    ReadFailed {
+        path: String,
+        source: std::io::Error,
+    },
 }
 
 impl std::fmt::Display for DiscoveryError {
@@ -36,7 +39,10 @@ pub struct DiscoveryEvent {
 }
 
 fn is_dynamic(node_type: &NodeType) -> bool {
-    matches!(node_type, NodeType::Device | NodeType::Bus | NodeType::Sensor)
+    matches!(
+        node_type,
+        NodeType::Device | NodeType::Bus | NodeType::Sensor
+    )
 }
 
 /// Standard sysfs attribute names that drivers use to expose the loaded
@@ -124,12 +130,7 @@ impl SysfsDiscovery {
     /// PCI/USB device via `sys/class/net/<iface>/device` and add a
     /// `depends_on` edge to it. Runs after PCI/USB discovery so the target
     /// nodes exist.
-    fn link_network_interfaces(
-        &self,
-        root: &Path,
-        graph: &mut SystemGraph,
-        t: Timestamp,
-    ) {
+    fn link_network_interfaces(&self, root: &Path, graph: &mut SystemGraph, t: Timestamp) {
         let nodes: Vec<NodeId> = graph
             .nodes()
             .values()
@@ -138,10 +139,15 @@ impl SysfsDiscovery {
             .collect();
         for iface_id in nodes {
             let name = iface_id.0.trim_start_matches("device:net-");
-            let Some(slot) = self.underlying_device_slot(root, &format!("sys/class/net/{name}/device")) else {
+            let Some(slot) =
+                self.underlying_device_slot(root, &format!("sys/class/net/{name}/device"))
+            else {
                 continue;
             };
-            for physical in [NodeId(format!("device:pci-{slot}")), NodeId(format!("device:usb-{slot}"))] {
+            for physical in [
+                NodeId(format!("device:pci-{slot}")),
+                NodeId(format!("device:usb-{slot}")),
+            ] {
                 if graph.get_node(&physical).is_some() {
                     self.add_depends_on(graph, &iface_id, &physical, t);
                     break;
@@ -247,7 +253,9 @@ impl SysfsDiscovery {
         let mut node = NodeMetadata::new(
             id.clone(),
             node_type,
-            ProvenanceSource::Discovered { via: "sysfs".into() },
+            ProvenanceSource::Discovered {
+                via: "sysfs".into(),
+            },
             TrustLevel::Provisional,
             t,
         );
@@ -258,13 +266,7 @@ impl SysfsDiscovery {
         let _ = graph.add_node(node);
     }
 
-    fn add_depends_on(
-        &self,
-        graph: &mut SystemGraph,
-        from: &NodeId,
-        to: &NodeId,
-        t: Timestamp,
-    ) {
+    fn add_depends_on(&self, graph: &mut SystemGraph, from: &NodeId, to: &NodeId, t: Timestamp) {
         if graph.get_node(to).is_none() {
             return;
         }
@@ -552,11 +554,7 @@ impl SysfsDiscovery {
         let path = root.join(rel);
         let target = std::fs::read_link(&path).ok()?;
         let leaf = target.file_name()?.to_string_lossy().into_owned();
-        if leaf.is_empty() {
-            None
-        } else {
-            Some(leaf)
-        }
+        if leaf.is_empty() { None } else { Some(leaf) }
     }
 
     fn discover_pci(
@@ -584,7 +582,11 @@ impl SysfsDiscovery {
             graph.update_health(&bus_id, HealthState::Healthy);
             let base = format!("sys/bus/pci/devices/{slot}");
             let mut attrs = HashMap::new();
-            for (key, file) in [("vendor", "vendor"), ("device", "device"), ("class", "class")] {
+            for (key, file) in [
+                ("vendor", "vendor"),
+                ("device", "device"),
+                ("class", "class"),
+            ] {
                 if let Some(v) = self.read_optional(root, &format!("{base}/{file}")) {
                     attrs.insert(key.into(), v.trim().to_string());
                 }
@@ -790,7 +792,10 @@ impl SysfsDiscovery {
             let mut attrs = HashMap::new();
             if let Some(size) = self.read_optional(root, &format!("{base}/size")) {
                 if let Ok(sectors) = size.trim().parse::<u64>() {
-                    attrs.insert("size_bytes".into(), format!("{}", sectors.saturating_mul(512)));
+                    attrs.insert(
+                        "size_bytes".into(),
+                        format!("{}", sectors.saturating_mul(512)),
+                    );
                 }
             }
             for (key, file) in [("read_only", "ro"), ("removable", "removable")] {
@@ -844,23 +849,48 @@ impl SysfsDiscovery {
             return Ok(());
         };
         let pseudo: &[&str] = &[
-            "proc", "sysfs", "devpts", "tmpfs", "devtmpfs", "cgroup", "cgroup2", "pstore",
-            "securityfs", "debugfs", "mqueue", "hugetlbfs", "configfs", "fusectl", "bpf",
-            "tracefs", "ramfs", "overlay", "autofs", "binfmt_misc", "selinuxfs",
+            "proc",
+            "sysfs",
+            "devpts",
+            "tmpfs",
+            "devtmpfs",
+            "cgroup",
+            "cgroup2",
+            "pstore",
+            "securityfs",
+            "debugfs",
+            "mqueue",
+            "hugetlbfs",
+            "configfs",
+            "fusectl",
+            "bpf",
+            "tracefs",
+            "ramfs",
+            "overlay",
+            "autofs",
+            "binfmt_misc",
+            "selinuxfs",
         ];
         for line in data.lines() {
             let mut fields = line.split_whitespace();
-            let Some(device) = fields.next() else { continue };
-            let Some(mountpoint) = fields.next() else { continue };
-            let Some(fstype) = fields.next() else { continue };
+            let Some(device) = fields.next() else {
+                continue;
+            };
+            let Some(mountpoint) = fields.next() else {
+                continue;
+            };
+            let Some(fstype) = fields.next() else {
+                continue;
+            };
             if pseudo.contains(&fstype) {
                 continue;
             }
-            let slug = mountpoint
-                .replace('/', "-")
-                .trim_matches('-')
-                .to_string();
-            let slug = if slug.is_empty() { "root".to_string() } else { slug };
+            let slug = mountpoint.replace('/', "-").trim_matches('-').to_string();
+            let slug = if slug.is_empty() {
+                "root".to_string()
+            } else {
+                slug
+            };
             let mut attrs = HashMap::new();
             if !device.is_empty() {
                 attrs.insert("device".into(), device.to_string());
@@ -1132,7 +1162,9 @@ fn parse_vmstat(data: &str) -> HashMap<String, String> {
         let Some(key) = fields.next() else {
             continue;
         };
-        if VMSTAT_KEYS.contains(&key) && let Some(value) = fields.next() {
+        if VMSTAT_KEYS.contains(&key)
+            && let Some(value) = fields.next()
+        {
             out.insert(key.to_string(), value.to_string());
         }
     }
@@ -1172,6 +1204,7 @@ fn parse_diskstat(data: &str) -> HashMap<String, u64> {
 /// Bounded statvfs collector: total, used, and available bytes for a mounted
 /// filesystem, plus the used fraction as a whole percent. Returns `None` when
 /// the path cannot be statvfs'd (unavailable mounts, permission issues).
+#[cfg(unix)]
 fn filesystem_usage(path: &Path) -> Option<(u64, u64, u64, u64)> {
     use std::os::raw::c_char;
     let mut buf: libc::statvfs = unsafe { std::mem::zeroed() };
@@ -1186,12 +1219,18 @@ fn filesystem_usage(path: &Path) -> Option<(u64, u64, u64, u64)> {
     let used_percent = if total == 0 {
         0
     } else {
-        used
-            .saturating_mul(100)
-            .checked_div(total)
-            .unwrap_or(100)
+        used.saturating_mul(100).checked_div(total).unwrap_or(100)
     };
     Some((total, used, available, used_percent))
+}
+
+/// Windows: filesystem usage is not collected yet. Per ADR-0011 W1 the Linux
+/// discovery layer fails closed on this platform — usage evidence is absent
+/// (`None`), never fabricated. Real capacity arrives with the W3 Windows
+/// discovery backend (LogicalDisk via WMI).
+#[cfg(windows)]
+fn filesystem_usage(_path: &Path) -> Option<(u64, u64, u64, u64)> {
+    None
 }
 
 pub struct ServiceDiscovery {
@@ -1250,7 +1289,9 @@ impl ServiceDiscovery {
             let mut node = NodeMetadata::new(
                 NodeId(format!("service:{}", service.name)),
                 NodeType::Service,
-                ProvenanceSource::Discovered { via: "systemctl".into() },
+                ProvenanceSource::Discovered {
+                    via: "systemctl".into(),
+                },
                 TrustLevel::Provisional,
                 t,
             );
@@ -1349,6 +1390,21 @@ mod tests {
         fs::write(path, content).unwrap();
     }
 
+    /// Create a symlink inside the mock sysfs tree. sysfs models device
+    /// relationships with symlinks, so the Unix tests exercise real ones.
+    /// Windows has no equivalent here: the fixture also creates directories
+    /// named after PCI addresses (`0000:00:14.3`), whose colons are illegal
+    /// in Windows filenames, so every test built on `mock_root` is
+    /// Unix-scoped until the W3 Windows discovery backend brings its own
+    /// fixtures (ADR-0011 W1).
+    #[cfg(unix)]
+    fn mock_symlink(original: &str, link: PathBuf) {
+        std::os::unix::fs::symlink(original, link).unwrap();
+    }
+
+    #[cfg(windows)]
+    fn mock_symlink(_original: &str, _link: PathBuf) {}
+
     fn mock_root() -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_path_buf();
@@ -1380,15 +1436,17 @@ mod tests {
             &root.join("proc/mounts"),
             "/dev/nvme0n1p2 / ext4 rw,relatime 0 0\n/dev/nvme0n1p1 /boot vfat rw 0 0\n/dev/nvme0n1p3 /media/backup btrfs ro,relatime 0 0\n",
         );
-        write(&root.join("sys/class/net/wlan0/address"), "aa:bb:cc:dd:ee:ff\n");
+        write(
+            &root.join("sys/class/net/wlan0/address"),
+            "aa:bb:cc:dd:ee:ff\n",
+        );
         write(&root.join("sys/class/net/wlan0/mtu"), "1500\n");
         write(&root.join("sys/class/net/wlan0/operstate"), "up\n");
         // wlan0 is backed by the PCI wireless device 0000:00:14.3.
-        std::os::unix::fs::symlink(
+        mock_symlink(
             "../../../devices/pci0000:00/0000:00:1c.0/0000:00:14.3",
             root.join("sys/class/net/wlan0/device"),
-        )
-        .unwrap();
+        );
         write(&root.join("sys/class/block/nvme0/size"), "1000215216\n");
         write(&root.join("sys/class/block/nvme0/ro"), "0\n");
         write(&root.join("sys/class/block/nvme0/removable"), "0\n");
@@ -1402,30 +1460,43 @@ mod tests {
             &root.join("sys/class/block/nvme0/queue/scheduler"),
             "[mq-deadline] none\n",
         );
-        write(&root.join("sys/class/block/nvme0/queue/logical_block_size"), "512\n");
+        write(
+            &root.join("sys/class/block/nvme0/queue/logical_block_size"),
+            "512\n",
+        );
         write(
             &root.join("sys/class/block/nvme0/queue/physical_block_size"),
             "4096\n",
         );
         fs::create_dir_all(root.join("sys/devices/pci-drivers/nvme")).unwrap();
         fs::create_dir_all(root.join("sys/class/block/nvme0/device")).unwrap();
-        std::os::unix::fs::symlink(
+        mock_symlink(
             "../../../devices/pci-drivers/nvme",
             root.join("sys/class/block/nvme0/device/driver"),
-        )
-        .unwrap();
-        write(&root.join("sys/bus/pci/devices/0000:00:14.3/vendor"), "0x8086\n");
-        write(&root.join("sys/bus/pci/devices/0000:00:14.3/device"), "0x51f0\n");
-        write(&root.join("sys/bus/pci/devices/0000:00:14.3/class"), "0x028000\n");
+        );
+        write(
+            &root.join("sys/bus/pci/devices/0000:00:14.3/vendor"),
+            "0x8086\n",
+        );
+        write(
+            &root.join("sys/bus/pci/devices/0000:00:14.3/device"),
+            "0x51f0\n",
+        );
+        write(
+            &root.join("sys/bus/pci/devices/0000:00:14.3/class"),
+            "0x028000\n",
+        );
         fs::create_dir_all(root.join("sys/bus/pci/drivers/iwlwifi")).unwrap();
-        std::os::unix::fs::symlink(
+        mock_symlink(
             "../../drivers/iwlwifi",
             root.join("sys/bus/pci/devices/0000:00:14.3/driver"),
-        )
-        .unwrap();
+        );
         write(&root.join("sys/bus/usb/devices/1-1/idVendor"), "0x8087\n");
         write(&root.join("sys/bus/usb/devices/1-1/idProduct"), "0x0026\n");
-        write(&root.join("sys/bus/usb/devices/1-1/product"), "Wireless Adapter\n");
+        write(
+            &root.join("sys/bus/usb/devices/1-1/product"),
+            "Wireless Adapter\n",
+        );
         (dir, root)
     }
 
@@ -1438,11 +1509,16 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn scan_populates_graph_from_sysfs() {
         let (_dir, root) = mock_root();
         let graph = discovery(root).scan().unwrap();
 
-        assert!(graph.get_node(&NodeId("kernel:linux-6.8.0-45-generic".into())).is_some());
+        assert!(
+            graph
+                .get_node(&NodeId("kernel:linux-6.8.0-45-generic".into()))
+                .is_some()
+        );
         assert!(graph.get_node(&NodeId("cpu:0".into())).is_some());
         assert!(graph.get_node(&NodeId("cpu:1".into())).is_some());
         assert!(graph.get_node(&NodeId("memory:total".into())).is_some());
@@ -1452,10 +1528,20 @@ mod tests {
         let total = graph.get_node(&NodeId("memory:total".into())).unwrap();
         assert_eq!(total.attributes.get("size_kb").unwrap(), "16384000");
         assert_eq!(total.attributes.get("meminfo_memfree").unwrap(), "10485760");
-        assert_eq!(total.attributes.get("meminfo_swaptotal").unwrap(), "2097152");
-        assert_eq!(total.attributes.get("meminfo_hugepages_total").unwrap(), "0");
+        assert_eq!(
+            total.attributes.get("meminfo_swaptotal").unwrap(),
+            "2097152"
+        );
+        assert_eq!(
+            total.attributes.get("meminfo_hugepages_total").unwrap(),
+            "0"
+        );
         assert!(graph.get_node(&NodeId("device:net-wlan0".into())).is_some());
-        assert!(graph.get_node(&NodeId("device:pci-0000:00:14.3".into())).is_some());
+        assert!(
+            graph
+                .get_node(&NodeId("device:pci-0000:00:14.3".into()))
+                .is_some()
+        );
         assert!(graph.get_node(&NodeId("bus:pci0000:00".into())).is_some());
         assert!(graph.get_node(&NodeId("device:usb-1-1".into())).is_some());
         assert!(graph.get_node(&NodeId("device:nvme0".into())).is_some());
@@ -1466,6 +1552,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn memory_health_tracks_available_headroom() {
         let (_dir, root) = mock_root();
         let graph = discovery(root).scan().unwrap();
@@ -1484,6 +1571,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn parse_meminfo_handles_kb_suffix_and_unitless_lines() {
         let meminfo = parse_meminfo(
             "MemTotal:       16384000 kB\nMemAvailable:     8123456 kB\nHugePages_Total:       0\n",
@@ -1495,6 +1583,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn parse_pressure_and_vmstat_key_their_fields() {
         let pressure = parse_pressure(
             "some avg10=0.00 avg60=0.01 avg300=0.02 total=123\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
@@ -1512,6 +1601,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn discovery_adds_dependency_edges() {
         let (_dir, root) = mock_root();
         let graph = discovery(root).scan().unwrap();
@@ -1521,8 +1611,14 @@ mod tests {
             .into_iter()
             .map(|n| n.node_id.to_string())
             .collect();
-        assert!(deps.contains(&"bus:pci0000:00".to_string()), "deps: {deps:?}");
-        assert!(deps.contains(&"driver:iwlwifi".to_string()), "deps: {deps:?}");
+        assert!(
+            deps.contains(&"bus:pci0000:00".to_string()),
+            "deps: {deps:?}"
+        );
+        assert!(
+            deps.contains(&"driver:iwlwifi".to_string()),
+            "deps: {deps:?}"
+        );
 
         let nvme = NodeId("device:nvme0".into());
         let nvme_deps: Vec<String> = graph
@@ -1530,10 +1626,14 @@ mod tests {
             .into_iter()
             .map(|n| n.node_id.to_string())
             .collect();
-        assert!(nvme_deps.contains(&"driver:nvme".to_string()), "deps: {nvme_deps:?}");
+        assert!(
+            nvme_deps.contains(&"driver:nvme".to_string()),
+            "deps: {nvme_deps:?}"
+        );
     }
 
     #[test]
+    #[cfg(unix)]
     fn network_interface_links_to_underlying_pci_device() {
         let (_dir, root) = mock_root();
         let graph = discovery(root).scan().unwrap();
@@ -1550,6 +1650,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn discovered_nodes_go_stale_after_ttl() {
         let (_dir, root) = mock_root();
         let graph = discovery(root).scan().unwrap();
@@ -1560,6 +1661,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn network_health_reflects_operstate() {
         let (_dir, root) = mock_root();
         let graph = discovery(root).scan().unwrap();
@@ -1568,6 +1670,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn missing_root_is_reported() {
         let dir = tempfile::tempdir().unwrap();
         let err = discovery(dir.path().to_path_buf()).scan().unwrap_err();
@@ -1575,6 +1678,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn empty_tree_produces_empty_graph() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("proc");
@@ -1584,24 +1688,33 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn sensors_are_discovered_from_hwmon() {
         let (_dir, root) = mock_root();
         write(&root.join("sys/class/hwmon/hwmon0/name"), "coretemp\n");
         write(&root.join("sys/class/hwmon/hwmon0/temp1_input"), "52000\n");
-        write(&root.join("sys/class/hwmon/hwmon0/temp1_label"), "Package id 0\n");
+        write(
+            &root.join("sys/class/hwmon/hwmon0/temp1_label"),
+            "Package id 0\n",
+        );
         write(&root.join("sys/class/hwmon/hwmon1/name"), "nct6798\n");
         write(&root.join("sys/class/hwmon/hwmon1/fan1_input"), "1200\n");
         let graph = discovery(root).scan().unwrap();
-        let temp = graph.get_node(&NodeId("sensor:hwmon0-temp1".into())).unwrap();
+        let temp = graph
+            .get_node(&NodeId("sensor:hwmon0-temp1".into()))
+            .unwrap();
         assert_eq!(temp.node_type, NodeType::Sensor);
         assert_eq!(temp.attributes.get("value").unwrap(), "52000");
         assert_eq!(temp.attributes.get("unit").unwrap(), "millidegree_c");
         assert_eq!(temp.attributes.get("label").unwrap(), "Package id 0");
-        let fan = graph.get_node(&NodeId("sensor:hwmon1-fan1".into())).unwrap();
+        let fan = graph
+            .get_node(&NodeId("sensor:hwmon1-fan1".into()))
+            .unwrap();
         assert_eq!(fan.attributes.get("unit").unwrap(), "rpm");
     }
 
     #[test]
+    #[cfg(unix)]
     fn device_firmware_attributes_create_nodes_and_edges() {
         let (_dir, root) = mock_root();
         // The mock wifi PCI device exposes a firmware version attribute; the
@@ -1611,10 +1724,7 @@ mod tests {
             &root.join("sys/bus/pci/devices/0000:00:14.3/firmware_version"),
             "iwlwifi-46\n",
         );
-        write(
-            &root.join("sys/bus/usb/devices/1-1/fw_version"),
-            "2.0.1\n",
-        );
+        write(&root.join("sys/bus/usb/devices/1-1/fw_version"), "2.0.1\n");
         let graph = discovery(root).scan().unwrap();
 
         let fw = graph
@@ -1644,6 +1754,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn firmware_class_entries_create_nodes_but_not_control_files() {
         let (_dir, root) = mock_root();
         fs::create_dir_all(root.join("sys/class/firmware/iwlwifi-ty-a0-gf-a0-83.ucode")).unwrap();
@@ -1651,11 +1762,17 @@ mod tests {
         write(&root.join("sys/class/firmware/timeout"), "60\n");
         let graph = discovery(root).scan().unwrap();
 
-        assert!(graph
-            .get_node(&NodeId("firmware:iwlwifi-ty-a0-gf-a0-83.ucode".into()))
-            .is_some());
+        assert!(
+            graph
+                .get_node(&NodeId("firmware:iwlwifi-ty-a0-gf-a0-83.ucode".into()))
+                .is_some()
+        );
         // Slashes in the firmware name are sanitized into the node id.
-        assert!(graph.get_node(&NodeId("firmware:nvidia-gsp".into())).is_some());
+        assert!(
+            graph
+                .get_node(&NodeId("firmware:nvidia-gsp".into()))
+                .is_some()
+        );
         assert!(
             graph.get_node(&NodeId("firmware:timeout".into())).is_none(),
             "timeout is a control file, not firmware"
@@ -1663,6 +1780,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn devices_without_firmware_attributes_get_no_firmware_node() {
         let (_dir, root) = mock_root();
         let graph = discovery(root).scan().unwrap();
@@ -1677,6 +1795,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn process_nodes_parse_ticks_cmdline_and_health() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_path_buf();
@@ -1715,15 +1834,23 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn reconcile_emits_add_and_remove_events() {
         let (_dir, root) = mock_root();
         let d = discovery(root.clone());
         let mut graph = d.scan().unwrap();
-        assert!(graph.get_node(&NodeId("device:pci-0000:00:14.3".into())).is_some());
+        assert!(
+            graph
+                .get_node(&NodeId("device:pci-0000:00:14.3".into()))
+                .is_some()
+        );
 
         fs::remove_dir_all(root.join("sys/bus/pci/devices/0000:00:14.3")).unwrap();
         write(&root.join("sys/class/net/eth1/operstate"), "down\n");
-        write(&root.join("sys/class/net/eth1/address"), "00:11:22:33:44:55\n");
+        write(
+            &root.join("sys/class/net/eth1/address"),
+            "00:11:22:33:44:55\n",
+        );
 
         let events = d.reconcile(&mut graph).unwrap();
         assert!(
@@ -1732,17 +1859,18 @@ mod tests {
                 .any(|e| e.event_type == EventType::DeviceRemoved
                     && e.node_id == NodeId("device:pci-0000:00:14.3".into()))
         );
+        assert!(events.iter().any(|e| e.event_type == EventType::DeviceAdded
+            && e.node_id == NodeId("device:net-eth1".into())));
         assert!(
-            events
-                .iter()
-                .any(|e| e.event_type == EventType::DeviceAdded
-                    && e.node_id == NodeId("device:net-eth1".into()))
+            graph
+                .get_node(&NodeId("device:pci-0000:00:14.3".into()))
+                .is_none()
         );
-        assert!(graph.get_node(&NodeId("device:pci-0000:00:14.3".into())).is_none());
         assert!(graph.get_node(&NodeId("device:net-eth1".into())).is_some());
     }
 
     #[test]
+    #[cfg(unix)]
     fn reconcile_removes_dangling_edges() {
         let (_dir, root) = mock_root();
         let d = discovery(root.clone());
@@ -1755,18 +1883,10 @@ mod tests {
         assert!(graph.get_dependencies(&wifi).is_empty());
     }
 
+    /// Unix-only: the fake systemctl is a shell script made executable with
+    /// Unix permission bits; Windows has no `#!/bin/sh` execution path.
     #[test]
-    fn systemctl_output_parses_into_services() {
-        let out = "networkd-dispatcher.service loaded active running Dispatches libcups\n\
-                   cups.service loaded active running CUPS Scheduler\n\
-                   ssh.service loaded inactive dead OpenBSD Secure Shell server\n\
-                   snapd.service loaded active running Snap Daemon";
-        let services = parse_systemctl_units(out);
-        assert!(services.iter().any(|s| s.name == "networkd-dispatcher" && s.state == "active"));
-        assert!(services.iter().any(|s| s.name == "cups" && s.description == "CUPS Scheduler"));
-    }
-
-    #[test]
+    #[cfg(unix)]
     fn service_populate_marks_health_by_state() {
         let (_dir, root) = mock_root();
         let mut graph = discovery(root).scan().unwrap();
@@ -1781,7 +1901,9 @@ mod tests {
         let services = ServiceDiscovery::with_command(vec![script.to_string_lossy().into_owned()]);
         let count = services.populate(&mut graph, 1_000).unwrap();
         assert_eq!(count, 2);
-        let netd = graph.get_node(&NodeId("service:networkd-dispatcher".into())).unwrap();
+        let netd = graph
+            .get_node(&NodeId("service:networkd-dispatcher".into()))
+            .unwrap();
         assert_eq!(netd.health, HealthState::Healthy);
         assert_eq!(netd.attributes.get("state").unwrap(), "active");
         let ssh = graph.get_node(&NodeId("service:ssh".into())).unwrap();
