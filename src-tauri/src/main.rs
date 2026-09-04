@@ -79,6 +79,12 @@ enum BackendRequest {
         layout: SurfaceLayout,
         response: mpsc::Sender<Result<(), String>>,
     },
+    ReviseSurface {
+        id: String,
+        expected_revision: u64,
+        instruction: String,
+        response: mpsc::Sender<Result<SurfaceRecord, String>>,
+    },
     ListSurfaces {
         response: mpsc::Sender<Result<Vec<SurfaceRecord>, String>>,
     },
@@ -380,6 +386,35 @@ async fn list_surfaces(state: tauri::State<'_, AppState>) -> Result<Vec<SurfaceR
         let (response_tx, response_rx) = mpsc::channel();
         requests
             .send(BackendRequest::ListSurfaces {
+                response: response_tx,
+            })
+            .map_err(|_| "backend worker is unavailable".to_string())?;
+        response_rx
+            .recv()
+            .map_err(|_| "backend worker closed the response channel".to_string())?
+    })
+    .await
+    .map_err(|error| format!("surface worker failed: {error}"))?
+}
+
+/// Revise one existing generated surface. The expected revision is an
+/// optimistic-concurrency boundary: a delayed browser request must never
+/// overwrite a newer visual design.
+#[tauri::command]
+async fn revise_surface(
+    id: String,
+    expected_revision: u64,
+    instruction: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<SurfaceRecord, String> {
+    let requests = state.requests.clone();
+    tokio::task::spawn_blocking(move || {
+        let (response_tx, response_rx) = mpsc::channel();
+        requests
+            .send(BackendRequest::ReviseSurface {
+                id,
+                expected_revision,
+                instruction,
                 response: response_tx,
             })
             .map_err(|_| "backend worker is unavailable".to_string())?;
@@ -918,6 +953,17 @@ fn main() {
                             if result.is_ok() { persist_surfaces(surfaces.all()); }
                             let _ = response.send(result);
                         }
+                        BackendRequest::ReviseSurface { id, expected_revision, instruction, response } => {
+                            let result = revise_surface_record(
+                                &mut facade,
+                                &mut surfaces,
+                                &id,
+                                expected_revision,
+                                &instruction,
+                            );
+                            if result.is_ok() { persist_surfaces(surfaces.all()); }
+                            let _ = response.send(result);
+                        }
                         BackendRequest::ListSurfaces { response } => {
                             let _ = response.send(Ok(surfaces.all().to_vec()));
                         }
@@ -1077,6 +1123,7 @@ fn main() {
             close_surface,
             update_surface_layout,
             list_surfaces,
+            revise_surface,
             submit_prompt,
             system_graph,
             get_verifier_enabled,
@@ -1106,6 +1153,57 @@ fn initialize_surface_bindings(facade: &Facade, surface: &mut SurfaceRecord) {
         .expect("state store lock")
         .binding_values(surface.bindings.iter().map(String::as_str));
     surface.set_initial_binding_values(values);
+}
+
+fn revise_surface_record(
+    facade: &mut Facade,
+    surfaces: &mut SurfaceRuntime,
+    id: &str,
+    expected_revision: u64,
+    instruction: &str,
+) -> Result<SurfaceRecord, String> {
+    let existing = surfaces
+        .get(id)
+        .cloned()
+        .ok_or_else(|| format!("no surface '{id}' is open"))?;
+    if existing.revision != expected_revision {
+        return Err(format!(
+            "surface '{id}' changed from revision {expected_revision} to {}; refresh before editing",
+            existing.revision
+        ));
+    }
+    let intent = format!("Revise this existing surface: {instruction}");
+    let projection = {
+        let mut state = facade
+            .coordinator
+            .state_store
+            .write()
+            .expect("state store lock");
+        state.refresh_host();
+        state.project(&format!("{} {instruction}", existing.intent), 32)
+    };
+    let evidence = vec![aios::tools::ToolResult {
+        tool: "state.projection",
+        text: projection
+            .facts
+            .iter()
+            .map(|fact| format!("{}={}", fact.key, fact.value))
+            .collect::<Vec<_>>()
+            .join(" "),
+    }];
+    let (html, _) = facade
+        .compose_unconstrained_html(&intent, &evidence, Some(&existing.html))
+        .map_err(|error| format!("surface revision generation failed: {error}"))?;
+    aios::surface::verify_value_fidelity(&html, &evidence)
+        .map_err(|error| format!("surface revision fidelity check failed: {error}"))?;
+    let bindings = aios::surface::declared_bindings(&html);
+    let values = facade
+        .coordinator
+        .state_store
+        .read()
+        .expect("state store lock")
+        .binding_values(bindings.iter().map(String::as_str));
+    surfaces.revise(id, expected_revision, intent, html, values)
 }
 
 /// Translate collector-owned observations into the presentation-only delta

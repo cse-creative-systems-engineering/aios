@@ -62,9 +62,21 @@ uses a real provider and its free-model availability is external state.
 
 The remaining lifecycle requirements are:
 
-- user-directed visual revision of an existing surface;
 - close, minimize, restore, z-order, and stale-binding state;
 - reliable input-region behavior across resize, drag, and canvas restart.
+
+### Surface revision
+
+The canvas supplies an Edit control for each surface. It sends that surface's
+stable ID, the visual revision the client observed, and the user's revision
+instruction to the backend. The backend regenerates only that surface through
+the assigned surface model, with the previous HTML and a fresh scoped
+projection. It validates fidelity before atomically accepting the replacement.
+
+The expected visual revision is an optimistic-concurrency guard: a delayed
+edit is rejected if the target changed, and no generic "current surface"
+pointer exists. A successful redesign retains identity and placement, advances
+only visual `revision`, and receives freshly initialized declared bindings.
 
 ## Sidebar Workstream
 

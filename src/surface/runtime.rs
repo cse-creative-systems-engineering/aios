@@ -136,6 +136,37 @@ impl SurfaceRuntime {
         &self.surfaces
     }
 
+    pub fn get(&self, id: &str) -> Option<&SurfaceRecord> {
+        self.surfaces.iter().find(|surface| surface.id == id)
+    }
+
+    /// Atomically replace one surface's model-authored design. The caller must
+    /// supply the revision it observed, which prevents a delayed edit from
+    /// overwriting a newer design or a different surface.
+    pub fn revise(
+        &mut self,
+        id: &str,
+        expected_revision: u64,
+        intent: String,
+        html: String,
+        binding_values: BTreeMap<String, String>,
+    ) -> Result<SurfaceRecord, String> {
+        let surface = self
+            .surfaces
+            .iter_mut()
+            .find(|surface| surface.id == id)
+            .ok_or_else(|| format!("no surface '{id}' is open"))?;
+        if surface.revision != expected_revision {
+            return Err(format!(
+                "surface '{id}' changed from revision {expected_revision} to {}; refresh before editing",
+                surface.revision
+            ));
+        }
+        surface.revise(intent, html);
+        surface.set_initial_binding_values(binding_values);
+        Ok(surface.clone())
+    }
+
     /// Apply exact binding values without changing the model-authored HTML,
     /// layout, or visual revision. Only changed, declared keys become a delta.
     pub fn apply_binding_values(&mut self, values: &BTreeMap<String, String>) -> Vec<SurfaceDelta> {
@@ -260,5 +291,45 @@ mod tests {
             r#"<span data-aios="cpu.utilization_percent">10</span>"#
         );
         assert_eq!(runtime.all()[0].revision, 1);
+    }
+
+    #[test]
+    fn revision_is_targeted_and_rejects_a_stale_client() {
+        let mut runtime = SurfaceRuntime::default();
+        runtime.open(SurfaceRecord::new(
+            "surface-a".into(),
+            "cpu".into(),
+            r#"<span data-aios="cpu.utilization_percent">10</span>"#.into(),
+            SurfaceLayout::default(),
+        ));
+        runtime.open(SurfaceRecord::new(
+            "surface-b".into(),
+            "memory".into(),
+            r#"<span data-aios="memory.available">20</span>"#.into(),
+            SurfaceLayout::default(),
+        ));
+        let revised = runtime
+            .revise(
+                "surface-a",
+                1,
+                "make it yellow".into(),
+                r#"<span data-aios="cpu.utilization_percent">12</span>"#.into(),
+                BTreeMap::from([("cpu.utilization_percent".into(), "12".into())]),
+            )
+            .expect("matching revision should revise only the target");
+        assert_eq!(revised.revision, 2);
+        assert_eq!(runtime.get("surface-b").unwrap().revision, 1);
+        assert!(
+            runtime
+                .revise(
+                    "surface-a",
+                    1,
+                    "stale".into(),
+                    "<p>stale</p>".into(),
+                    BTreeMap::new(),
+                )
+                .is_err()
+        );
+        assert!(runtime.get("surface-bad").is_none());
     }
 }

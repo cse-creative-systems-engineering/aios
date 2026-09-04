@@ -147,7 +147,17 @@ model-authored fragment. `data_revision` is monotonic per surface and is
 independent of visual `revision`; a stale, missing, or out-of-order delta is
 ignored, leaving the last valid presentation visible.
 
-### 2.1 Message type registry
+### 2.1 Surface revision request
+
+The presentation runtime accepts a surface revision request with `id`,
+`expectedRevision`, and a user instruction. The backend must load the matching
+record, reject a missing ID or revision mismatch, generate against that
+record's prior HTML, and atomically replace only the matched record after the
+normal fidelity gate. A revision response is the complete new `SurfaceRecord`;
+it retains ID and layout, increments visual `revision`, and may change the
+declared bindings. This request carries no tool capability or arbitrary IPC.
+
+### 2.2 Message type registry
 
 ```rust
 pub enum MessageType {

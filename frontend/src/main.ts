@@ -292,6 +292,9 @@ function render(): void {
     document.querySelectorAll<HTMLButtonElement>('[data-close]').forEach((button) => {
       button.addEventListener('click', () => void closeSurface(button.dataset.close ?? ''));
     });
+    document.querySelectorAll<HTMLButtonElement>('[data-edit]').forEach((button) => {
+      button.addEventListener('click', () => void requestSurfaceRevision(button.dataset.edit ?? ''));
+    });
     if (surfaces.length) {
       document.querySelectorAll<HTMLElement>('.surface-host').forEach((host) => {
         const surface = findSurface(host.dataset.surfaceId ?? '');
@@ -580,7 +583,8 @@ function adoptSurfaceHtml(html: string): string {
 function renderCanvas(): string {
   if (!surfaces.length) return '';
   return surfaces.map((surface) =>
-    `<div class="surface-host" data-surface-id="${escapeHtml(surface.id)}" data-aios-data-revision="${surface.dataRevision}" style="left:${surface.layout.x}px;top:${surface.layout.y}px;z-index:${surface.layout.zIndex}">${adoptSurfaceHtml(surface.html)}` +
+    `<div class="surface-host" data-surface-id="${escapeHtml(surface.id)}" data-surface-revision="${surface.revision}" data-aios-data-revision="${surface.dataRevision}" style="left:${surface.layout.x}px;top:${surface.layout.y}px;z-index:${surface.layout.zIndex}">${adoptSurfaceHtml(surface.html)}` +
+    `<button type="button" class="surface-edit" data-edit="${escapeHtml(surface.id)}" aria-label="Revise surface">Edit</button>` +
     `<button type="button" class="surface-close" data-close="${escapeHtml(surface.id)}" aria-label="Close surface">×</button>` +
     `</div>`
   ).join('');
@@ -768,6 +772,28 @@ async function closeSurface(id: string): Promise<void> {
     // canvas window away until the next generation.
     await invoke('set_input_region', { regions: [] }).catch(() => {});
     await currentWindow.hide();
+  }
+}
+
+async function requestSurfaceRevision(id: string): Promise<void> {
+  const surface = findSurface(id);
+  if (!surface || requestInFlight) return;
+  const instruction = window.prompt('Describe how Aios should revise this surface:', '');
+  if (!instruction?.trim()) return;
+  requestInFlight = true;
+  render();
+  try {
+    const revised = await invoke<SurfaceCard>('revise_surface', {
+      id: surface.id,
+      expectedRevision: surface.revision,
+      instruction: instruction.trim(),
+    });
+    surfaces = surfaces.map((candidate) => candidate.id === revised.id ? revised : candidate);
+  } catch (error) {
+    console.error(`[Aios] revise_surface failed: ${String(error)}`);
+  } finally {
+    requestInFlight = false;
+    render();
   }
 }
 

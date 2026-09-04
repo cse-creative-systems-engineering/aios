@@ -148,6 +148,8 @@ describe('Aios native desktop surface flow', () => {
     const cpuHost = await cpuSurface.$('..');
     const surfaceId = await cpuHost.getAttribute('data-surface-id');
     assert.ok(surfaceId, 'CPU surface should retain its backend-owned identity');
+    const visualRevisionBefore = Number(await cpuHost.getAttribute('data-surface-revision'));
+    assert.equal(visualRevisionBefore, 1, 'a new surface should start at visual revision one');
     const dataRevisionBefore = Number(await cpuHost.getAttribute('data-aios-data-revision'));
     assert.ok(Number.isInteger(dataRevisionBefore) && dataRevisionBefore >= 0, 'surface should expose a monotonic data revision');
     await browser.execute(async (key) => {
@@ -161,6 +163,19 @@ describe('Aios native desktop surface flow', () => {
     });
     assert.equal(await cpuHost.getAttribute('data-surface-id'), surfaceId, 'live update must retain the surface identity');
     assert.ok(Number(await cpuHost.getAttribute('data-aios-data-revision')) > dataRevisionBefore, 'live update should advance data revision only');
+
+    await browser.execute(() => { window.prompt = () => 'make the title neon yellow'; });
+    await cpuHost.$('[data-edit]').click();
+    await browser.waitUntil(async () => {
+      const host = await $(`[data-surface-id="${surfaceId}"]`);
+      return Number(await host.getAttribute('data-surface-revision')) === visualRevisionBefore + 1;
+    }, {
+      timeout: 20_000,
+      timeoutMsg: 'surface edit did not produce a new visual revision',
+    });
+    const revisedHost = await $(`[data-surface-id="${surfaceId}"]`);
+    assert.equal(await revisedHost.getAttribute('data-surface-id'), surfaceId, 'revision must retain the targeted surface identity');
+    assert.equal((await $$('.surface-host')).length, themes.length, 'revision must not replace another surface');
 
     while (await $('[data-close]').isExisting()) {
       await $('[data-close]').click();
