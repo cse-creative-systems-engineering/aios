@@ -125,6 +125,28 @@ pub enum ProtocolVersion {
 
 ## 2. Message Types
 
+### 2.0 Surface projection delta (desktop transport)
+
+The local canvas transport carries this additive, presentation-only event from
+the runtime to the detached canvas. It is not a broker message and grants no
+authority:
+
+```rust
+pub struct SurfaceDelta {
+    pub id: String,
+    pub revision: u64,
+    pub data_revision: u64,
+    pub values: BTreeMap<String, String>,
+}
+```
+
+`id` and `revision` must match the existing surface. `values` may contain only
+keys declared by `data-aios` in that surface's already validated HTML. The
+canvas replaces matching text without regenerating or reparsing the
+model-authored fragment. `data_revision` is monotonic per surface and is
+independent of visual `revision`; a stale, missing, or out-of-order delta is
+ignored, leaving the last valid presentation visible.
+
 ### 2.1 Message type registry
 
 ```rust

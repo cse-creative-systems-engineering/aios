@@ -140,6 +140,28 @@ describe('Aios native desktop surface flow', () => {
     }
 
     await browser.switchToWindow(canvas);
+    const cpuSurface = await $('[data-aios-theme="cpu"]');
+    const cpuBinding = await cpuSurface.$('[data-aios*="cpu."]');
+    assert.equal(await cpuBinding.isExisting(), true, 'CPU surface should declare a stable live projection key');
+    const bindingKey = await cpuBinding.getAttribute('data-aios');
+    assert.match(bindingKey ?? '', /^cpu\./, 'binding key should come from the live CPU projection');
+    const cpuHost = await cpuSurface.$('..');
+    const surfaceId = await cpuHost.getAttribute('data-surface-id');
+    assert.ok(surfaceId, 'CPU surface should retain its backend-owned identity');
+    const dataRevisionBefore = Number(await cpuHost.getAttribute('data-aios-data-revision'));
+    assert.ok(Number.isInteger(dataRevisionBefore) && dataRevisionBefore >= 0, 'surface should expose a monotonic data revision');
+    await browser.execute(async (key) => {
+      window.dispatchEvent(new CustomEvent('aios-test-publish-state', {
+        detail: { key, value: '77.77' },
+      }));
+    }, bindingKey);
+    await browser.waitUntil(async () => (await cpuBinding.getText()) === '77.77', {
+      timeout: 10_000,
+      timeoutMsg: 'live state update did not replace the declared binding in place',
+    });
+    assert.equal(await cpuHost.getAttribute('data-surface-id'), surfaceId, 'live update must retain the surface identity');
+    assert.ok(Number(await cpuHost.getAttribute('data-aios-data-revision')) > dataRevisionBefore, 'live update should advance data revision only');
+
     while (await $('[data-close]').isExisting()) {
       await $('[data-close]').click();
       await browser.pause(100);

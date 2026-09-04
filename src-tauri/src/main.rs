@@ -1,6 +1,7 @@
 use aios::facade::Facade;
 use aios::graph::NodeType;
 use aios::progress::{GraphActivity, GraphPhase, ProgressReporter};
+use aios::protocol::{DataClassification, now};
 use aios::surface::{SurfaceLayout, SurfaceRecord, SurfaceRuntime};
 #[cfg(target_os = "linux")]
 use gdk::prelude::*;
@@ -119,6 +120,12 @@ enum BackendRequest {
     DiscoverModels {
         provider_id: String,
         response: mpsc::Sender<Result<Vec<DiscoveredModel>, String>>,
+    },
+    #[cfg(feature = "webdriver")]
+    PublishTestState {
+        key: String,
+        value: String,
+        response: mpsc::Sender<Result<(), String>>,
     },
 }
 
@@ -382,6 +389,34 @@ async fn list_surfaces(state: tauri::State<'_, AppState>) -> Result<Vec<SurfaceR
     })
     .await
     .map_err(|error| format!("surface worker failed: {error}"))?
+}
+
+/// Embedded-WebDriver-only sample injection. This has no production build
+/// entry point; it proves that the same runtime path used by collectors can
+/// update a visible binding without asking the model to regenerate HTML.
+#[cfg(feature = "webdriver")]
+#[tauri::command]
+async fn publish_test_state(
+    key: String,
+    value: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let requests = state.requests.clone();
+    tokio::task::spawn_blocking(move || {
+        let (response_tx, response_rx) = mpsc::channel();
+        requests
+            .send(BackendRequest::PublishTestState {
+                key,
+                value,
+                response: response_tx,
+            })
+            .map_err(|_| "backend worker is unavailable".to_string())?;
+        response_rx
+            .recv()
+            .map_err(|_| "backend worker closed the response channel".to_string())?
+    })
+    .await
+    .map_err(|error| format!("state worker failed: {error}"))?
 }
 
 #[tauri::command]
@@ -859,6 +894,9 @@ fn main() {
                         Err(mpsc::RecvTimeoutError::Timeout) => {
                             // Keep observations current independently of prompts.
                             facade.coordinator.state_store.write().expect("state store lock").refresh_host();
+                            if emit_surface_deltas(&worker_handle, &facade, &mut surfaces) {
+                                persist_surfaces(surfaces.all());
+                            }
                             continue;
                         }
                         Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -882,6 +920,24 @@ fn main() {
                         }
                         BackendRequest::ListSurfaces { response } => {
                             let _ = response.send(Ok(surfaces.all().to_vec()));
+                        }
+                        #[cfg(feature = "webdriver")]
+                        BackendRequest::PublishTestState { key, value, response } => {
+                            let timestamp = now();
+                            facade.coordinator.state_store.write().expect("state store lock").publish(
+                                key,
+                                "webdriver:test",
+                                value,
+                                None,
+                                timestamp,
+                                Some(timestamp + 60),
+                                "webdriver",
+                                DataClassification::SystemConfig,
+                            );
+                            if emit_surface_deltas(&worker_handle, &facade, &mut surfaces) {
+                                persist_surfaces(surfaces.all());
+                            }
+                            let _ = response.send(Ok(()));
                         }
                         BackendRequest::AddProvider {
                             id,
@@ -1026,7 +1082,9 @@ fn main() {
             get_verifier_enabled,
             set_verifier_enabled,
             get_approval_mode,
-            set_approval_mode
+            set_approval_mode,
+            #[cfg(feature = "webdriver")]
+            publish_test_state
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri app");
@@ -1038,6 +1096,48 @@ fn html_escape(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+fn initialize_surface_bindings(facade: &Facade, surface: &mut SurfaceRecord) {
+    let values = facade
+        .coordinator
+        .state_store
+        .read()
+        .expect("state store lock")
+        .binding_values(surface.bindings.iter().map(String::as_str));
+    surface.set_initial_binding_values(values);
+}
+
+/// Translate collector-owned observations into the presentation-only delta
+/// stream. A delta carries only keys the surface explicitly declared, so the
+/// canvas never receives a broad state dump or a capability-bearing payload.
+fn emit_surface_deltas(
+    app: &tauri::AppHandle,
+    facade: &Facade,
+    surfaces: &mut SurfaceRuntime,
+) -> bool {
+    let values = facade
+        .coordinator
+        .state_store
+        .read()
+        .expect("state store lock")
+        .binding_values(
+            surfaces
+                .all()
+                .iter()
+                .flat_map(|surface| surface.bindings.iter().map(String::as_str)),
+        );
+    let deltas = surfaces.apply_binding_values(&values);
+    if deltas.is_empty() {
+        return false;
+    }
+    use tauri::Emitter;
+    for delta in deltas {
+        if let Err(error) = app.emit_to("canvas", "surface_delta", delta) {
+            eprintln!("Aios canvas: failed to emit surface delta: {error}");
+        }
+    }
+    true
 }
 
 fn handle_prompt(
@@ -1053,6 +1153,34 @@ fn handle_prompt(
     };
     let answer = facade.run_line(&prompt);
     let evidence = facade.take_tool_results();
+    // The existing specialist path remains in place during the migration, but
+    // the surface model now receives fresh, stable projection keys first.
+    // A generated `data-aios="cpu.utilization_percent"` is therefore a
+    // durable declaration that the runtime can update in place.
+    let projection_evidence = {
+        let mut state = facade
+            .coordinator
+            .state_store
+            .write()
+            .expect("state store lock");
+        state.refresh_host();
+        let projection = state.project(&prompt, 32);
+        (!projection.facts.is_empty()).then(|| aios::tools::ToolResult {
+            tool: "state.projection",
+            text: projection
+                .facts
+                .iter()
+                .map(|fact| format!("{}={}", fact.key, fact.value))
+                .collect::<Vec<_>>()
+                .join(" "),
+        })
+    };
+    let mut surface_evidence =
+        Vec::with_capacity(evidence.len() + usize::from(projection_evidence.is_some()));
+    if let Some(projection) = projection_evidence {
+        surface_evidence.push(projection);
+    }
+    surface_evidence.extend(evidence.iter().cloned());
     // Groundless generation (ADR-0007): Aios relays the prompt and specialist
     // data to the surface model, then verifies value fidelity before display.
     // There is no other surface path and no widget vocabulary. Each prompt
@@ -1171,9 +1299,9 @@ fn handle_prompt(
             artifact_html
         } else {
             emit_graph_activity(worker_handle, GraphPhase::Composing, &["composer"]);
-            match facade.compose_unconstrained_html(&prompt, &evidence, None) {
+            match facade.compose_unconstrained_html(&prompt, &surface_evidence, None) {
                 Ok((html, routing)) => {
-                    match aios::surface::verify_value_fidelity(&html, &evidence) {
+                    match aios::surface::verify_value_fidelity(&html, &surface_evidence) {
                         Ok(()) => {
                             eprintln!(
                                 "Aios surface: provider={} model={} bytes={}",
@@ -1188,12 +1316,13 @@ fn handle_prompt(
                                 Some((&routing, html.len())),
                                 None,
                             );
-                            let card = SurfaceRecord::new(
+                            let mut card = SurfaceRecord::new(
                                 next_surface_id(),
                                 prompt.clone(),
                                 html,
                                 surfaces.next_layout(),
                             );
+                            initialize_surface_bindings(facade, &mut card);
                             surfaces.open(card.clone());
                             // Prefer the LLM surface, but keep artifact as second card if present.
                             if artifact_html.is_some() {

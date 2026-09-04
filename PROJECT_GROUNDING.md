@@ -6,6 +6,7 @@ Start here before making changes or answering questions about the repository.
 
 Read the latest dated grounding snapshot:
 
+- [`project_grounding_2026-09-04_01-23-18.md`](docs/grounding/project_grounding_2026-09-04_01-23-18.md) — Add projection-keyed live surface deltas with in-place canvas updates
 - [`project_grounding_2026-09-04_01-14-02.md`](docs/grounding/project_grounding_2026-09-04_01-14-02.md) — Add isolated native and live OpenRouter provider onboarding E2E coverage
 - [`project_grounding_2026-09-04_00-59-45.md`](docs/grounding/project_grounding_2026-09-04_00-59-45.md) — Replace external desktop driver with embedded Wayland-compatible E2E coverage
 - [`project_grounding_2026-09-04_00-44-57.md`](docs/grounding/project_grounding_2026-09-04_00-44-57.md) — Prefer native Wayland with explicit XWayland dock fallback

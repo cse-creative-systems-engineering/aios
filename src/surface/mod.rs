@@ -19,4 +19,4 @@ pub use evidence::{
     EvidenceEntry, EvidenceIndex, evidence_brief, number_present_in_evidence,
     value_present_in_evidence,
 };
-pub use runtime::{SurfaceLayout, SurfaceRecord, SurfaceRuntime, declared_bindings};
+pub use runtime::{SurfaceDelta, SurfaceLayout, SurfaceRecord, SurfaceRuntime, declared_bindings};

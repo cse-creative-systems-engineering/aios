@@ -7,7 +7,8 @@ import { isSectionId, providerCatalog, renderSidebar, roleState, rolesCatalog, s
 // The only dock edge type still shared with the sidebar renderer.
 type DockEdge = 'left' | 'right' | 'top' | 'bottom';
 type SurfaceLayout = { x: number; y: number; zIndex: number; visible: boolean };
-type SurfaceCard = { id: string; revision: number; intent: string; html: string; layout: SurfaceLayout; bindings: string[] };
+type SurfaceCard = { id: string; revision: number; intent: string; html: string; layout: SurfaceLayout; bindings: string[]; bindingValues: Record<string, string>; dataRevision: number };
+type SurfaceDelta = { id: string; revision: number; dataRevision: number; values: Record<string, string> };
 type PromptResponse = {
   answer: string;
   evidence: EvidenceItem[];
@@ -293,6 +294,8 @@ function render(): void {
     });
     if (surfaces.length) {
       document.querySelectorAll<HTMLElement>('.surface-host').forEach((host) => {
+        const surface = findSurface(host.dataset.surfaceId ?? '');
+        if (surface) replaceSurfaceBindingText(host, surface.bindingValues);
         wireSurfaceDrag(host);
         observeSurfaceSize(host);
       });
@@ -577,10 +580,30 @@ function adoptSurfaceHtml(html: string): string {
 function renderCanvas(): string {
   if (!surfaces.length) return '';
   return surfaces.map((surface) =>
-    `<div class="surface-host" data-surface-id="${escapeHtml(surface.id)}" style="left:${surface.layout.x}px;top:${surface.layout.y}px;z-index:${surface.layout.zIndex}">${adoptSurfaceHtml(surface.html)}` +
+    `<div class="surface-host" data-surface-id="${escapeHtml(surface.id)}" data-aios-data-revision="${surface.dataRevision}" style="left:${surface.layout.x}px;top:${surface.layout.y}px;z-index:${surface.layout.zIndex}">${adoptSurfaceHtml(surface.html)}` +
     `<button type="button" class="surface-close" data-close="${escapeHtml(surface.id)}" aria-label="Close surface">×</button>` +
     `</div>`
   ).join('');
+}
+
+function applySurfaceDelta(delta: SurfaceDelta): void {
+  const surface = findSurface(delta.id);
+  if (!surface || surface.revision !== delta.revision || delta.dataRevision <= surface.dataRevision) return;
+  surface.bindingValues = { ...surface.bindingValues, ...delta.values };
+  surface.dataRevision = delta.dataRevision;
+  const host = surfaceHosts().find((candidate) => candidate.dataset.surfaceId === delta.id);
+  if (!host) return;
+  replaceSurfaceBindingText(host, delta.values);
+  host.dataset.aiosDataRevision = String(delta.dataRevision);
+  scheduleInputRegion();
+}
+
+function replaceSurfaceBindingText(host: HTMLElement, values: Record<string, string>): void {
+  for (const [key, value] of Object.entries(values)) {
+    host.querySelectorAll<HTMLElement>('[data-aios]').forEach((element) => {
+      if (element.dataset.aios === key) element.textContent = value;
+    });
+  }
 }
 
 async function dockPanel(edge: DockEdge): Promise<void> {
@@ -838,6 +861,13 @@ function wireSurfaceDrag(host: HTMLElement): void {
 }
 
 if (isCanvasWindow) {
+  // The backend command exists only in embedded-WebDriver builds. Keeping the
+  // browser-facing trigger as a DOM event avoids depending on private Tauri
+  // globals while exercising the actual IPC and canvas delta path.
+  window.addEventListener('aios-test-publish-state', (event) => {
+    const detail = (event as CustomEvent<{ key: string; value: string }>).detail;
+    if (detail?.key && detail.value) void invoke('publish_test_state', detail);
+  });
   void invoke<SurfaceCard[]>('list_surfaces').then(async (restored) => {
     surfaces = restored.filter((surface) => surface.layout.visible);
     lastSurfacePresent = surfaces.length > 0;
@@ -866,6 +896,11 @@ if (isCanvasWindow) {
     await currentWindow.show();
   }).catch((error) => {
     console.error(`[Aios] canvas event listener failed: ${String(error)}`);
+  });
+  void listen<SurfaceDelta>('surface_delta', (event) => {
+    applySurfaceDelta(event.payload);
+  }).catch((error) => {
+    console.error(`[Aios] surface delta listener failed: ${String(error)}`);
   });
 }
 

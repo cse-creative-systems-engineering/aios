@@ -34,6 +34,10 @@ pub struct StoredSurface {
     pub layout: crate::surface::SurfaceLayout,
     #[serde(default)]
     pub bindings: Vec<String>,
+    #[serde(default)]
+    pub binding_values: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub data_revision: u64,
 }
 
 impl From<&crate::surface::SurfaceRecord> for StoredSurface {
@@ -45,6 +49,8 @@ impl From<&crate::surface::SurfaceRecord> for StoredSurface {
             intent: surface.intent.clone(),
             layout: surface.layout.clone(),
             bindings: surface.bindings.clone(),
+            binding_values: surface.binding_values.clone(),
+            data_revision: surface.data_revision,
         }
     }
 }
@@ -61,15 +67,27 @@ impl From<StoredSurface> for crate::surface::SurfaceRecord {
         if !surface.bindings.is_empty() {
             record.bindings = surface.bindings;
         }
+        record.binding_values = surface.binding_values;
+        record.data_revision = surface.data_revision;
         record
     }
 }
 
 impl From<&crate::tools::ToolResult> for StoredToolResult {
-    fn from(r: &crate::tools::ToolResult) -> Self { Self { tool: r.tool.to_string(), text: r.text.clone() } }
+    fn from(r: &crate::tools::ToolResult) -> Self {
+        Self {
+            tool: r.tool.to_string(),
+            text: r.text.clone(),
+        }
+    }
 }
 impl From<StoredToolResult> for crate::tools::ToolResult {
-    fn from(s: StoredToolResult) -> Self { Self { tool: Box::leak(s.tool.into_boxed_str()), text: s.text } }
+    fn from(s: StoredToolResult) -> Self {
+        Self {
+            tool: Box::leak(s.tool.into_boxed_str()),
+            text: s.text,
+        }
+    }
 }
 
 pub struct SessionStore {
@@ -78,11 +96,18 @@ pub struct SessionStore {
 
 impl SessionStore {
     pub fn new(config_dir: &Path) -> Self {
-        Self { dir: config_dir.join("sessions") }
+        Self {
+            dir: config_dir.join("sessions"),
+        }
     }
-    pub fn path_for(&self, date: &str) -> PathBuf { self.dir.join(format!("{date}.json")) }
+    pub fn path_for(&self, date: &str) -> PathBuf {
+        self.dir.join(format!("{date}.json"))
+    }
     pub fn today() -> String {
-        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
         // YYYY-MM-DD in UTC — simple, deterministic
         let days = secs / 86400;
         // Use chrono-like calc via time crate? keep simple: use `date` command fallback
@@ -90,8 +115,14 @@ impl SessionStore {
         // To avoid dep, shell out to `date -u +%F` if secs is 0? Simpler: use `time` crate already via `crate::protocol::now`?
         // We'll just use `format` of days since epoch mod, but that's not calendar. Use `chrono` via `time` crate if present.
         // Fallback: use `std::process::Command` date
-        if let Ok(out) = std::process::Command::new("date").arg("-u").arg("+%F").output() {
-            if let Ok(s) = String::from_utf8(out.stdout) { return s.trim().to_string(); }
+        if let Ok(out) = std::process::Command::new("date")
+            .arg("-u")
+            .arg("+%F")
+            .output()
+        {
+            if let Ok(s) = String::from_utf8(out.stdout) {
+                return s.trim().to_string();
+            }
         }
         format!("day-{days}")
     }
@@ -113,11 +144,19 @@ impl SessionStore {
         }
         std::fs::rename(&tmp, &path)?;
         // fsync dir
-        if let Ok(dir) = std::fs::File::open(&self.dir) { let _ = dir.sync_all(); }
+        if let Ok(dir) = std::fs::File::open(&self.dir) {
+            let _ = dir.sync_all();
+        }
         Ok(())
     }
     pub fn load_or_default(&self, date: &str) -> SessionSnapshot {
-        self.load(date).unwrap_or_else(|| SessionSnapshot { id: date.to_string(), history: Vec::new(), tool_results: Vec::new(), surfaces: Vec::new(), updated_at: crate::protocol::now() })
+        self.load(date).unwrap_or_else(|| SessionSnapshot {
+            id: date.to_string(),
+            history: Vec::new(),
+            tool_results: Vec::new(),
+            surfaces: Vec::new(),
+            updated_at: crate::protocol::now(),
+        })
     }
 }
 
@@ -128,7 +167,21 @@ mod tests {
     fn roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let store = SessionStore::new(dir.path());
-        let snap = SessionSnapshot { id: "2026-08-22".into(), history: vec!["user: hi".into()], tool_results: vec![StoredToolResult { tool: "files.write_file".into(), text: "committed=true".into() }], surfaces: vec![StoredSurface::from(&crate::surface::SurfaceRecord::new("surface-1".into(), "hello".into(), "<div>hi</div>".into(), crate::surface::SurfaceLayout::default()))], updated_at: 1 };
+        let snap = SessionSnapshot {
+            id: "2026-08-22".into(),
+            history: vec!["user: hi".into()],
+            tool_results: vec![StoredToolResult {
+                tool: "files.write_file".into(),
+                text: "committed=true".into(),
+            }],
+            surfaces: vec![StoredSurface::from(&crate::surface::SurfaceRecord::new(
+                "surface-1".into(),
+                "hello".into(),
+                "<div>hi</div>".into(),
+                crate::surface::SurfaceLayout::default(),
+            ))],
+            updated_at: 1,
+        };
         store.save(&snap).unwrap();
         let loaded = store.load("2026-08-22").unwrap();
         assert_eq!(loaded.history[0], "user: hi");

@@ -73,7 +73,13 @@ impl ContextProjection {
             let unit = fact.unit.as_deref().unwrap_or("");
             lines.push(format!(
                 "- {} = {}{} [resource={}, source={}, observed_at={}, freshness={}]",
-                fact.key, fact.value, unit, fact.resource, fact.source, fact.observed_at, fact.freshness
+                fact.key,
+                fact.value,
+                unit,
+                fact.resource,
+                fact.source,
+                fact.observed_at,
+                fact.freshness
             ));
         }
         for finding in &self.findings {
@@ -87,7 +93,9 @@ impl ContextProjection {
             ));
         }
         if self.truncated {
-            lines.push("- projection truncated; use a typed read-only query for more detail.".into());
+            lines.push(
+                "- projection truncated; use a typed read-only query for more detail.".into(),
+            );
         }
         lines.join("\n")
     }
@@ -138,18 +146,24 @@ impl SystemStateStore {
         let resource = resource.into();
         let value = value.into();
         let source = source.into();
-        let sample = StateSample { value: value.clone(), observed_at };
-        let metric = self.metrics.entry(key.clone()).or_insert_with(|| StateMetric {
-            key: key.clone(),
-            resource: resource.clone(),
+        let sample = StateSample {
             value: value.clone(),
-            unit: unit.clone(),
             observed_at,
-            expires_at,
-            source: source.clone(),
-            classification,
-            history: VecDeque::new(),
-        });
+        };
+        let metric = self
+            .metrics
+            .entry(key.clone())
+            .or_insert_with(|| StateMetric {
+                key: key.clone(),
+                resource: resource.clone(),
+                value: value.clone(),
+                unit: unit.clone(),
+                observed_at,
+                expires_at,
+                source: source.clone(),
+                classification,
+                history: VecDeque::new(),
+            });
         metric.resource = resource;
         metric.value = value;
         metric.unit = unit;
@@ -169,7 +183,8 @@ impl SystemStateStore {
     /// deliberately copies only public system configuration metadata.
     pub fn ingest_graph(&mut self, graph: &SystemGraph) {
         for node in graph.nodes().values() {
-            let prefix = format!("{:?}.{}", node.node_type, sanitize(&node.node_id.0)).to_ascii_lowercase();
+            let prefix =
+                format!("{:?}.{}", node.node_type, sanitize(&node.node_id.0)).to_ascii_lowercase();
             self.publish(
                 format!("{prefix}.health"),
                 node.node_id.0.clone(),
@@ -203,31 +218,100 @@ impl SystemStateStore {
         let observed_at = now();
         if let Ok(loadavg) = std::fs::read_to_string("/proc/loadavg") {
             if let Some(load1) = loadavg.split_whitespace().next() {
-                self.publish("cpu.load_1m", "cpu:all", load1, None, observed_at, Some(observed_at + 15), "procfs", DataClassification::SystemConfig);
+                self.publish(
+                    "cpu.load_1m",
+                    "cpu:all",
+                    load1,
+                    None,
+                    observed_at,
+                    Some(observed_at + 15),
+                    "procfs",
+                    DataClassification::SystemConfig,
+                );
             }
         }
         if let Ok(meminfo) = std::fs::read_to_string("/proc/meminfo") {
             for key in ["MemTotal", "MemAvailable"] {
-                if let Some(value) = meminfo.lines().find_map(|line| line.strip_prefix(&format!("{key}:"))).and_then(|value| value.split_whitespace().next()) {
-                    self.publish(format!("memory.{}", sanitize(key)), "memory:system", value, Some("kB".into()), observed_at, Some(observed_at + 15), "procfs", DataClassification::SystemConfig);
+                if let Some(value) = meminfo
+                    .lines()
+                    .find_map(|line| line.strip_prefix(&format!("{key}:")))
+                    .and_then(|value| value.split_whitespace().next())
+                {
+                    self.publish(
+                        format!("memory.{}", sanitize(key)),
+                        "memory:system",
+                        value,
+                        Some("kB".into()),
+                        observed_at,
+                        Some(observed_at + 15),
+                        "procfs",
+                        DataClassification::SystemConfig,
+                    );
                 }
             }
         }
         if let Ok(network) = std::fs::read_to_string("/proc/net/dev") {
             for line in network.lines().skip(2) {
-                let Some((interface, counters)) = line.split_once(':') else { continue; };
+                let Some((interface, counters)) = line.split_once(':') else {
+                    continue;
+                };
                 let values: Vec<&str> = counters.split_whitespace().collect();
-                if values.len() < 9 { continue; }
+                if values.len() < 9 {
+                    continue;
+                }
                 let interface = sanitize(interface.trim());
-                let Ok(rx_bytes) = values[0].parse::<u64>() else { continue; };
-                let Ok(tx_bytes) = values[8].parse::<u64>() else { continue; };
+                let Ok(rx_bytes) = values[0].parse::<u64>() else {
+                    continue;
+                };
+                let Ok(tx_bytes) = values[8].parse::<u64>() else {
+                    continue;
+                };
                 let resource = format!("network:{interface}");
-                self.publish(format!("network.{interface}.rx_bytes"), resource.clone(), rx_bytes.to_string(), Some("B".into()), observed_at, Some(observed_at + 15), "procfs", DataClassification::SystemConfig);
-                self.publish(format!("network.{interface}.tx_bytes"), resource.clone(), tx_bytes.to_string(), Some("B".into()), observed_at, Some(observed_at + 15), "procfs", DataClassification::SystemConfig);
-                if let Some((previous_rx, previous_tx, previous_at)) = self.host_network_bytes.insert(interface.clone(), (rx_bytes, tx_bytes, observed_at)) {
+                self.publish(
+                    format!("network.{interface}.rx_bytes"),
+                    resource.clone(),
+                    rx_bytes.to_string(),
+                    Some("B".into()),
+                    observed_at,
+                    Some(observed_at + 15),
+                    "procfs",
+                    DataClassification::SystemConfig,
+                );
+                self.publish(
+                    format!("network.{interface}.tx_bytes"),
+                    resource.clone(),
+                    tx_bytes.to_string(),
+                    Some("B".into()),
+                    observed_at,
+                    Some(observed_at + 15),
+                    "procfs",
+                    DataClassification::SystemConfig,
+                );
+                if let Some((previous_rx, previous_tx, previous_at)) = self
+                    .host_network_bytes
+                    .insert(interface.clone(), (rx_bytes, tx_bytes, observed_at))
+                {
                     let elapsed = observed_at.saturating_sub(previous_at).max(1);
-                    self.publish(format!("network.{interface}.rx_bps"), resource.clone(), (rx_bytes.saturating_sub(previous_rx) / elapsed).to_string(), Some("B/s".into()), observed_at, Some(observed_at + 15), "procfs", DataClassification::SystemConfig);
-                    self.publish(format!("network.{interface}.tx_bps"), resource, (tx_bytes.saturating_sub(previous_tx) / elapsed).to_string(), Some("B/s".into()), observed_at, Some(observed_at + 15), "procfs", DataClassification::SystemConfig);
+                    self.publish(
+                        format!("network.{interface}.rx_bps"),
+                        resource.clone(),
+                        (rx_bytes.saturating_sub(previous_rx) / elapsed).to_string(),
+                        Some("B/s".into()),
+                        observed_at,
+                        Some(observed_at + 15),
+                        "procfs",
+                        DataClassification::SystemConfig,
+                    );
+                    self.publish(
+                        format!("network.{interface}.tx_bps"),
+                        resource,
+                        (tx_bytes.saturating_sub(previous_tx) / elapsed).to_string(),
+                        Some("B/s".into()),
+                        observed_at,
+                        Some(observed_at + 15),
+                        "procfs",
+                        DataClassification::SystemConfig,
+                    );
                 }
             }
         }
@@ -240,7 +324,9 @@ impl SystemStateStore {
 
     #[cfg(target_os = "linux")]
     fn refresh_process_cpu(&mut self, observed_at: Timestamp) {
-        let Some((total_ticks, busy_ticks, cores)) = proc_cpu_totals() else { return; };
+        let Some((total_ticks, busy_ticks, cores)) = proc_cpu_totals() else {
+            return;
+        };
         let previous_cpu = self.host_cpu_ticks.replace((total_ticks, busy_ticks));
         let current = proc_process_ticks();
         let Some((previous_total, previous_busy)) = previous_cpu else {
@@ -248,19 +334,55 @@ impl SystemStateStore {
             return;
         };
         let total_delta = total_ticks.saturating_sub(previous_total);
-        if total_delta == 0 { return; }
-        let utilization = busy_ticks.saturating_sub(previous_busy) as f64 * 100.0 / total_delta as f64;
-        self.publish("cpu.utilization_percent", "cpu:all", format!("{utilization:.2}"), Some("%".into()), observed_at, Some(observed_at + 15), "procfs", DataClassification::SystemConfig);
-        let mut ranked = current.iter().filter_map(|(pid, ticks)| {
-            let previous = self.host_process_ticks.get(pid).copied()?;
-            let delta = ticks.saturating_sub(previous);
-            (delta > 0).then_some((*pid, delta as f64 * cores as f64 * 100.0 / total_delta as f64))
-        }).collect::<Vec<_>>();
+        if total_delta == 0 {
+            return;
+        }
+        let utilization =
+            busy_ticks.saturating_sub(previous_busy) as f64 * 100.0 / total_delta as f64;
+        self.publish(
+            "cpu.utilization_percent",
+            "cpu:all",
+            format!("{utilization:.2}"),
+            Some("%".into()),
+            observed_at,
+            Some(observed_at + 15),
+            "procfs",
+            DataClassification::SystemConfig,
+        );
+        let mut ranked = current
+            .iter()
+            .filter_map(|(pid, ticks)| {
+                let previous = self.host_process_ticks.get(pid).copied()?;
+                let delta = ticks.saturating_sub(previous);
+                (delta > 0).then_some((
+                    *pid,
+                    delta as f64 * cores as f64 * 100.0 / total_delta as f64,
+                ))
+            })
+            .collect::<Vec<_>>();
         ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
         for (pid, percent) in ranked.into_iter().take(32) {
-            self.publish(format!("process.{pid}.cpu_percent"), format!("process:{pid}"), format!("{percent:.2}"), Some("%".into()), observed_at, Some(observed_at + 15), "procfs", DataClassification::SystemConfig);
+            self.publish(
+                format!("process.{pid}.cpu_percent"),
+                format!("process:{pid}"),
+                format!("{percent:.2}"),
+                Some("%".into()),
+                observed_at,
+                Some(observed_at + 15),
+                "procfs",
+                DataClassification::SystemConfig,
+            );
             if let Some(name) = proc_process_name(pid) {
-                self.publish(format!("process.{pid}.name"), format!("process:{pid}"), name, None, observed_at, Some(observed_at + 15), "procfs", DataClassification::SystemConfig);
+                self.publish(
+                    format!("process.{pid}.name"),
+                    format!("process:{pid}"),
+                    name,
+                    None,
+                    observed_at,
+                    Some(observed_at + 15),
+                    "procfs",
+                    DataClassification::SystemConfig,
+                );
             }
         }
         self.host_process_ticks = current;
@@ -268,94 +390,233 @@ impl SystemStateStore {
 
     #[cfg(target_os = "linux")]
     fn refresh_thermal(&mut self, observed_at: Timestamp) {
-        let Ok(entries) = std::fs::read_dir("/sys/class/thermal") else { return; };
+        let Ok(entries) = std::fs::read_dir("/sys/class/thermal") else {
+            return;
+        };
         for entry in entries.flatten() {
             let zone = entry.file_name().to_string_lossy().to_string();
-            if !zone.starts_with("thermal_zone") { continue; }
-            let Ok(raw) = std::fs::read_to_string(entry.path().join("temp")) else { continue; };
-            let Ok(milli_c) = raw.trim().parse::<f64>() else { continue; };
-            let kind = std::fs::read_to_string(entry.path().join("type")).unwrap_or_else(|_| "unknown".into());
-            self.publish(format!("thermal.{}.{}.temperature_c", sanitize(&zone), sanitize(kind.trim())), format!("thermal:{}", sanitize(&zone)), format!("{:.2}", milli_c / 1000.0), Some("C".into()), observed_at, Some(observed_at + 15), "sysfs", DataClassification::SystemConfig);
+            if !zone.starts_with("thermal_zone") {
+                continue;
+            }
+            let Ok(raw) = std::fs::read_to_string(entry.path().join("temp")) else {
+                continue;
+            };
+            let Ok(milli_c) = raw.trim().parse::<f64>() else {
+                continue;
+            };
+            let kind = std::fs::read_to_string(entry.path().join("type"))
+                .unwrap_or_else(|_| "unknown".into());
+            self.publish(
+                format!(
+                    "thermal.{}.{}.temperature_c",
+                    sanitize(&zone),
+                    sanitize(kind.trim())
+                ),
+                format!("thermal:{}", sanitize(&zone)),
+                format!("{:.2}", milli_c / 1000.0),
+                Some("C".into()),
+                observed_at,
+                Some(observed_at + 15),
+                "sysfs",
+                DataClassification::SystemConfig,
+            );
         }
     }
 
-    pub fn metric(&self, key: &str) -> Option<&StateMetric> { self.metrics.get(key) }
+    pub fn metric(&self, key: &str) -> Option<&StateMetric> {
+        self.metrics.get(key)
+    }
+
+    /// Return the current, non-stale values for a surface's explicitly
+    /// declared projection keys. This is deliberately an exact-key API: a
+    /// generated surface cannot discover arbitrary host state through fuzzy
+    /// matching, and a stale/missing observation leaves its last valid value
+    /// on screen instead of fabricating a replacement.
+    pub fn binding_values<'a>(
+        &self,
+        keys: impl IntoIterator<Item = &'a str>,
+    ) -> BTreeMap<String, String> {
+        let timestamp = now();
+        keys.into_iter()
+            .filter_map(|key| {
+                let metric = self.metrics.get(key)?;
+                (!metric.is_stale(timestamp)).then(|| (key.to_string(), metric.value.clone()))
+            })
+            .collect()
+    }
 
     pub fn project(&self, query: &str, limit: usize) -> ContextProjection {
         let timestamp = now();
         let terms = query_terms(query);
-        let mut candidates: Vec<&StateMetric> = self.metrics.values()
+        let mut candidates: Vec<&StateMetric> = self
+            .metrics
+            .values()
             .filter(|metric| metric.classification != DataClassification::Protected)
             .collect();
         let query_lower = query.to_ascii_lowercase();
         let rank_process_cpu = terms.iter().any(|term| term.starts_with("process"))
-            && (query_lower.contains("cpu") || terms.iter().any(|term| term == "utilization" || term == "using"));
+            && (query_lower.contains("cpu")
+                || terms
+                    .iter()
+                    .any(|term| term == "utilization" || term == "using"));
         candidates.sort_by_key(|metric| {
-            let haystack = format!("{} {} {}", metric.key, metric.resource, metric.source).to_ascii_lowercase();
-            let matches = terms.iter().filter(|term| haystack.contains(term.as_str())).count();
+            let haystack = format!("{} {} {}", metric.key, metric.resource, metric.source)
+                .to_ascii_lowercase();
+            let matches = terms
+                .iter()
+                .filter(|term| haystack.contains(term.as_str()))
+                .count();
             (std::cmp::Reverse(matches), metric.key.clone())
         });
         if rank_process_cpu {
-            candidates.retain(|metric| metric.key.starts_with("process.") && metric.key.ends_with(".cpu_percent"));
-            candidates.sort_by(|left, right| right.value.parse::<f64>().unwrap_or(f64::NEG_INFINITY).total_cmp(&left.value.parse::<f64>().unwrap_or(f64::NEG_INFINITY)).then_with(|| left.key.cmp(&right.key)));
+            candidates.retain(|metric| {
+                metric.key.starts_with("process.") && metric.key.ends_with(".cpu_percent")
+            });
+            candidates.sort_by(|left, right| {
+                right
+                    .value
+                    .parse::<f64>()
+                    .unwrap_or(f64::NEG_INFINITY)
+                    .total_cmp(&left.value.parse::<f64>().unwrap_or(f64::NEG_INFINITY))
+                    .then_with(|| left.key.cmp(&right.key))
+            });
         }
-        if !terms.is_empty() && candidates.iter().any(|metric| {
-            let haystack = format!("{} {}", metric.key, metric.resource).to_ascii_lowercase();
-            terms.iter().any(|term| haystack.contains(term.as_str()))
-        }) {
+        if !terms.is_empty()
+            && candidates.iter().any(|metric| {
+                let haystack = format!("{} {}", metric.key, metric.resource).to_ascii_lowercase();
+                terms.iter().any(|term| haystack.contains(term.as_str()))
+            })
+        {
             candidates.retain(|metric| {
                 let haystack = format!("{} {}", metric.key, metric.resource).to_ascii_lowercase();
                 terms.iter().any(|term| haystack.contains(term.as_str()))
             });
         }
         let metric_limit = if rank_process_cpu {
-            requested_top_count(query).unwrap_or(limit.saturating_div(2).max(1)).min(limit.saturating_div(2).max(1))
-        } else { limit };
+            requested_top_count(query)
+                .unwrap_or(limit.saturating_div(2).max(1))
+                .min(limit.saturating_div(2).max(1))
+        } else {
+            limit
+        };
         let truncated = candidates.len() > metric_limit;
         let selected: Vec<&StateMetric> = candidates.into_iter().take(metric_limit).collect();
-        let mut facts: Vec<ContextFact> = selected.iter().map(|metric| ContextFact {
-            key: metric.key.clone(), value: metric.value.clone(), unit: metric.unit.clone(),
-            resource: metric.resource.clone(), source: metric.source.clone(),
-            observed_at: metric.observed_at,
-            freshness: if metric.is_stale(timestamp) { "stale".into() } else { "fresh".into() },
-        }).collect();
+        let mut facts: Vec<ContextFact> = selected
+            .iter()
+            .map(|metric| ContextFact {
+                key: metric.key.clone(),
+                value: metric.value.clone(),
+                unit: metric.unit.clone(),
+                resource: metric.resource.clone(),
+                source: metric.source.clone(),
+                observed_at: metric.observed_at,
+                freshness: if metric.is_stale(timestamp) {
+                    "stale".into()
+                } else {
+                    "fresh".into()
+                },
+            })
+            .collect();
         if rank_process_cpu {
             for metric in selected {
-                if facts.len() >= limit { break; }
-                let Some(prefix) = metric.key.strip_suffix(".cpu_percent") else { continue; };
-                let Some(name) = self.metrics.get(&format!("{prefix}.name")) else { continue; };
-                facts.push(ContextFact { key: name.key.clone(), value: name.value.clone(), unit: None, resource: name.resource.clone(), source: name.source.clone(), observed_at: name.observed_at, freshness: if name.is_stale(timestamp) { "stale".into() } else { "fresh".into() } });
+                if facts.len() >= limit {
+                    break;
+                }
+                let Some(prefix) = metric.key.strip_suffix(".cpu_percent") else {
+                    continue;
+                };
+                let Some(name) = self.metrics.get(&format!("{prefix}.name")) else {
+                    continue;
+                };
+                facts.push(ContextFact {
+                    key: name.key.clone(),
+                    value: name.value.clone(),
+                    unit: None,
+                    resource: name.resource.clone(),
+                    source: name.source.clone(),
+                    observed_at: name.observed_at,
+                    freshness: if name.is_stale(timestamp) {
+                        "stale".into()
+                    } else {
+                        "fresh".into()
+                    },
+                });
             }
         }
-        let findings = self.findings(query).into_iter().take(limit.saturating_div(4).max(1)).collect();
-        ContextProjection { generated_at: timestamp, query: query.into(), facts, findings, truncated }
+        let findings = self
+            .findings(query)
+            .into_iter()
+            .take(limit.saturating_div(4).max(1))
+            .collect();
+        ContextProjection {
+            generated_at: timestamp,
+            query: query.into(),
+            facts,
+            findings,
+            truncated,
+        }
     }
 
     pub fn findings(&self, query: &str) -> Vec<StateFinding> {
         let terms = query_terms(query);
-        self.metrics.values().filter_map(|metric| {
-            if !terms.is_empty() && !terms.iter().any(|term| metric.key.to_ascii_lowercase().contains(term)) { return None; }
-            let first = metric.history.front()?;
-            let last = metric.history.back()?;
-            if first.observed_at == last.observed_at { return None; }
-            let from = first.value.parse::<f64>().ok()?;
-            let to = last.value.parse::<f64>().ok()?;
-            let delta = to - from;
-            if delta.abs() < f64::EPSILON { return None; }
-            Some(StateFinding {
-                key: metric.key.clone(),
-                kind: if delta > 0.0 { "rising".into() } else { "falling".into() },
-                detail: format!("{} changed by {:+.2} between samples", metric.key, delta),
-                observed_from: first.observed_at, observed_to: last.observed_at,
-                source_keys: vec![metric.key.clone()],
+        self.metrics
+            .values()
+            .filter_map(|metric| {
+                if !terms.is_empty()
+                    && !terms
+                        .iter()
+                        .any(|term| metric.key.to_ascii_lowercase().contains(term))
+                {
+                    return None;
+                }
+                let first = metric.history.front()?;
+                let last = metric.history.back()?;
+                if first.observed_at == last.observed_at {
+                    return None;
+                }
+                let from = first.value.parse::<f64>().ok()?;
+                let to = last.value.parse::<f64>().ok()?;
+                let delta = to - from;
+                if delta.abs() < f64::EPSILON {
+                    return None;
+                }
+                Some(StateFinding {
+                    key: metric.key.clone(),
+                    kind: if delta > 0.0 {
+                        "rising".into()
+                    } else {
+                        "falling".into()
+                    },
+                    detail: format!("{} changed by {:+.2} between samples", metric.key, delta),
+                    observed_from: first.observed_at,
+                    observed_to: last.observed_at,
+                    source_keys: vec![metric.key.clone()],
+                })
             })
-        }).collect()
+            .collect()
     }
 }
 
 fn query_terms(query: &str) -> Vec<String> {
-    query.to_ascii_lowercase().split(|c: char| !c.is_ascii_alphanumeric())
-        .filter(|term| term.len() >= 3).map(str::to_string).collect()
+    const GENERIC_TERMS: &[&str] = &[
+        "about",
+        "display",
+        "displaying",
+        "generate",
+        "please",
+        "show",
+        "status",
+        "surface",
+        "usage",
+        "using",
+        "with",
+    ];
+    query
+        .to_ascii_lowercase()
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|term| term.len() >= 3 && !GENERIC_TERMS.contains(term))
+        .map(str::to_string)
+        .collect()
 }
 
 fn requested_top_count(query: &str) -> Option<usize> {
@@ -363,7 +624,9 @@ fn requested_top_count(query: &str) -> Option<usize> {
     let mut previous_was_top = false;
     for word in lowercase.split(|c: char| !c.is_ascii_alphanumeric()) {
         if previous_was_top {
-            if let Ok(count) = word.parse::<usize>() { return Some(count.max(1)); }
+            if let Ok(count) = word.parse::<usize>() {
+                return Some(count.max(1));
+            }
         }
         previous_was_top = word == "top";
     }
@@ -371,38 +634,80 @@ fn requested_top_count(query: &str) -> Option<usize> {
 }
 
 fn sanitize(value: &str) -> String {
-    value.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' }).collect()
+    value
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 fn health_name(health: &HealthState) -> &'static str {
-    match health { HealthState::Healthy => "healthy", HealthState::Degraded => "degraded", HealthState::Unhealthy => "unhealthy", HealthState::Unknown => "unknown", HealthState::Stale => "stale" }
+    match health {
+        HealthState::Healthy => "healthy",
+        HealthState::Degraded => "degraded",
+        HealthState::Unhealthy => "unhealthy",
+        HealthState::Unknown => "unknown",
+        HealthState::Stale => "stale",
+    }
 }
 
 #[cfg(target_os = "linux")]
 fn proc_cpu_totals() -> Option<(u64, u64, usize)> {
     let stat = std::fs::read_to_string("/proc/stat").ok()?;
-    let values = stat.lines().find(|line| line.starts_with("cpu "))?.split_whitespace().skip(1).filter_map(|value| value.parse::<u64>().ok()).collect::<Vec<_>>();
+    let values = stat
+        .lines()
+        .find(|line| line.starts_with("cpu "))?
+        .split_whitespace()
+        .skip(1)
+        .filter_map(|value| value.parse::<u64>().ok())
+        .collect::<Vec<_>>();
     let total = values.iter().sum();
-    let idle = values.get(3).copied().unwrap_or(0).saturating_add(values.get(4).copied().unwrap_or(0));
-    let cores = stat.lines().filter(|line| line.starts_with("cpu") && line.as_bytes().get(3).is_some_and(u8::is_ascii_digit)).count().max(1);
+    let idle = values
+        .get(3)
+        .copied()
+        .unwrap_or(0)
+        .saturating_add(values.get(4).copied().unwrap_or(0));
+    let cores = stat
+        .lines()
+        .filter(|line| {
+            line.starts_with("cpu") && line.as_bytes().get(3).is_some_and(u8::is_ascii_digit)
+        })
+        .count()
+        .max(1);
     Some((total, total.saturating_sub(idle), cores))
 }
 
 #[cfg(target_os = "linux")]
 fn proc_process_ticks() -> HashMap<u32, u64> {
-    let Ok(entries) = std::fs::read_dir("/proc") else { return HashMap::new(); };
-    entries.flatten().filter_map(|entry| {
-        let pid = entry.file_name().to_string_lossy().parse::<u32>().ok()?;
-        let stat = std::fs::read_to_string(entry.path().join("stat")).ok()?;
-        let close = stat.rfind(')')?;
-        let fields: Vec<&str> = stat[close + 1..].split_whitespace().collect();
-        Some((pid, fields.get(11)?.parse::<u64>().ok()? + fields.get(12)?.parse::<u64>().ok()?))
-    }).collect()
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return HashMap::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let pid = entry.file_name().to_string_lossy().parse::<u32>().ok()?;
+            let stat = std::fs::read_to_string(entry.path().join("stat")).ok()?;
+            let close = stat.rfind(')')?;
+            let fields: Vec<&str> = stat[close + 1..].split_whitespace().collect();
+            Some((
+                pid,
+                fields.get(11)?.parse::<u64>().ok()? + fields.get(12)?.parse::<u64>().ok()?,
+            ))
+        })
+        .collect()
 }
 
 #[cfg(target_os = "linux")]
 fn proc_process_name(pid: u32) -> Option<String> {
-    std::fs::read_to_string(format!("/proc/{pid}/comm")).ok().map(|name| name.trim().to_string()).filter(|name| !name.is_empty())
+    std::fs::read_to_string(format!("/proc/{pid}/comm"))
+        .ok()
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
 }
 
 #[cfg(test)]
@@ -412,8 +717,26 @@ mod tests {
     #[test]
     fn retains_bounded_history_and_reports_non_causal_trend() {
         let mut state = SystemStateStore::with_history_limit(2);
-        state.publish("gpu.0.temperature_c", "gpu:0", "70", Some("C".into()), 10, None, "nvml", DataClassification::SystemConfig);
-        state.publish("gpu.0.temperature_c", "gpu:0", "82", Some("C".into()), 20, None, "nvml", DataClassification::SystemConfig);
+        state.publish(
+            "gpu.0.temperature_c",
+            "gpu:0",
+            "70",
+            Some("C".into()),
+            10,
+            None,
+            "nvml",
+            DataClassification::SystemConfig,
+        );
+        state.publish(
+            "gpu.0.temperature_c",
+            "gpu:0",
+            "82",
+            Some("C".into()),
+            20,
+            None,
+            "nvml",
+            DataClassification::SystemConfig,
+        );
         let findings = state.findings("gpu temperature");
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].kind, "rising");
@@ -423,8 +746,26 @@ mod tests {
     #[test]
     fn projection_is_relevant_and_bounded() {
         let mut state = SystemStateStore::new();
-        state.publish("cpu.0.utilization", "cpu:0", "54", Some("%".into()), 10, None, "procfs", DataClassification::SystemConfig);
-        state.publish("network.eth0.rx_bps", "device:net-eth0", "99", None, 10, None, "procfs", DataClassification::SystemConfig);
+        state.publish(
+            "cpu.0.utilization",
+            "cpu:0",
+            "54",
+            Some("%".into()),
+            10,
+            None,
+            "procfs",
+            DataClassification::SystemConfig,
+        );
+        state.publish(
+            "network.eth0.rx_bps",
+            "device:net-eth0",
+            "99",
+            None,
+            10,
+            None,
+            "procfs",
+            DataClassification::SystemConfig,
+        );
         let projection = state.project("", 1);
         assert_eq!(projection.facts.len(), 1);
         assert!(projection.facts[0].key.contains("cpu"));
@@ -432,15 +773,112 @@ mod tests {
     }
 
     #[test]
+    fn presentation_words_do_not_outweigh_the_requested_domain() {
+        let mut state = SystemStateStore::new();
+        state.publish(
+            "cpu.load_1m",
+            "cpu:all",
+            "1.0",
+            None,
+            10,
+            None,
+            "procfs",
+            DataClassification::SystemConfig,
+        );
+        state.publish(
+            "filesystem.root.usage_used_percent",
+            "filesystem:/",
+            "70",
+            Some("%".into()),
+            10,
+            None,
+            "procfs",
+            DataClassification::SystemConfig,
+        );
+        let projection = state.project("generate a surface displaying cpu usage please", 8);
+        assert_eq!(projection.facts.len(), 1);
+        assert_eq!(projection.facts[0].key, "cpu.load_1m");
+    }
+
+    #[test]
     fn process_cpu_projection_is_ranked_and_pairs_the_process_name() {
         let mut state = SystemStateStore::new();
-        state.publish("process.1.cpu_percent", "process:1", "3.5", Some("%".into()), 10, None, "procfs", DataClassification::SystemConfig);
-        state.publish("process.1.name", "process:1", "init", None, 10, None, "procfs", DataClassification::SystemConfig);
-        state.publish("process.2.cpu_percent", "process:2", "42.0", Some("%".into()), 10, None, "procfs", DataClassification::SystemConfig);
-        state.publish("process.2.name", "process:2", "renderer", None, 10, None, "procfs", DataClassification::SystemConfig);
+        state.publish(
+            "process.1.cpu_percent",
+            "process:1",
+            "3.5",
+            Some("%".into()),
+            10,
+            None,
+            "procfs",
+            DataClassification::SystemConfig,
+        );
+        state.publish(
+            "process.1.name",
+            "process:1",
+            "init",
+            None,
+            10,
+            None,
+            "procfs",
+            DataClassification::SystemConfig,
+        );
+        state.publish(
+            "process.2.cpu_percent",
+            "process:2",
+            "42.0",
+            Some("%".into()),
+            10,
+            None,
+            "procfs",
+            DataClassification::SystemConfig,
+        );
+        state.publish(
+            "process.2.name",
+            "process:2",
+            "renderer",
+            None,
+            10,
+            None,
+            "procfs",
+            DataClassification::SystemConfig,
+        );
         let projection = state.project("show the top 1 processes using cpu", 8);
         assert_eq!(projection.facts[0].key, "process.2.cpu_percent");
         assert_eq!(projection.facts[1].key, "process.2.name");
+    }
+
+    #[test]
+    fn binding_values_are_exact_and_never_return_stale_metrics() {
+        let mut state = SystemStateStore::new();
+        let timestamp = now();
+        state.publish(
+            "cpu.utilization_percent",
+            "cpu:all",
+            "44.2",
+            Some("%".into()),
+            timestamp,
+            Some(timestamp + 60),
+            "procfs",
+            DataClassification::SystemConfig,
+        );
+        state.publish(
+            "cpu.stale",
+            "cpu:all",
+            "old",
+            None,
+            1,
+            Some(1),
+            "procfs",
+            DataClassification::SystemConfig,
+        );
+        let values = state.binding_values(["cpu.utilization_percent", "cpu_stale", "cpu.stale"]);
+        assert_eq!(
+            values.get("cpu.utilization_percent").map(String::as_str),
+            Some("44.2")
+        );
+        assert!(!values.contains_key("cpu_stale"));
+        assert!(!values.contains_key("cpu.stale"));
     }
 
     #[cfg(target_os = "linux")]

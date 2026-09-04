@@ -42,9 +42,14 @@ Multiple generated surfaces, independent movement, close, unioned
 click-through, backend-owned placement, and session restore are now shipped.
 The desktop regression harness drives the real native Tauri app through its
 embedded WebDriver server, so it works in the Wayland path without the obsolete
-external WebKit driver. A generated surface still receives a static evidence
-snapshot; versioned state deltas and in-place binding replacement are the next
-ADR-0012 slice.
+external WebKit driver. A generated surface receives a bounded projection
+alongside the transitional specialist snapshot. When it declares an exact
+stable projection key such as `data-aios="cpu.utilization_percent"`, the
+runtime sends versioned replacement values to the canvas and updates that
+element in place. This preserves the model-authored HTML, position, dimensions,
+z-order, and visual revision; only `dataRevision` changes. Missing or stale
+observations do not overwrite a visible value. Legacy/non-projection binding
+names remain static during the migration.
 
 The default harness is self-contained: it uses a local OpenAI-compatible
 fixture and a unique temporary configuration/session directory, then performs
@@ -57,8 +62,7 @@ uses a real provider and its free-model availability is external state.
 
 The remaining lifecycle requirements are:
 
-- revisioned updates to an existing surface;
-- live, freshness-aware state bindings without surface regeneration;
+- user-directed visual revision of an existing surface;
 - close, minimize, restore, z-order, and stale-binding state;
 - reliable input-region behavior across resize, drag, and canvas restart.
 
