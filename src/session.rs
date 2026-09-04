@@ -5,7 +5,6 @@
 //! + `sync_dir` like `FileActionStore` (action-state-machine §5.3).
 
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -27,6 +26,43 @@ pub struct StoredToolResult {
 pub struct StoredSurface {
     pub id: String,
     pub html: String,
+    #[serde(default)]
+    pub revision: u64,
+    #[serde(default)]
+    pub intent: String,
+    #[serde(default)]
+    pub layout: crate::surface::SurfaceLayout,
+    #[serde(default)]
+    pub bindings: Vec<String>,
+}
+
+impl From<&crate::surface::SurfaceRecord> for StoredSurface {
+    fn from(surface: &crate::surface::SurfaceRecord) -> Self {
+        Self {
+            id: surface.id.clone(),
+            html: surface.html.clone(),
+            revision: surface.revision,
+            intent: surface.intent.clone(),
+            layout: surface.layout.clone(),
+            bindings: surface.bindings.clone(),
+        }
+    }
+}
+
+impl From<StoredSurface> for crate::surface::SurfaceRecord {
+    fn from(surface: StoredSurface) -> Self {
+        let mut record = crate::surface::SurfaceRecord::new(
+            surface.id,
+            surface.intent,
+            surface.html,
+            surface.layout,
+        );
+        record.revision = surface.revision.max(1);
+        if !surface.bindings.is_empty() {
+            record.bindings = surface.bindings;
+        }
+        record
+    }
 }
 
 impl From<&crate::tools::ToolResult> for StoredToolResult {
@@ -92,7 +128,7 @@ mod tests {
     fn roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let store = SessionStore::new(dir.path());
-        let snap = SessionSnapshot { id: "2026-08-22".into(), history: vec!["user: hi".into()], tool_results: vec![StoredToolResult { tool: "files.write_file".into(), text: "committed=true".into() }], surfaces: vec![StoredSurface { id: "surface-1".into(), html: "<div>hi</div>".into() }], updated_at: 1 };
+        let snap = SessionSnapshot { id: "2026-08-22".into(), history: vec!["user: hi".into()], tool_results: vec![StoredToolResult { tool: "files.write_file".into(), text: "committed=true".into() }], surfaces: vec![StoredSurface::from(&crate::surface::SurfaceRecord::new("surface-1".into(), "hello".into(), "<div>hi</div>".into(), crate::surface::SurfaceLayout::default()))], updated_at: 1 };
         store.save(&snap).unwrap();
         let loaded = store.load("2026-08-22").unwrap();
         assert_eq!(loaded.history[0], "user: hi");

@@ -37,7 +37,12 @@ or security boundary.
 
 ## 1. Core idea
 
-Aios presents one conversational interface to the user, but internally it is a coordinated system of specialized agents and deterministic services.
+Aios presents one conversational interface to the user, but internally it is a
+coordinated system of deterministic services and bounded reasoning roles. The
+accepted live-state architecture (ADR-0012) makes routine system context
+available before a model asks for it: prebuilt Rust collectors maintain a
+fresh state store, and Aios receives only the relevant projection. It does not
+turn observations into authority or constrain the visual freedom of A2UI.
 
 The user should be able to express an intent such as:
 

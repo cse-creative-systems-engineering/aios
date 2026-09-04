@@ -6,6 +6,8 @@ Start here before making changes or answering questions about the repository.
 
 Read the latest dated grounding snapshot:
 
+- [`project_grounding_2026-09-04_00-18-23.md`](docs/grounding/project_grounding_2026-09-04_00-18-23.md) — Implement live state projections and durable A2UI surface runtime
+- [`project_grounding_2026-09-04_00-07-59.md`](docs/grounding/project_grounding_2026-09-04_00-07-59.md) — Propose live SystemStateStore and durable generative A2UI runtime
 - [`project_grounding_2026-08-25_18-43-11.md`](docs/grounding/project_grounding_2026-08-25_18-43-11.md) — repo cleanup: untrack build artifacts, ignore graphify churn files
 - [`project_grounding_2026-08-25_18-39-11.md`](docs/grounding/project_grounding_2026-08-25_18-39-11.md) — http timeout 180s default; plain-text CoT stripping
 - [`project_grounding_2026-08-25_18-03-08.md`](docs/grounding/project_grounding_2026-08-25_18-03-08.md) — knowledge graph refresh + graphify project skill registration

@@ -993,6 +993,25 @@ approval-friction level per session (`Default | Auto | YOLO`).
 
 ---
 
+## Milestone 12: Live System State and A2UI Runtime
+
+**Status:** 📝 Documentation-first proposal; no implementation started.
+**Dependencies:** M2 discovery, M8 desktop foundation, M10 session persistence.
+**Governing ADR:** [`decisions/0012-live-system-state-and-a2ui-runtime.md`](decisions/0012-live-system-state-and-a2ui-runtime.md)
+
+Replace request-time conversational evidence collection with deterministic Rust
+collectors that publish fresh typed observations to a `SystemStateStore`. Aios
+uses bounded, task-specific context projections while the existing Broker,
+Guardian, staged executor, approval, audit, and sandbox boundaries remain
+unchanged. In parallel, harden the A2UI runtime so arbitrary model-authored
+HTML/CSS can receive live bindings and user-directed revisions without giving
+the model lifecycle or system authority.
+
+Detailed stages, non-goals, and acceptance gates are in
+[`milestones/0006-live-system-state-a2ui-runtime.md`](milestones/0006-live-system-state-a2ui-runtime.md).
+
+---
+
 ## Timeline Summary
 
 | Milestone | Estimated effort | Cumulative | Dependencies |
@@ -1009,6 +1028,7 @@ approval-friction level per session (`Default | Auto | YOLO`).
 | M9: Workspace Co-Partner | ✅ Merged to `main` at `32ffc0f` | 3–5 weeks (M9.1 files, M9.2 env, M9.3 web, M9.4 loop/artifacts) | M7, M8 |
 | M10: Session Day-Buckets | 🔶 In progress on `feature/session-day-buckets` | 2–4 weeks (SessionStore, project scaffold, always-on awareness) | M9 |
 | M11: Execution Primitive | 🔶 In progress on `feature/session-day-buckets` (per ADR-0010) | 1–2 weeks (`exec.run`, Guardian denylist, approval modes, verifier toggle, sudoers.d) | M10 |
+| M12: Live System State + A2UI Runtime | 📝 Documentation-first proposal | TBD | M2, M8, M10 |
 
 **Estimated time to working v0.1 with Wi-Fi vertical slice:** 4–5 months  
 **Estimated time to full specialist coverage (8 modules):** 8–12 months  

@@ -1,6 +1,7 @@
 use aios::facade::Facade;
 use aios::graph::NodeType;
 use aios::progress::{GraphActivity, GraphPhase, ProgressReporter};
+use aios::surface::{SurfaceLayout, SurfaceRecord, SurfaceRuntime};
 #[cfg(target_os = "linux")]
 use gdk::prelude::*;
 #[cfg(target_os = "linux")]
@@ -71,6 +72,14 @@ enum BackendRequest {
         id: String,
         response: mpsc::Sender<Result<(), String>>,
     },
+    UpdateSurfaceLayout {
+        id: String,
+        layout: SurfaceLayout,
+        response: mpsc::Sender<Result<(), String>>,
+    },
+    ListSurfaces {
+        response: mpsc::Sender<Result<Vec<SurfaceRecord>, String>>,
+    },
     AddProvider {
         id: String,
         kind: String,
@@ -126,17 +135,8 @@ struct PromptResponse {
     evidence: Vec<EvidenceItem>,
     /// A surface authored by the separate groundless surface model after
     /// passing the value-fidelity gate. `None` means nothing may be displayed.
-    experimental_html: Option<SurfaceCard>,
+    experimental_html: Option<SurfaceRecord>,
     backend_status: BackendStatus,
-}
-
-/// One generated surface living on the canvas. Several coexist; each is a
-/// self-contained HTML fragment the frontend hosts, drags, and measures.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SurfaceCard {
-    id: String,
-    html: String,
 }
 
 fn next_surface_id() -> String {
@@ -337,6 +337,34 @@ async fn close_surface(id: String, state: tauri::State<'_, AppState>) -> Result<
     })
     .await
     .map_err(|error| format!("settings worker failed: {error}"))?
+}
+
+/// Persist user placement in the backend-owned surface runtime. The frontend
+/// remains responsible only for pointer interaction and measurement.
+#[tauri::command]
+async fn update_surface_layout(
+    id: String,
+    layout: SurfaceLayout,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let requests = state.requests.clone();
+    tokio::task::spawn_blocking(move || {
+        let (response_tx, response_rx) = mpsc::channel();
+        requests.send(BackendRequest::UpdateSurfaceLayout { id, layout, response: response_tx })
+            .map_err(|_| "backend worker is unavailable".to_string())?;
+        response_rx.recv().map_err(|_| "backend worker closed the response channel".to_string())?
+    }).await.map_err(|error| format!("surface worker failed: {error}"))?
+}
+
+#[tauri::command]
+async fn list_surfaces(state: tauri::State<'_, AppState>) -> Result<Vec<SurfaceRecord>, String> {
+    let requests = state.requests.clone();
+    tokio::task::spawn_blocking(move || {
+        let (response_tx, response_rx) = mpsc::channel();
+        requests.send(BackendRequest::ListSurfaces { response: response_tx })
+            .map_err(|_| "backend worker is unavailable".to_string())?;
+        response_rx.recv().map_err(|_| "backend worker closed the response channel".to_string())?
+    }).await.map_err(|error| format!("surface worker failed: {error}"))?
 }
 
 #[tauri::command]
@@ -788,14 +816,14 @@ fn main() {    #[cfg(target_os = "linux")]
                     }
                 };
 
-                let mut surfaces: Vec<SurfaceCard> = {
+                let mut surfaces = {
                     // Restore prior day's surfaces (ADR-0009 Stage 2)
                     let config_dir = std::env::var("AIOS_CONFIG").map(std::path::PathBuf::from).map(|p| p.parent().map(|d| d.to_path_buf()).unwrap_or(p)).unwrap_or_else(|_| aios::config::AiosConfig::default_path().parent().map(|d| d.to_path_buf()).unwrap_or_else(|| std::path::PathBuf::from("/tmp")));
                     let store = aios::session::SessionStore::new(&config_dir);
                     let today = aios::session::SessionStore::today();
                     if let Some(snap) = store.load(&today) {
-                        snap.surfaces.into_iter().map(|s| SurfaceCard { id: s.id, html: s.html }).collect()
-                    } else { Vec::new() }
+                        SurfaceRuntime::restore(snap.surfaces.into_iter().map(Into::into).collect())
+                    } else { SurfaceRuntime::default() }
                 };
                 while let Ok(request) = requests_rx.recv() {
                     match request {
@@ -803,13 +831,20 @@ fn main() {    #[cfg(target_os = "linux")]
                             handle_prompt(&mut facade, &worker_handle, &mut surfaces, prompt, response);
                         }
                         BackendRequest::CloseSurface { id, response } => {
-                            let before = surfaces.len();
-                            surfaces.retain(|surface| surface.id != id);
-                            if surfaces.len() == before {
+                            if !surfaces.close(&id) {
                                 let _ = response.send(Err(format!("no surface '{id}' is open")));
                             } else {
+                                persist_surfaces(surfaces.all());
                                 let _ = response.send(Ok(()));
                             }
+                        }
+                        BackendRequest::UpdateSurfaceLayout { id, layout, response } => {
+                            let result = surfaces.set_layout(&id, layout);
+                            if result.is_ok() { persist_surfaces(surfaces.all()); }
+                            let _ = response.send(result);
+                        }
+                        BackendRequest::ListSurfaces { response } => {
+                            let _ = response.send(Ok(surfaces.all().to_vec()));
                         }
                         BackendRequest::AddProvider {
                             id,
@@ -947,6 +982,8 @@ fn main() {    #[cfg(target_os = "linux")]
             sidebar_status,
             set_input_region,
             close_surface,
+            update_surface_layout,
+            list_surfaces,
             submit_prompt,
             system_graph,
             get_verifier_enabled,
@@ -966,7 +1003,7 @@ fn html_escape(s: &str) -> String {
 fn handle_prompt(
     facade: &mut Facade,
     worker_handle: &tauri::AppHandle,
-    surfaces: &mut Vec<SurfaceCard>,
+    surfaces: &mut SurfaceRuntime,
     prompt: String,
     response: mpsc::Sender<Result<PromptResponse, String>>,
 ) {
@@ -1040,8 +1077,8 @@ fn handle_prompt(
                 r#"<div style="width:420px;min-height:120px;padding:16px;background:#0b1220;color:#e2e8f0;border:1px solid #1e293b;border-radius:12px;font-family:system-ui,sans-serif" data-aios-drag-region><div style="font-weight:600;margin-bottom:8px">Artifact — staged file</div><div style="font-size:12px;opacity:0.9">{}</div>{}<div style="margin-top:10px;font-size:11px;opacity:0.6">Staged via broker → FileCheckpoint → health verified → committed. Check ~/workspace.</div></div>"#,
                 body, preview_html
             );
-            let card = SurfaceCard { id: next_surface_id(), html };
-            surfaces.push(card.clone());
+            let card = SurfaceRecord::new(next_surface_id(), prompt.clone(), html, surfaces.next_layout());
+            surfaces.open(card.clone());
             Some(card)
         }
     };
@@ -1072,11 +1109,8 @@ fn handle_prompt(
                                 Some((&routing, html.len())),
                                 None,
                             );
-                            let card = SurfaceCard {
-                                id: next_surface_id(),
-                                html,
-                            };
-                            surfaces.push(card.clone());
+                            let card = SurfaceRecord::new(next_surface_id(), prompt.clone(), html, surfaces.next_layout());
+                            surfaces.open(card.clone());
                             // Prefer the LLM surface, but keep artifact as second card if present.
                             if artifact_html.is_some() {
                                 // Both surfaces are already in `surfaces`; return the LLM one as primary.
@@ -1113,27 +1147,7 @@ fn handle_prompt(
             text: result.text.clone(),
         })
         .collect();
-    // Persist surfaces for day-bucket restore (ADR-0009 Stage 2 minimal): save Vec<SurfaceCard> to SessionStore
-    {
-        let config_dir = std::env::var("AIOS_CONFIG").map(std::path::PathBuf::from).map(|p| p.parent().map(|d| d.to_path_buf()).unwrap_or(p)).unwrap_or_else(|_| aios::config::AiosConfig::default_path().parent().map(|d| d.to_path_buf()).unwrap_or_else(|| std::path::PathBuf::from("/tmp")));
-        let store = aios::session::SessionStore::new(&config_dir);
-        let today = aios::session::SessionStore::today();
-        let snap = aios::session::SessionSnapshot {
-            id: today.clone(),
-            history: Vec::new(), // history already persisted via Facade
-            tool_results: Vec::new(),
-            surfaces: surfaces.iter().map(|c| aios::session::StoredSurface { id: c.id.clone(), html: c.html.clone() }).collect(),
-            updated_at: aios::protocol::now(),
-        };
-        if let Some(existing) = store.load(&today) {
-            let mut merged = snap;
-            merged.history = existing.history;
-            merged.tool_results = existing.tool_results;
-            let _ = store.save(&merged);
-        } else {
-            let _ = store.save(&snap);
-        }
-    }
+    persist_surfaces(surfaces.all());
     let result = Ok(PromptResponse {
         answer,
         evidence,
@@ -1146,6 +1160,24 @@ fn handle_prompt(
     }
     emit_graph_activity(worker_handle, GraphPhase::Idle, &[]);
     let _ = response.send(result);
+}
+
+fn persist_surfaces(surfaces: &[SurfaceRecord]) {
+    let config_dir = std::env::var("AIOS_CONFIG").map(std::path::PathBuf::from).map(|p| p.parent().map(|d| d.to_path_buf()).unwrap_or(p)).unwrap_or_else(|_| aios::config::AiosConfig::default_path().parent().map(|d| d.to_path_buf()).unwrap_or_else(|| std::path::PathBuf::from("/tmp")));
+    let store = aios::session::SessionStore::new(&config_dir);
+    let today = aios::session::SessionStore::today();
+    let mut snapshot = aios::session::SessionSnapshot {
+        id: today.clone(), history: Vec::new(), tool_results: Vec::new(),
+        surfaces: surfaces.iter().map(aios::session::StoredSurface::from).collect(),
+        updated_at: aios::protocol::now(),
+    };
+    if let Some(existing) = store.load(&today) {
+        snapshot.history = existing.history;
+        snapshot.tool_results = existing.tool_results;
+    }
+    if let Err(error) = store.save(&snapshot) {
+        eprintln!("Aios surface: failed to persist runtime state: {error}");
+    }
 }
 
 fn refresh_sidebar_status_from_handle(_handle: &tauri::AppHandle, _status: BackendStatus) {

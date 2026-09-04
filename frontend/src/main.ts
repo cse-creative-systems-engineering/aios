@@ -6,13 +6,14 @@ import { PhysicalPosition } from '@tauri-apps/api/dpi';
 import { isSectionId, providerCatalog, renderSidebar, roleState, rolesCatalog, settingsForm, updateProviderCatalog, updateRolesCatalog, updateSettingsProviders, type EvidenceItem, type FlightProgress, type SectionId, type SidebarMessage, type SidebarStatus, type SystemGraphSnapshot } from './sidebar';
 // The only dock edge type still shared with the sidebar renderer.
 type DockEdge = 'left' | 'right' | 'top' | 'bottom';
-type SurfaceCard = { id: string; html: string };
+type SurfaceLayout = { x: number; y: number; zIndex: number; visible: boolean };
+type SurfaceCard = { id: string; revision: number; intent: string; html: string; layout: SurfaceLayout; bindings: string[] };
 type PromptResponse = {
   answer: string;
   evidence: EvidenceItem[];
   experimentalHtml: SurfaceCard | null;
 };
-type PlacedSurface = SurfaceCard & { x: number; y: number };
+type PlacedSurface = SurfaceCard;
 type BackendStatus = { ready: boolean; error: string | null };
 type GraphActivityEvent = {
   phase: 'idle' | 'planning' | 'verifying' | 'gathering' | 'composing' | 'policycheck';
@@ -576,7 +577,7 @@ function adoptSurfaceHtml(html: string): string {
 function renderCanvas(): string {
   if (!surfaces.length) return '';
   return surfaces.map((surface) =>
-    `<div class="surface-host" data-surface-id="${escapeHtml(surface.id)}" style="left:${surface.x}px;top:${surface.y}px">${adoptSurfaceHtml(surface.html)}` +
+    `<div class="surface-host" data-surface-id="${escapeHtml(surface.id)}" style="left:${surface.layout.x}px;top:${surface.layout.y}px;z-index:${surface.layout.zIndex}">${adoptSurfaceHtml(surface.html)}` +
     `<button type="button" class="surface-close" data-close="${escapeHtml(surface.id)}" aria-label="Close surface">×</button>` +
     `</div>`
   ).join('');
@@ -810,10 +811,10 @@ function wireSurfaceDrag(host: HTMLElement): void {
     const maxTop = root ? Math.max(0, root.clientHeight - host.offsetHeight) : Number.POSITIVE_INFINITY;
     // Viewport pointer position -> #root-local coordinates via the stored
     // grab offset and root origin; clamped so cards stay reachable.
-    surface.x = Math.min(maxLeft, Math.max(0, event.clientX - dragState.grabX - dragState.rootX));
-    surface.y = Math.min(maxTop, Math.max(0, event.clientY - dragState.grabY - dragState.rootY));
-    host.style.left = `${surface.x}px`;
-    host.style.top = `${surface.y}px`;
+    surface.layout.x = Math.min(maxLeft, Math.max(0, event.clientX - dragState.grabX - dragState.rootX));
+    surface.layout.y = Math.min(maxTop, Math.max(0, event.clientY - dragState.grabY - dragState.rootY));
+    host.style.left = `${surface.layout.x}px`;
+    host.style.top = `${surface.layout.y}px`;
     scheduleInputRegion();
   });
   const endDrag = (event: PointerEvent) => {
@@ -824,7 +825,12 @@ function wireSurfaceDrag(host: HTMLElement): void {
       // The pointer may already have left the webview during a desktop drag.
     }
     dragState.handle.classList.remove('surface-dragging');
+    const surface = findSurface(dragState.surfaceId);
     dragState = null;
+    if (surface) {
+      void invoke('update_surface_layout', { id: surface.id, layout: surface.layout })
+        .catch((error) => console.error(`[Aios] update_surface_layout failed: ${String(error)}`));
+    }
     scheduleInputRegion();
   };
   handle.addEventListener('pointerup', endDrag);
@@ -832,15 +838,22 @@ function wireSurfaceDrag(host: HTMLElement): void {
 }
 
 if (isCanvasWindow) {
+  void invoke<SurfaceCard[]>('list_surfaces').then(async (restored) => {
+    surfaces = restored.filter((surface) => surface.layout.visible);
+    lastSurfacePresent = surfaces.length > 0;
+    render();
+    if (surfaces.length) {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+      await updateInputRegion();
+      await currentWindow.show();
+    }
+  }).catch((error) => console.error(`[Aios] list_surfaces failed: ${String(error)}`));
   void listen<PromptResponse>('canvas_response', async (event) => {
     if (event.payload.experimentalHtml) {
-      // Cascade new surfaces so overlapping cards are discoverable.
-      const offset = ((surfaces.length % 8) + 1) * 28;
-      surfaces.push({
-        ...event.payload.experimentalHtml,
-        x: 20 + offset,
-        y: 16 + offset,
-      });
+      const incoming = event.payload.experimentalHtml;
+      const existing = surfaces.findIndex((surface) => surface.id === incoming.id);
+      if (existing >= 0) surfaces[existing] = incoming;
+      else surfaces.push(incoming);
       lastSurfacePresent = true;
     }
     render();

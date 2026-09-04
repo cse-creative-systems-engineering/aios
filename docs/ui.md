@@ -5,6 +5,7 @@
 **Current checkpoint:** `docs/milestones/0001-generative-surface-desktop-foundation.md`
 **Next plan:** `docs/milestones/0002-multi-surface-lifecycle-plan.md`
 **Sidebar plan:** `docs/milestones/0003-sidebar-administration-panel.md`
+**Active migration architecture:** `docs/decisions/0012-live-system-state-and-a2ui-runtime.md`
 
 ## Active Architecture
 
@@ -37,15 +38,21 @@ system state. Generated presentation remains outside the authority boundary.
 
 ## Current Limits
 
-The checkpoint currently supports one generated surface at a time. The next
-work is the surface lifecycle plan in
-`docs/milestones/0002-multi-surface-lifecycle-plan.md`, covering:
+Multiple generated surfaces, independent movement, close, and unioned
+click-through are now shipped. The current path is still fragile because the
+frontend owns placement in memory while the Tauri worker separately owns the
+HTML list; a generated surface also receives a static evidence snapshot. The
+next architecture is the A2UI runtime in ADR-0012 and
+`docs/milestones/0006-live-system-state-a2ui-runtime.md`. It will preserve
+unrestricted A2UI presentation while making identity, revision, bindings,
+layout, persistence, and failure recovery explicit runtime concerns.
 
-- multiple simultaneous surface IDs;
-- independent movement and click-through regions;
+The remaining lifecycle requirements are:
+
 - revisioned updates to an existing surface;
-- one surface composed from evidence from multiple specialists;
-- close, minimize, restore, and stale-evidence state.
+- live, freshness-aware state bindings without surface regeneration;
+- close, minimize, restore, z-order, and stale-binding state;
+- reliable input-region behavior across resize, drag, and canvas restart.
 
 ## Sidebar Workstream
 

@@ -10,6 +10,7 @@
 
 pub mod composer;
 pub mod evidence;
+pub mod runtime;
 
 pub use composer::{
     SurfaceComposeError, compose_unconstrained_html, coverage_gaps, verify_value_fidelity,
@@ -18,3 +19,4 @@ pub use evidence::{
     EvidenceEntry, EvidenceIndex, evidence_brief, number_present_in_evidence,
     value_present_in_evidence,
 };
+pub use runtime::{SurfaceLayout, SurfaceRecord, SurfaceRuntime, declared_bindings};
