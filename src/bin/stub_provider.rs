@@ -254,15 +254,14 @@ fn themed_surface_html(body: &str, model: &str) -> String {
             )
         })
         .collect();
-    let height = (180 + 34 * rows.len()).min(620);
+    // Size to content by default; the frontend host and CSS clamp the bounds.
     // Deliberately emits the legacy `data-tauri-drag-region` attribute: the
     // canvas renames it on render, and the e2e suite relies on that path to
     // prove surfaces authored against the old prompt stay draggable.
     format!(
-        "<section class=\"surface aios-surface\" data-aios-theme=\"{}\" data-aios-model=\"{}\" style=\"width:420px;height:{}px;display:flex;flex-direction:column;font-family:sans-serif;background:#161b26;color:#e8ecf4;padding:18px;border-radius:14px\" data-tauri-drag-region><h1 style=\"font-size:18px;margin:0 0 12px\">{} health roll-up</h1><ul style=\"list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px;font-size:14px\">{}</ul></section>",
+        "<section class=\"surface aios-surface\" data-aios-theme=\"{}\" data-aios-model=\"{}\" style=\"width:max-content;height:max-content;max-width:420px;max-height:620px;min-width:260px;display:flex;flex-direction:column;font-family:sans-serif;background:#161b26;color:#e8ecf4;padding:18px;border-radius:14px;overflow:auto\" data-tauri-drag-region><h1 style=\"font-size:18px;margin:0 0 12px;flex-shrink:0\">{} health roll-up</h1><ul style=\"list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px;font-size:14px\">{}</ul></section>",
         theme.key(),
         escape_html(model),
-        height,
         theme.title(),
         rows.join("")
     )
