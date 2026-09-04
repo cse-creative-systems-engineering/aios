@@ -400,6 +400,10 @@ impl Coordinator {
                         }
                     };
                 *self.graph.write().expect("graph lock") = graph.clone();
+                self.state_store
+                    .write()
+                    .expect("state store lock")
+                    .ingest_graph(graph);
                 let mut text = scan_summary(graph);
                 if let Some(error) = service_warning {
                     text.push_str(&format!("\nservice discovery unavailable: {error}"));

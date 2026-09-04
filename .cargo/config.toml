@@ -2,3 +2,10 @@
 # bindgen needs a C stdbool.h; this machine's clang install lacks its own
 # resource headers, so point bindgen at gcc's include dir.
 BINDGEN_EXTRA_CLANG_ARGS_x86_64_unknown_linux_gnu = "-isystem /usr/lib/gcc/x86_64-linux-gnu/15/include"
+# llama-cpp-sys otherwise defaults CMake to every available CPU. On a desktop
+# that turns a cold Tauri build into dozens of simultaneous C++ compilers.
+CMAKE_BUILD_PARALLEL_LEVEL = "2"
+
+[build]
+# Keep native desktop builds responsive while GTK/WebKit and llama.cpp compile.
+jobs = 2

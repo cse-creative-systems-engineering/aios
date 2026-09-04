@@ -2,7 +2,7 @@ use super::*;
 
 impl Coordinator {
     pub fn chat(&self, text: &str) -> Result<String, AgentError> {
-        let result = self.planner.explain(text, self.local_context());
+        let result = self.planner.explain(text, self.local_context_for(text));
         match &result {
             Ok(_) => self.record_audit("user", "chat", text, "ok"),
             Err(e) => self.record_audit("user", "chat", text, &format!("error: {e}")),
@@ -28,7 +28,11 @@ impl Coordinator {
             system.content.push('\n');
             system.content.push_str(model_tool_instructions());
         }
-        if let Some(context) = self.local_context() {
+        let projection_query = messages.iter().rev()
+            .find(|message| message.role == ModelRole::User)
+            .map(|message| message.content.as_str())
+            .unwrap_or_default();
+        if let Some(context) = self.local_context_for(projection_query) {
             let system = messages
                 .first_mut()
                 .ok_or_else(|| AgentError::Format("tool chat requires a system message".into()))?;
@@ -119,6 +123,14 @@ impl Coordinator {
     }
 
     pub fn local_context(&self) -> Option<String> {
+        self.local_context_for("")
+    }
+
+    pub fn local_context_for(&self, query: &str) -> Option<String> {
+        self.state_store
+            .write()
+            .expect("state store lock")
+            .refresh_host();
         let summary = self.last_scan_summary.read().expect("scan lock").clone();
         let summary = summary?;
         // Machine state is only attached when the chat role has a model and
@@ -135,6 +147,15 @@ impl Coordinator {
             return None;
         }
         let mut context = summary;
+        let projection = self
+            .state_store
+            .read()
+            .expect("state store lock")
+            .project(query, 24);
+        if !projection.facts.is_empty() {
+            context.push('\n');
+            context.push_str(&projection.as_prompt_context());
+        }
         let graph = self.graph.read().expect("graph lock");
         let index = resource_index(&graph);
         if !index.is_empty() {

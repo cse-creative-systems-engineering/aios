@@ -1,7 +1,7 @@
 # Aios Documentation Progress
 
 **Status:** Living document  
-**Last updated:** 2026-08-22
+**Last updated:** 2026-09-04
 
 This document tracks the completion status of the Aios design doc set.
 Updated whenever a document's status changes.
@@ -32,7 +32,8 @@ Updated whenever a document's status changes.
 | `decisions/0008-workspace-co-partner-branch-and-scope.md` | ✅ Accepted | 100% |
 | `decisions/0009-session-day-buckets.md` | ✅ Accepted | 100% |
 | `decisions/0010-execution.md` | ✅ Accepted | 100% |
-| `decisions/0011-windows-platform.md` | 📝 Proposed | 100% |
+| `decisions/0011-windows-platform.md` | ✅ Accepted | 100% |
+| `decisions/0012-live-system-state-and-a2ui-runtime.md` | ✅ Accepted / in progress | Deterministic live-state and unrestricted A2UI architecture; first runtime slice implemented |
 | `decisions/0009-session-day-buckets.md` | ✅ Accepted | 100% |
 | `decisions/0010-execution.md` | ✅ Accepted | 100% |
 | `security-model.md` | Draft — frozen for M1 | Passed adversarial review (round 2) |
@@ -49,6 +50,7 @@ Updated whenever a document's status changes.
 | `milestones/0003-sidebar-administration-panel.md` | ✅ Shipped | Provider registry, per-role assignment, backend-status rail, settings overlay, ultra-premium visual system. ADR-0010 toggles extend in-place. |
 | `milestones/0004-workspace-co-partner.md` | ✅ Complete — merged to `main` at `32ffc0f` | Staged file/web + artifact, `cargo test --lib` 410 |
 | `milestones/0005-session-day-buckets.md` | 🔶 In progress on `feature/session-day-buckets` | Toggle UI live; SessionStore persistence + project scaffolding pending. |
+| `milestones/0006-live-system-state-a2ui-runtime.md` | 📝 Draft | Collector/state-store migration and durable generative A2UI runtime; no implementation started. |
 | `testing-strategy.md` | Draft — frozen for M1 | Test code reconciled with protocol |
 | `observability.md` | Draft — frozen for M1 | May need refinement during implementation; retention advisory note and recursive-log-avoidance added |
 | `modules/` | 📝 Drafted | 19 of 19 module specs written (wifi, storage, network, drivers, graphics, memory, power-thermal, security, processes, packages, boot-recovery, block-disk, filesystem, files-data, gpu, display, session, bluetooth, wired-lan) |

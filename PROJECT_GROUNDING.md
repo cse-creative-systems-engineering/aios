@@ -6,6 +6,20 @@ Start here before making changes or answering questions about the repository.
 
 Read the latest dated grounding snapshot:
 
+- [`project_grounding_2026-09-04_22-32-35.md`](docs/grounding/project_grounding_2026-09-04_22-32-35.md) — Ground latest feature branch work for main merge
+- [`project_grounding_2026-09-04_22-28-39.md`](docs/grounding/project_grounding_2026-09-04_22-28-39.md) — Redesign Aios sidebar UI for an ultra-premium instrument look and remove fixed sizing from generated surfaces
+- [`project_grounding_2026-09-04_04-36-39.md`](docs/grounding/project_grounding_2026-09-04_04-36-39.md) — Move A2UI revisions into the Aios chat composer
+- [`project_grounding_2026-09-04_04-33-29.md`](docs/grounding/project_grounding_2026-09-04_04-33-29.md) — Add read-only AMD and Intel GPU collectors
+- [`project_grounding_2026-09-04_04-23-04.md`](docs/grounding/project_grounding_2026-09-04_04-23-04.md) — Harden A2UI surface lifecycle with durable visibility, z-order, resize, and stale binding state
+- [`project_grounding_2026-09-04_01-42-36.md`](docs/grounding/project_grounding_2026-09-04_01-42-36.md) — Add isolated user-directed A2UI surface revisions
+- [`project_grounding_2026-09-04_01-39-33.md`](docs/grounding/project_grounding_2026-09-04_01-39-33.md) — Add NVIDIA GPU runtime collector and bounded temporal correlations
+- [`project_grounding_2026-09-04_01-23-18.md`](docs/grounding/project_grounding_2026-09-04_01-23-18.md) — Add projection-keyed live surface deltas with in-place canvas updates
+- [`project_grounding_2026-09-04_01-14-02.md`](docs/grounding/project_grounding_2026-09-04_01-14-02.md) — Add isolated native and live OpenRouter provider onboarding E2E coverage
+- [`project_grounding_2026-09-04_00-59-45.md`](docs/grounding/project_grounding_2026-09-04_00-59-45.md) — Replace external desktop driver with embedded Wayland-compatible E2E coverage
+- [`project_grounding_2026-09-04_00-44-57.md`](docs/grounding/project_grounding_2026-09-04_00-44-57.md) — Prefer native Wayland with explicit XWayland dock fallback
+- [`project_grounding_2026-09-04_00-40-24.md`](docs/grounding/project_grounding_2026-09-04_00-40-24.md) — Add continuously refreshed CPU, process, network, and thermal live state
+- [`project_grounding_2026-09-04_00-18-23.md`](docs/grounding/project_grounding_2026-09-04_00-18-23.md) — Implement live state projections and durable A2UI surface runtime
+- [`project_grounding_2026-09-04_00-07-59.md`](docs/grounding/project_grounding_2026-09-04_00-07-59.md) — Propose live SystemStateStore and durable generative A2UI runtime
 - [`project_grounding_2026-08-25_18-43-11.md`](docs/grounding/project_grounding_2026-08-25_18-43-11.md) — repo cleanup: untrack build artifacts, ignore graphify churn files
 - [`project_grounding_2026-08-25_18-39-11.md`](docs/grounding/project_grounding_2026-08-25_18-39-11.md) — http timeout 180s default; plain-text CoT stripping
 - [`project_grounding_2026-08-25_18-03-08.md`](docs/grounding/project_grounding_2026-08-25_18-03-08.md) — knowledge graph refresh + graphify project skill registration

@@ -82,6 +82,8 @@ export type SidebarView = {
   requestInFlight: boolean;
   flightProgress: FlightProgress | null;
   hasSurface: boolean;
+  revisionTarget: { id: string; expectedRevision: number } | null;
+  surfaces: { id: string; revision: number; visible: boolean; staleBindings: string[] }[];
   graph: SystemGraphSnapshot | null;
 };
 
@@ -124,10 +126,6 @@ const INSPECTOR: Record<Exclude<SectionId, 'chat'>, { title: string; body: strin
   roles: {
     title: 'Roles',
     body: 'Role assignment is not connected. Planner, Verifier, SurfaceComposition, and specialist overrides stay on the backend registry. The Policy Broker is not a model slot and will not appear here.',
-  },
-  surfaces: {
-    title: 'Surfaces',
-    body: 'Surface lifecycle is not connected. Generated widgets still render on the canvas overlay. This view will list surface IDs, revisions, and stale evidence once that manager exists.',
   },
   audit: {
     title: 'Audit',
@@ -356,9 +354,25 @@ function renderWorkbench(view: SidebarView, escapeHtml: (value: string) => strin
   </div>`;
 }
 
-function renderInspector(section: SectionId, escapeHtml: (value: string) => string): string {
+function renderSurfacesInspector(view: SidebarView, escapeHtml: (value: string) => string): string {
+  const rows = view.surfaces.length
+    ? view.surfaces.map((surface) => `<article class="surface-record" data-surface-record="${escapeHtml(surface.id)}">
+        <div><strong>${escapeHtml(surface.id)}</strong><span>revision ${surface.revision} · ${surface.visible ? 'visible' : 'minimized'}</span>${surface.staleBindings.length ? `<span class="surface-stale">${surface.staleBindings.length} stale binding${surface.staleBindings.length === 1 ? '' : 's'}</span>` : ''}</div>
+        <div class="surface-record-actions">${surface.visible
+          ? '<button type="button" data-surface-hide="' + escapeHtml(surface.id) + '">Minimize</button>'
+          : '<button type="button" data-surface-show="' + escapeHtml(surface.id) + '">Restore</button>'}</div>
+      </article>`).join('')
+    : '<p class="inspector-body">No generated surfaces are active.</p>';
+  return `<section class="inspector" aria-label="Surfaces">
+    <header class="inspector-head"><div><div class="inspector-kicker">Runtime</div><h2 class="inspector-title">Surfaces</h2></div><button type="button" class="inspector-dismiss" data-dismiss-inspector>Close</button></header>
+    <div class="surface-records">${rows}</div>
+  </section>`;
+}
+
+function renderInspector(section: SectionId, escapeHtml: (value: string) => string, view: SidebarView): string {
   if (section === 'chat') return '';
   if (section === 'settings') return renderSettingsModal(escapeHtml);
+  if (section === 'surfaces') return renderSurfacesInspector(view, escapeHtml);
   const copy = INSPECTOR[section];
   return `<section class="inspector" aria-label="${escapeHtml(copy.title)}">
     <header class="inspector-head">
@@ -612,10 +626,14 @@ function renderComposer(view: SidebarView): string {
   const hint = view.requestInFlight
     ? 'Waiting for the backend. Send is paused until this request finishes.'
     : '<kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line';
+  const revision = view.revisionTarget
+    ? `<div class="prompt-revision" role="status">Revising surface <strong>${view.revisionTarget.id}</strong> · revision ${view.revisionTarget.expectedRevision}<button type="button" data-cancel-surface-revision>Cancel</button></div>`
+    : '';
+  const placeholder = view.revisionTarget ? 'Tell Aios how to change this surface...' : 'Ask Aios about your system...';
   return `<form class="prompt-form" id="prompt-form">
     <label class="sr-only" for="prompt">Ask Aios</label>
     <div class="prompt-field">
-      <textarea id="prompt" rows="1" placeholder="Ask Aios about your system..."></textarea>
+      <textarea id="prompt" rows="1" placeholder="${placeholder}"></textarea>
       <button type="submit" class="prompt-send" aria-label="Send" disabled>
         <svg viewBox="0 0 18 18" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9l10-5-3 10-2.5-4.5z"/><path d="M4 9l4.5.5"/></svg>
       </button>
@@ -631,7 +649,7 @@ function renderComposer(view: SidebarView): string {
         <button type="button" class="approval-btn" data-approval="yolo" aria-pressed="false">YOLO</button>
       </div>
     </div>
-    <div class="prompt-hint">${hint}</div>
+    ${revision}<div class="prompt-hint">${hint}</div>
   </form>`;
 }
 
@@ -647,7 +665,7 @@ export function renderSidebar(view: SidebarView, escapeHtml: (value: string) => 
       <div class="sidebar-content">
         ${renderSystemFeedback(view, escapeHtml)}
         ${renderAlert(view, escapeHtml)}
-        ${renderInspector(view.section, escapeHtml)}
+        ${renderInspector(view.section, escapeHtml, view)}
         <section class="chat" aria-live="polite" aria-busy="${view.requestInFlight ? 'true' : 'false'}">${view.messages.map((message) => renderMessage(message, escapeHtml)).join('')}</section>
         ${renderComposer(view)}
       </div>

@@ -67,7 +67,7 @@ impl From<GatewayError> for SurfaceComposeError {
 /// model chooses any structure it likes; only the value-binding rule is
 /// enforced mechanically afterwards.
 pub fn unconstrained_generation_instructions() -> &'static str {
-    "You are a generative UI designer for Aios, a Linux system assistant. Design the best widget for the user's request using ONLY the specialist data provided. If a previous generated design is provided, revise that design rather than starting over, preserving its visual language unless the user asks otherwise. Return only a complete self-contained HTML fragment with inline CSS. You may choose any HTML structure, visual hierarchy, layout, typography, colors, controls, and styling. Set explicit width and height on the root element so the host window can fit the design. You may re-shape values (formatting, units, gauges) but must never change a numeric value or invent one that is not in the specialist data. Wrap every displayed data value in a span with a data-aios attribute naming the source field, for example <span data-aios=\"cpu_utilization_percent\">6.5%</span>. The text inside each span must be the complete raw value even when it is long; to keep long values compact, truncate them visually with CSS (overflow:hidden, white-space:nowrap, text-overflow:ellipsis) instead of shortening the text. Never leave a span empty or omit the value into an attribute. If the widget has a header, mark it with data-aios-drag-region. Do not explain your design and do not use markdown fences."
+    "You are a generative UI designer for Aios, a Linux system assistant. Design the best widget for the user's request using ONLY the specialist data provided. If a previous generated design is provided, revise that design rather than starting over, preserving its visual language unless the user asks otherwise. Return only a complete self-contained HTML fragment with inline CSS. You may choose any HTML structure, visual hierarchy, layout, typography, colors, controls, and styling. Do NOT set a fixed width or height on the root element: use width: max-content; height: max-content; max-width: min(920px, 100vw); max-height: min(720px, 90vh); overflow: auto; so the host sizes to the content and never clips it. You may re-shape values (formatting, units, gauges) but must never change a numeric value or invent one that is not in the specialist data. Prefer stable dotted keys from the live projection when they are available. Wrap every displayed data value in a span with a data-aios attribute naming the exact source field, for example <span data-aios=\"cpu.utilization_percent\">6.5%</span>. The text inside each span must be the complete raw value even when it is long; to keep long values compact, truncate them visually with CSS (overflow:hidden, white-space:nowrap, text-overflow:ellipsis) instead of shortening the text. Never leave a span empty or omit the value into an attribute. If the widget has a header, mark it with data-aios-drag-region. Do not explain your design and do not use markdown fences."
 }
 
 /// Relay the user request and specialist data to the surface model and return
@@ -259,7 +259,11 @@ fn specialist_fields_from_texts<'a>(texts: impl Iterator<Item = &'a str>) -> Vec
             };
             let key = key.trim().trim_matches('"');
             let value = value.trim().trim_matches('"');
-            if key.is_empty() || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            if key.is_empty()
+                || !key
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+            {
                 continue;
             }
             if seen.insert(key.to_string()) {

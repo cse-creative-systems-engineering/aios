@@ -18,6 +18,17 @@ use std::net::TcpListener;
 
 const STUB_ANSWER: &str = "stub: the system health was rolled up from the graph";
 
+fn models_response() -> String {
+    serde_json::json!({
+        "data": [
+            { "id": "stub-chat", "name": "Stub chat" },
+            { "id": "stub-verification", "name": "Stub verification" },
+            { "id": "stub-surface", "name": "Stub surface" }
+        ]
+    })
+    .to_string()
+}
+
 fn main() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind stub provider");
     let port = listener.local_addr().expect("addr").port();
@@ -49,10 +60,14 @@ fn main() {
             let _ = reader.read_exact(&mut buf);
             body = String::from_utf8_lossy(&buf).into_owned();
         }
-        let response_body = respond(&body);
-        let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{response_body}"
-        );
+        let response_body = if request_line.starts_with("GET ") && request_line.contains("/models")
+        {
+            models_response()
+        } else {
+            respond(&body)
+        };
+        let response =
+            format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{response_body}");
         let _ = stream.write_all(response.as_bytes());
         let _ = stream.flush();
     }
@@ -70,12 +85,57 @@ fn openai_response(content: &str) -> String {
 }
 
 fn respond(body: &str) -> String {
+    let model = requested_model(body);
     if body.contains("generative UI designer") {
-        openai_response(&themed_surface_html(body))
-    } else if body.contains("tool health result") {
-        openai_response(STUB_ANSWER)
+        openai_response(&themed_surface_html(body, &model))
+    } else if body.contains("tool ") && body.contains(" result") {
+        openai_response(&format!("{STUB_ANSWER} (answered by {model})"))
     } else {
-        openai_response(r#"{"tool_calls":[{"tool":"health","args":""}]}"#)
+        let tool = user_intent_from(body)
+            .map(|intent| planner_tool_for(&intent))
+            .unwrap_or("health");
+        openai_response(&format!(
+            r#"{{"tool_calls":[{{"tool":"{tool}","args":""}}]}}"#
+        ))
+    }
+}
+
+fn requested_model(body: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("model")
+                .and_then(|model| model.as_str())
+                .map(String::from)
+        })
+        .unwrap_or_else(|| "unknown-model".into())
+}
+
+fn planner_tool_for(intent: &str) -> &'static str {
+    let intent = intent.to_ascii_lowercase();
+    if ["disk", "drive", "storage", "filesystem", "partition"]
+        .iter()
+        .any(|word| intent.contains(word))
+    {
+        "storage.status"
+    } else if ["memory", "ram", "swap"]
+        .iter()
+        .any(|word| intent.contains(word))
+    {
+        "memory.status"
+    } else if ["cpu", "process", "load"]
+        .iter()
+        .any(|word| intent.contains(word))
+    {
+        "processes.status"
+    } else if ["network", "wifi", "internet", "ethernet", "wireless"]
+        .iter()
+        .any(|word| intent.contains(word))
+    {
+        "network.status"
+    } else {
+        "health"
     }
 }
 
@@ -146,11 +206,28 @@ fn user_intent_from(body: &str) -> Option<String> {
 const FIELDS_HEADER: &str = "Available fields (use these exact names in data-aios):\n";
 
 fn fields_from_body(body: &str) -> Vec<(String, String)> {
-    let Some(start) = body.find(FIELDS_HEADER) else {
+    let value: serde_json::Value = match serde_json::from_str(body) {
+        Ok(value) => value,
+        Err(_) => return Vec::new(),
+    };
+    let Some(content) = value
+        .get("messages")
+        .and_then(|messages| messages.as_array())
+        .and_then(|messages| {
+            messages
+                .iter()
+                .rev()
+                .find(|message| message.get("role").and_then(|role| role.as_str()) == Some("user"))
+        })
+        .and_then(|message| message.get("content").and_then(|content| content.as_str()))
+    else {
+        return Vec::new();
+    };
+    let Some(start) = content.find(FIELDS_HEADER) else {
         return Vec::new();
     };
     let mut fields = Vec::new();
-    for line in body[start + FIELDS_HEADER.len()..].lines() {
+    for line in content[start + FIELDS_HEADER.len()..].lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with("Previous generated design:") {
             break;
@@ -162,7 +239,7 @@ fn fields_from_body(body: &str) -> Vec<(String, String)> {
     fields
 }
 
-fn themed_surface_html(body: &str) -> String {
+fn themed_surface_html(body: &str, model: &str) -> String {
     let theme = user_intent_from(body).map_or(Theme::Health, |intent| theme_of(&intent));
     let fields = fields_from_body(body);
     let rows: Vec<String> = fields
@@ -177,14 +254,14 @@ fn themed_surface_html(body: &str) -> String {
             )
         })
         .collect();
-    let height = (180 + 34 * rows.len()).min(620);
+    // Size to content by default; the frontend host and CSS clamp the bounds.
     // Deliberately emits the legacy `data-tauri-drag-region` attribute: the
     // canvas renames it on render, and the e2e suite relies on that path to
     // prove surfaces authored against the old prompt stay draggable.
     format!(
-        "<section class=\"surface aios-surface\" data-aios-theme=\"{}\" style=\"width:420px;height:{}px;display:flex;flex-direction:column;font-family:sans-serif;background:#161b26;color:#e8ecf4;padding:18px;border-radius:14px\" data-tauri-drag-region><h1 style=\"font-size:18px;margin:0 0 12px\">{} health roll-up</h1><ul style=\"list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px;font-size:14px\">{}</ul></section>",
+        "<section class=\"surface aios-surface\" data-aios-theme=\"{}\" data-aios-model=\"{}\" style=\"width:max-content;height:max-content;max-width:420px;max-height:620px;min-width:260px;display:flex;flex-direction:column;font-family:sans-serif;background:#161b26;color:#e8ecf4;padding:18px;border-radius:14px;overflow:auto\" data-tauri-drag-region><h1 style=\"font-size:18px;margin:0 0 12px;flex-shrink:0\">{} health roll-up</h1><ul style=\"list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px;font-size:14px\">{}</ul></section>",
         theme.key(),
-        height,
+        escape_html(model),
         theme.title(),
         rows.join("")
     )

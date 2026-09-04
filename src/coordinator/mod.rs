@@ -33,6 +33,7 @@ use crate::progress::{GraphActivity, GraphPhase, ProgressSink};
 use crate::protocol::{DataClassification, HealthState, now};
 use crate::security::SecuritySpecialist;
 use crate::storage::StorageSpecialist;
+use crate::state::SystemStateStore;
 use crate::tools::{ToolError, ToolRegistry, model_tool_instructions, resource_index};
 use crate::verifier::Verifier;
 use crate::wifi::WifiSpecialist;
@@ -128,6 +129,8 @@ pub struct Coordinator {
     pub gateway: Arc<ModelGateway>,
     pub connectivity_probe: Box<dyn ConnectivityProbe>,
     pub graph: Arc<RwLock<SystemGraph>>,
+    /// Deterministic observation plane; never used for authorization.
+    pub state_store: Arc<RwLock<SystemStateStore>>,
     pub planner: Planner,
     pub verifier: Verifier,
     pub audit: Arc<AuditLog>,
@@ -312,6 +315,7 @@ impl Coordinator {
             gateway: gateway.clone(),
             connectivity_probe: probe,
             graph: Arc::new(RwLock::new(SystemGraph::new())),
+            state_store: Arc::new(RwLock::new(SystemStateStore::new())),
             planner: Planner::new(gateway.clone(), shell_max_tokens),
             verifier: Verifier::new(gateway.clone(), shell_max_tokens),
             audit: Arc::new(

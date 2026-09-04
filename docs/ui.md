@@ -5,6 +5,7 @@
 **Current checkpoint:** `docs/milestones/0001-generative-surface-desktop-foundation.md`
 **Next plan:** `docs/milestones/0002-multi-surface-lifecycle-plan.md`
 **Sidebar plan:** `docs/milestones/0003-sidebar-administration-panel.md`
+**Active migration architecture:** `docs/decisions/0012-live-system-state-and-a2ui-runtime.md`
 
 ## Active Architecture
 
@@ -37,15 +38,59 @@ system state. Generated presentation remains outside the authority boundary.
 
 ## Current Limits
 
-The checkpoint currently supports one generated surface at a time. The next
-work is the surface lifecycle plan in
-`docs/milestones/0002-multi-surface-lifecycle-plan.md`, covering:
+Multiple generated surfaces, independent movement, close, unioned
+click-through, backend-owned placement, and session restore are now shipped.
+The desktop regression harness drives the real native Tauri app through its
+embedded WebDriver server, so it works in the Wayland path without the obsolete
+external WebKit driver. A generated surface receives a bounded projection
+alongside the transitional specialist snapshot. When it declares an exact
+stable projection key such as `data-aios="cpu.utilization_percent"`, the
+runtime sends versioned replacement values to the canvas and updates that
+element in place. This preserves the model-authored HTML, position, dimensions,
+z-order, and visual revision; only `dataRevision` changes. Missing or stale
+observations do not overwrite a visible value. Legacy/non-projection binding
+names remain static during the migration.
 
-- multiple simultaneous surface IDs;
-- independent movement and click-through regions;
-- revisioned updates to an existing surface;
-- one surface composed from evidence from multiple specialists;
-- close, minimize, restore, and stale-evidence state.
+The default harness is self-contained: it uses a local OpenAI-compatible
+fixture and a unique temporary configuration/session directory, then performs
+the visible provider-add, credential, model-discovery, per-role assignment,
+chat, multi-surface, and close journey. An opt-in OpenRouter harness follows
+the same controls with the operator's local key, dynamically chooses a
+discovered model ending in `:free`, and completes a real chat request. That
+live suite is intentionally separate from the default test run because it
+uses a real provider and its free-model availability is external state.
+
+The lifecycle runtime now owns close, minimize, restore, z-order, user-selected
+size, and stale-binding state. Minimize retains the record in the backend and
+the resident Surfaces inspector restores that exact ID; it does not regenerate
+the presentation. Pointer focus raises a record through backend-owned z-order,
+and the resize grip stores a user-selected size only after the user changes it,
+so new model-authored surfaces retain their intrinsic dimensions. Canvas
+restart reloads every visible record from the backend, including position,
+order, size, revision, bindings, and last valid values.
+
+When a declared observation becomes stale, its last verified value remains
+visible but the exact bound element receives `data-aios-stale` and an explicit
+"Live value is stale" tooltip. This is presentation metadata, not generated
+HTML replacement; a fresh value clears the marker through the normal delta.
+The canvas recalculates its native input shape after live updates, drag, resize,
+minimize/restore, and canvas restart. With no visible records it clears that
+shape and hides the canvas.
+
+### Surface revision
+
+The canvas supplies an Edit control for each surface. It hands the target's
+stable ID and observed visual revision to Aios's resident chat composer; the
+user describes the revision there, rather than through a browser prompt. The
+backend regenerates only that surface through the assigned surface model, with
+the previous HTML and a fresh scoped projection. It validates fidelity before
+atomically accepting the replacement, then broadcasts the complete record to
+both desktop webviews.
+
+The expected visual revision is an optimistic-concurrency guard: a delayed
+edit is rejected if the target changed, and no generic "current surface"
+pointer exists. A successful redesign retains identity and placement, advances
+only visual `revision`, and receives freshly initialized declared bindings.
 
 ## Sidebar Workstream
 
@@ -419,10 +464,13 @@ the broker, or the operating system directly.
 
 ## Desktop Compatibility
 
-On the current Ubuntu GNOME Wayland session, Aios selects XWayland when
-available so the sidebar can use EWMH dock behavior. The selected native mode is
-logged at startup. Unsupported desktop behavior must be visible and must not
-be presented as a working dock.
+On Linux, Aios uses native Wayland by default and uses GTK Layer Shell where the
+compositor supports it. When layer-shell support is absent, it presents an
+ordinary Wayland sidebar and logs that it is not a compositor-reserved dock.
+Set `AIOS_DISPLAY_BACKEND=x11` to explicitly request the XWayland/EWMH dock
+fallback on compatible sessions. The selected native mode is logged at startup.
+Unsupported desktop behavior must be visible and must not be presented as a
+working dock.
 
 ## Safety Rules
 

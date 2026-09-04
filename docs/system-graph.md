@@ -10,6 +10,11 @@ queried, and how it stays accurate. The graph is a live, typed map of the
 system — hardware, OS resources, agents, models, capabilities, and recovery
 paths — used for impact analysis, routing, and health.
 
+**Active evolution (ADR-0012):** the graph remains the topology, ownership,
+and provenance map. High-frequency measurements, bounded history, trends, and
+task-specific model context move to a separate `SystemStateStore`. The graph
+does not become a telemetry table, and neither component grants authority.
+
 ### Design principles
 
 1. **The graph is advisory, not authoritative.** The Policy Broker is the

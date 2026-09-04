@@ -97,7 +97,7 @@ fn write_test_config() -> PathBuf {
     let text = format!(
         "[[provider]]\nid = \"stub\"\nkind = \"openai-compatible\"\ntier = \"internet\"\n\
          endpoint = \"http://127.0.0.1:{port}\"\nmodel = \"stub-model\"\n\
-         http_timeout_ms = 5000\n\n[shell]\nmax_tokens = 1024\nhistory_len = 3\n"
+         http_timeout_ms = 5000\n\n[roles]\nchat = {{ provider = \"stub\", model = \"stub-model\" }}\nsurface = {{ provider = \"stub\", model = \"stub-model\" }}\nverification = {{ provider = \"stub\", model = \"stub-model\" }}\n\n[shell]\nmax_tokens = 1024\nhistory_len = 3\n"
     );
     std::fs::write(&config, text).expect("write test config");
     config

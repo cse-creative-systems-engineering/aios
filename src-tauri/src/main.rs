@@ -1,12 +1,14 @@
 use aios::facade::Facade;
 use aios::graph::NodeType;
 use aios::progress::{GraphActivity, GraphPhase, ProgressReporter};
+use aios::protocol::{DataClassification, now};
+use aios::surface::{SurfaceLayout, SurfaceRecord, SurfaceRuntime};
 #[cfg(target_os = "linux")]
 use gdk::prelude::*;
 #[cfg(target_os = "linux")]
-use gtk::prelude::*;
-#[cfg(target_os = "linux")]
 use gtk::cairo::{RectangleInt, Region};
+#[cfg(target_os = "linux")]
+use gtk::prelude::*;
 #[cfg(target_os = "linux")]
 use gtk_layer_shell::{Edge, Layer, LayerShell};
 use serde::{Deserialize, Serialize};
@@ -15,6 +17,7 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
+use std::time::Duration;
 #[cfg(target_os = "linux")]
 use tauri::AppHandle;
 use tauri::{LogicalPosition, Manager, PhysicalPosition, PhysicalSize, Position, Size};
@@ -71,6 +74,29 @@ enum BackendRequest {
         id: String,
         response: mpsc::Sender<Result<(), String>>,
     },
+    UpdateSurfaceLayout {
+        id: String,
+        layout: SurfaceLayout,
+        response: mpsc::Sender<Result<(), String>>,
+    },
+    SetSurfaceVisibility {
+        id: String,
+        visible: bool,
+        response: mpsc::Sender<Result<SurfaceRecord, String>>,
+    },
+    FocusSurface {
+        id: String,
+        response: mpsc::Sender<Result<SurfaceRecord, String>>,
+    },
+    ReviseSurface {
+        id: String,
+        expected_revision: u64,
+        instruction: String,
+        response: mpsc::Sender<Result<SurfaceRecord, String>>,
+    },
+    ListSurfaces {
+        response: mpsc::Sender<Result<Vec<SurfaceRecord>, String>>,
+    },
     AddProvider {
         id: String,
         kind: String,
@@ -110,6 +136,12 @@ enum BackendRequest {
         provider_id: String,
         response: mpsc::Sender<Result<Vec<DiscoveredModel>, String>>,
     },
+    #[cfg(feature = "webdriver")]
+    PublishTestState {
+        key: String,
+        value: String,
+        response: mpsc::Sender<Result<(), String>>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -126,17 +158,8 @@ struct PromptResponse {
     evidence: Vec<EvidenceItem>,
     /// A surface authored by the separate groundless surface model after
     /// passing the value-fidelity gate. `None` means nothing may be displayed.
-    experimental_html: Option<SurfaceCard>,
+    experimental_html: Option<SurfaceRecord>,
     backend_status: BackendStatus,
-}
-
-/// One generated surface living on the canvas. Several coexist; each is a
-/// self-contained HTML fragment the frontend hosts, drags, and measures.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SurfaceCard {
-    id: String,
-    html: String,
 }
 
 fn next_surface_id() -> String {
@@ -323,6 +346,8 @@ fn set_input_region(_app: AppHandle, _regions: Vec<InputRect>) -> Result<(), Str
 #[tauri::command]
 async fn close_surface(id: String, state: tauri::State<'_, AppState>) -> Result<(), String> {
     let requests = state.requests.clone();
+    let app = state.app.clone();
+    let closed_id = id.clone();
     tokio::task::spawn_blocking(move || {
         let (response_tx, response_rx) = mpsc::channel();
         requests
@@ -336,7 +361,173 @@ async fn close_surface(id: String, state: tauri::State<'_, AppState>) -> Result<
             .map_err(|_| "backend worker closed the response channel".to_string())?
     })
     .await
-    .map_err(|error| format!("settings worker failed: {error}"))?
+    .map_err(|error| format!("settings worker failed: {error}"))??;
+    use tauri::Emitter;
+    app.emit("surface_removed", closed_id)
+        .map_err(|error| format!("could not notify surface removal: {error}"))?;
+    Ok(())
+}
+
+/// Persist user placement in the backend-owned surface runtime. The frontend
+/// remains responsible only for pointer interaction and measurement.
+#[tauri::command]
+async fn update_surface_layout(
+    id: String,
+    layout: SurfaceLayout,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let requests = state.requests.clone();
+    tokio::task::spawn_blocking(move || {
+        let (response_tx, response_rx) = mpsc::channel();
+        requests
+            .send(BackendRequest::UpdateSurfaceLayout {
+                id,
+                layout,
+                response: response_tx,
+            })
+            .map_err(|_| "backend worker is unavailable".to_string())?;
+        response_rx
+            .recv()
+            .map_err(|_| "backend worker closed the response channel".to_string())?
+    })
+    .await
+    .map_err(|error| format!("surface worker failed: {error}"))?
+}
+
+/// Minimize or restore one surface while preserving its identity, model HTML,
+/// layout, and last valid binding values. A minimized surface remains in the
+/// durable runtime and can therefore be restored from the resident sidebar.
+#[tauri::command]
+async fn set_surface_visibility(
+    id: String,
+    visible: bool,
+    state: tauri::State<'_, AppState>,
+) -> Result<SurfaceRecord, String> {
+    let requests = state.requests.clone();
+    let app = state.app.clone();
+    let updated = tokio::task::spawn_blocking(move || {
+        let (response_tx, response_rx) = mpsc::channel();
+        requests
+            .send(BackendRequest::SetSurfaceVisibility { id, visible, response: response_tx })
+            .map_err(|_| "backend worker is unavailable".to_string())?;
+        response_rx.recv().map_err(|_| "backend worker closed the response channel".to_string())?
+    })
+    .await
+    .map_err(|error| format!("surface worker failed: {error}"))??;
+    use tauri::{Emitter, Manager};
+    app.emit("surface_lifecycle", updated.clone())
+        .map_err(|error| format!("could not notify surface lifecycle change: {error}"))?;
+    if updated.layout.visible {
+        app.get_webview_window("canvas")
+            .ok_or_else(|| "canvas window is unavailable".to_string())?
+            .show()
+            .map_err(|error| format!("could not show canvas: {error}"))?;
+    }
+    Ok(updated)
+}
+
+/// Raise exactly one surface in backend-owned ordering. This changes no
+/// model-authored content and does not advance the visual revision.
+#[tauri::command]
+async fn focus_surface(
+    id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<SurfaceRecord, String> {
+    let requests = state.requests.clone();
+    let app = state.app.clone();
+    let updated = tokio::task::spawn_blocking(move || {
+        let (response_tx, response_rx) = mpsc::channel();
+        requests
+            .send(BackendRequest::FocusSurface { id, response: response_tx })
+            .map_err(|_| "backend worker is unavailable".to_string())?;
+        response_rx.recv().map_err(|_| "backend worker closed the response channel".to_string())?
+    })
+    .await
+    .map_err(|error| format!("surface worker failed: {error}"))??;
+    use tauri::Emitter;
+    app.emit("surface_lifecycle", updated.clone())
+        .map_err(|error| format!("could not notify surface focus: {error}"))?;
+    Ok(updated)
+}
+
+#[tauri::command]
+async fn list_surfaces(state: tauri::State<'_, AppState>) -> Result<Vec<SurfaceRecord>, String> {
+    let requests = state.requests.clone();
+    tokio::task::spawn_blocking(move || {
+        let (response_tx, response_rx) = mpsc::channel();
+        requests
+            .send(BackendRequest::ListSurfaces {
+                response: response_tx,
+            })
+            .map_err(|_| "backend worker is unavailable".to_string())?;
+        response_rx
+            .recv()
+            .map_err(|_| "backend worker closed the response channel".to_string())?
+    })
+    .await
+    .map_err(|error| format!("surface worker failed: {error}"))?
+}
+
+/// Revise one existing generated surface. The expected revision is an
+/// optimistic-concurrency boundary: a delayed browser request must never
+/// overwrite a newer visual design.
+#[tauri::command]
+async fn revise_surface(
+    id: String,
+    expected_revision: u64,
+    instruction: String,
+    state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<SurfaceRecord, String> {
+    let requests = state.requests.clone();
+    let revised = tokio::task::spawn_blocking(move || {
+        let (response_tx, response_rx) = mpsc::channel();
+        requests
+            .send(BackendRequest::ReviseSurface {
+                id,
+                expected_revision,
+                instruction,
+                response: response_tx,
+            })
+            .map_err(|_| "backend worker is unavailable".to_string())?;
+        response_rx
+            .recv()
+            .map_err(|_| "backend worker closed the response channel".to_string())?
+    })
+    .await
+    .map_err(|error| format!("surface worker failed: {error}"))??;
+    use tauri::Emitter;
+    app.emit("surface_lifecycle", revised.clone())
+        .map_err(|error| format!("could not notify surface revision: {error}"))?;
+    Ok(revised)
+}
+
+/// Embedded-WebDriver-only sample injection. This has no production build
+/// entry point; it proves that the same runtime path used by collectors can
+/// update a visible binding without asking the model to regenerate HTML.
+#[cfg(feature = "webdriver")]
+#[tauri::command]
+async fn publish_test_state(
+    key: String,
+    value: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let requests = state.requests.clone();
+    tokio::task::spawn_blocking(move || {
+        let (response_tx, response_rx) = mpsc::channel();
+        requests
+            .send(BackendRequest::PublishTestState {
+                key,
+                value,
+                response: response_tx,
+            })
+            .map_err(|_| "backend worker is unavailable".to_string())?;
+        response_rx
+            .recv()
+            .map_err(|_| "backend worker closed the response channel".to_string())?
+    })
+    .await
+    .map_err(|error| format!("state worker failed: {error}"))?
 }
 
 #[tauri::command]
@@ -349,9 +540,7 @@ fn backend_status(state: tauri::State<'_, AppState>) -> Result<BackendStatus, St
 }
 
 #[tauri::command]
-fn sidebar_status(
-    state: tauri::State<'_, AppState>,
-) -> Result<SidebarStatusResponse, String> {
+fn sidebar_status(state: tauri::State<'_, AppState>) -> Result<SidebarStatusResponse, String> {
     state
         .sidebar_status
         .lock()
@@ -379,12 +568,20 @@ struct DiscoveredModel {
 
 #[tauri::command]
 fn provider_catalog() -> Vec<CatalogProviderEntry> {
+    // The native WebDriver suite starts with no configured providers and
+    // drives the same catalog form a person uses. Its local OpenAI-style
+    // fixture supplies this override, leaving the production catalog intact.
+    #[cfg(feature = "webdriver")]
+    let test_endpoint = std::env::var("AIOS_TEST_PROVIDER_ENDPOINT").ok();
+    #[cfg(not(feature = "webdriver"))]
+    let test_endpoint: Option<String> = None;
+
     aios::coordinator::PROVIDER_CATALOG
         .iter()
         .map(|p| CatalogProviderEntry {
             id: p.id.into(),
             label: p.label.into(),
-            endpoint: p.endpoint.into(),
+            endpoint: test_endpoint.clone().unwrap_or_else(|| p.endpoint.into()),
             kind: p.kind.into(),
             tier: p.tier.into(),
         })
@@ -436,9 +633,7 @@ async fn discover_models(
 }
 
 #[tauri::command]
-fn system_graph(
-    state: tauri::State<'_, AppState>,
-) -> Result<SystemGraphSnapshot, String> {
+fn system_graph(state: tauri::State<'_, AppState>) -> Result<SystemGraphSnapshot, String> {
     state
         .graph_snapshot
         .lock()
@@ -488,10 +683,7 @@ async fn add_provider(
 }
 
 #[tauri::command]
-async fn remove_provider(
-    id: String,
-    state: tauri::State<'_, AppState>,
-) -> Result<(), String> {
+async fn remove_provider(id: String, state: tauri::State<'_, AppState>) -> Result<(), String> {
     let requests = state.requests.clone();
     tokio::task::spawn_blocking(move || {
         let (response_tx, response_rx) = mpsc::channel();
@@ -622,7 +814,10 @@ fn get_approval_mode(state: tauri::State<'_, AppState>) -> String {
 }
 #[tauri::command]
 fn set_approval_mode(mode: String, state: tauri::State<'_, AppState>) -> String {
-    let m = match mode.as_str() { "default" | "auto" | "yolo" => mode, _ => "auto".to_string() };
+    let m = match mode.as_str() {
+        "default" | "auto" | "yolo" => mode,
+        _ => "auto".to_string(),
+    };
     *state.approval_mode.lock().unwrap() = m.clone();
     m
 }
@@ -645,7 +840,7 @@ async fn submit_prompt(
         let response = response_rx
             .recv()
             .map_err(|_| "backend worker closed the response channel".to_string())?;
-            if let Ok(ref payload) = response {
+        if let Ok(ref payload) = response {
             if payload.experimental_html.is_some() {
                 if let Err(error) = set_input_region(app.clone(), Vec::new()) {
                     eprintln!("Aios canvas: failed to clear input region: {error}");
@@ -668,10 +863,15 @@ async fn submit_prompt(
     .map_err(|error| format!("prompt worker failed: {error}"))?
 }
 
-fn main() {    #[cfg(target_os = "linux")]
-    prefer_x11_when_xwayland_is_available();
+fn main() {
+    #[cfg(target_os = "linux")]
+    prefer_x11_when_requested();
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(feature = "webdriver")]
+    let builder = builder.plugin(tauri_plugin_wdio_webdriver::init());
+
+    builder
         .setup(|app| {
             if let Some(window) = app.get_webview_window("sidebar") {
                 #[cfg(target_os = "linux")]
@@ -682,13 +882,15 @@ fn main() {    #[cfg(target_os = "linux")]
                             eprintln!("Aios sidebar: failed to show Layer Shell window: {error}");
                         }
                     } else {
-                        eprintln!(
-                            "Aios sidebar: Layer Shell unavailable; configuring X11 dock fallback"
-                        );
-                        prepare_x11_dock_window(&window);
-                        configure_x11_dock(&window);
+                        if std::env::var("GDK_BACKEND").ok().as_deref() == Some("x11") {
+                            eprintln!("Aios sidebar: Layer Shell unavailable; configuring requested X11 dock fallback");
+                            prepare_x11_dock_window(&window);
+                            configure_x11_dock(&window);
+                        } else {
+                            eprintln!("Aios sidebar: Layer Shell unavailable; using ordinary native Wayland window");
+                        }
                         if let Err(error) = window.show() {
-                            eprintln!("Aios sidebar: failed to show X11 fallback: {error}");
+                            eprintln!("Aios sidebar: failed to show fallback: {error}");
                         }
                     }
                 }
@@ -788,28 +990,86 @@ fn main() {    #[cfg(target_os = "linux")]
                     }
                 };
 
-                let mut surfaces: Vec<SurfaceCard> = {
+                let mut surfaces = {
                     // Restore prior day's surfaces (ADR-0009 Stage 2)
                     let config_dir = std::env::var("AIOS_CONFIG").map(std::path::PathBuf::from).map(|p| p.parent().map(|d| d.to_path_buf()).unwrap_or(p)).unwrap_or_else(|_| aios::config::AiosConfig::default_path().parent().map(|d| d.to_path_buf()).unwrap_or_else(|| std::path::PathBuf::from("/tmp")));
                     let store = aios::session::SessionStore::new(&config_dir);
                     let today = aios::session::SessionStore::today();
                     if let Some(snap) = store.load(&today) {
-                        snap.surfaces.into_iter().map(|s| SurfaceCard { id: s.id, html: s.html }).collect()
-                    } else { Vec::new() }
+                        SurfaceRuntime::restore(snap.surfaces.into_iter().map(Into::into).collect())
+                    } else { SurfaceRuntime::default() }
                 };
-                while let Ok(request) = requests_rx.recv() {
+                loop {
+                    let request = match requests_rx.recv_timeout(Duration::from_secs(1)) {
+                        Ok(request) => request,
+                        Err(mpsc::RecvTimeoutError::Timeout) => {
+                            // Keep observations current independently of prompts.
+                            facade.coordinator.state_store.write().expect("state store lock").refresh_host();
+                            if emit_surface_deltas(&worker_handle, &facade, &mut surfaces) {
+                                persist_surfaces(surfaces.all());
+                            }
+                            continue;
+                        }
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    };
                     match request {
                         BackendRequest::Prompt { prompt, response } => {
                             handle_prompt(&mut facade, &worker_handle, &mut surfaces, prompt, response);
                         }
                         BackendRequest::CloseSurface { id, response } => {
-                            let before = surfaces.len();
-                            surfaces.retain(|surface| surface.id != id);
-                            if surfaces.len() == before {
+                            if !surfaces.close(&id) {
                                 let _ = response.send(Err(format!("no surface '{id}' is open")));
                             } else {
+                                persist_surfaces(surfaces.all());
                                 let _ = response.send(Ok(()));
                             }
+                        }
+                        BackendRequest::UpdateSurfaceLayout { id, layout, response } => {
+                            let result = surfaces.set_layout(&id, layout);
+                            if result.is_ok() { persist_surfaces(surfaces.all()); }
+                            let _ = response.send(result);
+                        }
+                        BackendRequest::SetSurfaceVisibility { id, visible, response } => {
+                            let result = surfaces.set_visibility(&id, visible);
+                            if result.is_ok() { persist_surfaces(surfaces.all()); }
+                            let _ = response.send(result);
+                        }
+                        BackendRequest::FocusSurface { id, response } => {
+                            let result = surfaces.bring_to_front(&id);
+                            if result.is_ok() { persist_surfaces(surfaces.all()); }
+                            let _ = response.send(result);
+                        }
+                        BackendRequest::ReviseSurface { id, expected_revision, instruction, response } => {
+                            let result = revise_surface_record(
+                                &mut facade,
+                                &mut surfaces,
+                                &id,
+                                expected_revision,
+                                &instruction,
+                            );
+                            if result.is_ok() { persist_surfaces(surfaces.all()); }
+                            let _ = response.send(result);
+                        }
+                        BackendRequest::ListSurfaces { response } => {
+                            let _ = response.send(Ok(surfaces.all().to_vec()));
+                        }
+                        #[cfg(feature = "webdriver")]
+                        BackendRequest::PublishTestState { key, value, response } => {
+                            let timestamp = now();
+                            facade.coordinator.state_store.write().expect("state store lock").publish(
+                                key,
+                                "webdriver:test",
+                                value,
+                                None,
+                                timestamp,
+                                Some(timestamp + 60),
+                                "webdriver",
+                                DataClassification::SystemConfig,
+                            );
+                            if emit_surface_deltas(&worker_handle, &facade, &mut surfaces) {
+                                persist_surfaces(surfaces.all());
+                            }
+                            let _ = response.send(Ok(()));
                         }
                         BackendRequest::AddProvider {
                             id,
@@ -947,12 +1207,19 @@ fn main() {    #[cfg(target_os = "linux")]
             sidebar_status,
             set_input_region,
             close_surface,
+            update_surface_layout,
+            set_surface_visibility,
+            focus_surface,
+            list_surfaces,
+            revise_surface,
             submit_prompt,
             system_graph,
             get_verifier_enabled,
             set_verifier_enabled,
             get_approval_mode,
-            set_approval_mode
+            set_approval_mode,
+            #[cfg(feature = "webdriver")]
+            publish_test_state
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri app");
@@ -960,13 +1227,117 @@ fn main() {    #[cfg(target_os = "linux")]
 
 #[allow(clippy::too_many_arguments)]
 fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+fn initialize_surface_bindings(facade: &Facade, surface: &mut SurfaceRecord) {
+    let snapshot = facade
+        .coordinator
+        .state_store
+        .read()
+        .expect("state store lock")
+        .binding_snapshot(surface.bindings.iter().map(String::as_str));
+    surface.set_initial_binding_values(snapshot.values);
+    surface.set_stale_bindings(snapshot.stale_keys);
+}
+
+fn revise_surface_record(
+    facade: &mut Facade,
+    surfaces: &mut SurfaceRuntime,
+    id: &str,
+    expected_revision: u64,
+    instruction: &str,
+) -> Result<SurfaceRecord, String> {
+    let existing = surfaces
+        .get(id)
+        .cloned()
+        .ok_or_else(|| format!("no surface '{id}' is open"))?;
+    if existing.revision != expected_revision {
+        return Err(format!(
+            "surface '{id}' changed from revision {expected_revision} to {}; refresh before editing",
+            existing.revision
+        ));
+    }
+    let intent = format!("Revise this existing surface: {instruction}");
+    let projection = {
+        let mut state = facade
+            .coordinator
+            .state_store
+            .write()
+            .expect("state store lock");
+        state.refresh_host();
+        state.project(&format!("{} {instruction}", existing.intent), 32)
+    };
+    let evidence = vec![aios::tools::ToolResult {
+        tool: "state.projection",
+        text: projection
+            .facts
+            .iter()
+            .map(|fact| format!("{}={}", fact.key, fact.value))
+            .collect::<Vec<_>>()
+            .join(" "),
+    }];
+    let (html, _) = facade
+        .compose_unconstrained_html(&intent, &evidence, Some(&existing.html))
+        .map_err(|error| format!("surface revision generation failed: {error}"))?;
+    aios::surface::verify_value_fidelity(&html, &evidence)
+        .map_err(|error| format!("surface revision fidelity check failed: {error}"))?;
+    let bindings = aios::surface::declared_bindings(&html);
+    let snapshot = facade
+        .coordinator
+        .state_store
+        .read()
+        .expect("state store lock")
+        .binding_snapshot(bindings.iter().map(String::as_str));
+    surfaces.revise(
+        id,
+        expected_revision,
+        intent,
+        html,
+        snapshot.values,
+        snapshot.stale_keys,
+    )
+}
+
+/// Translate collector-owned observations into the presentation-only delta
+/// stream. A delta carries only keys the surface explicitly declared, so the
+/// canvas never receives a broad state dump or a capability-bearing payload.
+fn emit_surface_deltas(
+    app: &tauri::AppHandle,
+    facade: &Facade,
+    surfaces: &mut SurfaceRuntime,
+) -> bool {
+    let snapshot = facade
+        .coordinator
+        .state_store
+        .read()
+        .expect("state store lock")
+        .binding_snapshot(
+            surfaces
+                .all()
+                .iter()
+                .flat_map(|surface| surface.bindings.iter().map(String::as_str)),
+        );
+    let deltas = surfaces.apply_binding_snapshot(&snapshot.values, &snapshot.stale_keys);
+    if deltas.is_empty() {
+        return false;
+    }
+    use tauri::Emitter;
+    for delta in deltas {
+        if let Err(error) = app.emit_to("canvas", "surface_delta", delta) {
+            eprintln!("Aios canvas: failed to emit surface delta: {error}");
+        }
+    }
+    true
 }
 
 fn handle_prompt(
     facade: &mut Facade,
     worker_handle: &tauri::AppHandle,
-    surfaces: &mut Vec<SurfaceCard>,
+    surfaces: &mut SurfaceRuntime,
     prompt: String,
     response: mpsc::Sender<Result<PromptResponse, String>>,
 ) {
@@ -976,6 +1347,34 @@ fn handle_prompt(
     };
     let answer = facade.run_line(&prompt);
     let evidence = facade.take_tool_results();
+    // The existing specialist path remains in place during the migration, but
+    // the surface model now receives fresh, stable projection keys first.
+    // A generated `data-aios="cpu.utilization_percent"` is therefore a
+    // durable declaration that the runtime can update in place.
+    let projection_evidence = {
+        let mut state = facade
+            .coordinator
+            .state_store
+            .write()
+            .expect("state store lock");
+        state.refresh_host();
+        let projection = state.project(&prompt, 32);
+        (!projection.facts.is_empty()).then(|| aios::tools::ToolResult {
+            tool: "state.projection",
+            text: projection
+                .facts
+                .iter()
+                .map(|fact| format!("{}={}", fact.key, fact.value))
+                .collect::<Vec<_>>()
+                .join(" "),
+        })
+    };
+    let mut surface_evidence =
+        Vec::with_capacity(evidence.len() + usize::from(projection_evidence.is_some()));
+    if let Some(projection) = projection_evidence {
+        surface_evidence.push(projection);
+    }
+    surface_evidence.extend(evidence.iter().cloned());
     // Groundless generation (ADR-0007): Aios relays the prompt and specialist
     // data to the surface model, then verifies value fidelity before display.
     // There is no other surface path and no widget vocabulary. Each prompt
@@ -986,7 +1385,10 @@ fn handle_prompt(
     // bypasses the LLM fidelity gate (the content is the staged file content
     // itself, not an invented value) and shows the user the actual artifact.
     let artifact_html = {
-        let file_evidence: Vec<_> = evidence.iter().filter(|r| r.tool.starts_with("files.") && r.text.contains("committed=true")).collect();
+        let file_evidence: Vec<_> = evidence
+            .iter()
+            .filter(|r| r.tool.starts_with("files.") && r.text.contains("committed=true"))
+            .collect();
         if file_evidence.is_empty() {
             None
         } else {
@@ -1001,7 +1403,15 @@ fn handle_prompt(
                 let mut found = None;
                 for name in candidates {
                     if prompt.to_ascii_lowercase().contains(name) {
-                        let ws = std::env::var("AIOS_WORKSPACE").map(std::path::PathBuf::from).unwrap_or_else(|_| std::env::var("HOME").map(|h| std::path::PathBuf::from(h).join("workspace")).unwrap_or_else(|_| std::path::PathBuf::from("/tmp/aios-workspace")));
+                        let ws = std::env::var("AIOS_WORKSPACE")
+                            .map(std::path::PathBuf::from)
+                            .unwrap_or_else(|_| {
+                                std::env::var("HOME")
+                                    .map(|h| std::path::PathBuf::from(h).join("workspace"))
+                                    .unwrap_or_else(|_| {
+                                        std::path::PathBuf::from("/tmp/aios-workspace")
+                                    })
+                            });
                         let path = ws.join(name);
                         if let Ok(content) = std::fs::read_to_string(&path) {
                             let snippet = content.chars().take(400).collect::<String>();
@@ -1013,13 +1423,29 @@ fn handle_prompt(
                 // Fallback: try to extract file path from prompt directly
                 if found.is_none() {
                     for token in prompt.split_whitespace() {
-                        let t = token.trim_matches(|c: char| c == '"' || c == '\'' || c == ',' || c == ';');
+                        let t = token
+                            .trim_matches(|c: char| c == '"' || c == '\'' || c == ',' || c == ';');
                         let lower = t.to_ascii_lowercase();
-                        if lower.ends_with(".py") || lower.ends_with(".txt") || lower.ends_with(".html") || lower.ends_with(".md") {
-                            let name = t.trim_start_matches("./").trim_start_matches('/').trim_start_matches("file:/workspace/");
+                        if lower.ends_with(".py")
+                            || lower.ends_with(".txt")
+                            || lower.ends_with(".html")
+                            || lower.ends_with(".md")
+                        {
+                            let name = t
+                                .trim_start_matches("./")
+                                .trim_start_matches('/')
+                                .trim_start_matches("file:/workspace/");
                             // name may still contain file:/workspace prefix handling
                             let bare = name.split('/').last().unwrap_or(name);
-                            let ws = std::env::var("AIOS_WORKSPACE").map(std::path::PathBuf::from).unwrap_or_else(|_| std::env::var("HOME").map(|h| std::path::PathBuf::from(h).join("workspace")).unwrap_or_else(|_| std::path::PathBuf::from("/tmp/aios-workspace")));
+                            let ws = std::env::var("AIOS_WORKSPACE")
+                                .map(std::path::PathBuf::from)
+                                .unwrap_or_else(|_| {
+                                    std::env::var("HOME")
+                                        .map(|h| std::path::PathBuf::from(h).join("workspace"))
+                                        .unwrap_or_else(|_| {
+                                            std::path::PathBuf::from("/tmp/aios-workspace")
+                                        })
+                                });
                             let path = ws.join(bare);
                             if let Ok(content) = std::fs::read_to_string(&path) {
                                 let snippet = content.chars().take(400).collect::<String>();
@@ -1032,7 +1458,11 @@ fn handle_prompt(
                 found
             };
             let preview_html = if let Some((name, snippet)) = preview {
-                format!(r#"<div style="margin-top:8px;padding:8px;background:#020617;border:1px solid #1e293b;border-radius:8px"><div style="font-size:11px;opacity:0.7;margin-bottom:4px">{}</div><pre style="margin:0;white-space:pre-wrap;word-break:break-all;font-size:11px">{}</pre></div>"#, html_escape(name), html_escape(&snippet))
+                format!(
+                    r#"<div style="margin-top:8px;padding:8px;background:#020617;border:1px solid #1e293b;border-radius:8px"><div style="font-size:11px;opacity:0.7;margin-bottom:4px">{}</div><pre style="margin:0;white-space:pre-wrap;word-break:break-all;font-size:11px">{}</pre></div>"#,
+                    html_escape(name),
+                    html_escape(&snippet)
+                )
             } else {
                 String::new()
             };
@@ -1040,8 +1470,13 @@ fn handle_prompt(
                 r#"<div style="width:420px;min-height:120px;padding:16px;background:#0b1220;color:#e2e8f0;border:1px solid #1e293b;border-radius:12px;font-family:system-ui,sans-serif" data-aios-drag-region><div style="font-weight:600;margin-bottom:8px">Artifact — staged file</div><div style="font-size:12px;opacity:0.9">{}</div>{}<div style="margin-top:10px;font-size:11px;opacity:0.6">Staged via broker → FileCheckpoint → health verified → committed. Check ~/workspace.</div></div>"#,
                 body, preview_html
             );
-            let card = SurfaceCard { id: next_surface_id(), html };
-            surfaces.push(card.clone());
+            let card = SurfaceRecord::new(
+                next_surface_id(),
+                prompt.clone(),
+                html,
+                surfaces.next_layout(),
+            );
+            surfaces.open(card.clone());
             Some(card)
         }
     };
@@ -1051,13 +1486,16 @@ fn handle_prompt(
     } else {
         let gaps = aios::surface::coverage_gaps(&prompt, &evidence);
         if !gaps.is_empty() {
-            eprintln!("Aios canvas: coverage gap for {}; no surface", gaps.join(", "));
+            eprintln!(
+                "Aios canvas: coverage gap for {}; no surface",
+                gaps.join(", ")
+            );
             artifact_html
         } else {
             emit_graph_activity(worker_handle, GraphPhase::Composing, &["composer"]);
-            match facade.compose_unconstrained_html(&prompt, &evidence, None) {
+            match facade.compose_unconstrained_html(&prompt, &surface_evidence, None) {
                 Ok((html, routing)) => {
-                    match aios::surface::verify_value_fidelity(&html, &evidence) {
+                    match aios::surface::verify_value_fidelity(&html, &surface_evidence) {
                         Ok(()) => {
                             eprintln!(
                                 "Aios surface: provider={} model={} bytes={}",
@@ -1072,11 +1510,14 @@ fn handle_prompt(
                                 Some((&routing, html.len())),
                                 None,
                             );
-                            let card = SurfaceCard {
-                                id: next_surface_id(),
+                            let mut card = SurfaceRecord::new(
+                                next_surface_id(),
+                                prompt.clone(),
                                 html,
-                            };
-                            surfaces.push(card.clone());
+                                surfaces.next_layout(),
+                            );
+                            initialize_surface_bindings(facade, &mut card);
+                            surfaces.open(card.clone());
                             // Prefer the LLM surface, but keep artifact as second card if present.
                             if artifact_html.is_some() {
                                 // Both surfaces are already in `surfaces`; return the LLM one as primary.
@@ -1087,20 +1528,20 @@ fn handle_prompt(
                         }
                         Err(error) => {
                             eprintln!("Aios canvas: fidelity check failed: {error}");
-                            write_surface_trace(
-                                &prompt,
-                                &answer,
-                                &evidence,
-                                None,
-                                Some(&error),
-                            );
+                            write_surface_trace(&prompt, &answer, &evidence, None, Some(&error));
                             artifact_html
                         }
                     }
                 }
                 Err(error) => {
                     eprintln!("Aios canvas: composition failed: {error}");
-                    write_surface_trace(&prompt, &answer, &evidence, None, Some(&error.to_string()));
+                    write_surface_trace(
+                        &prompt,
+                        &answer,
+                        &evidence,
+                        None,
+                        Some(&error.to_string()),
+                    );
                     artifact_html
                 }
             }
@@ -1113,27 +1554,7 @@ fn handle_prompt(
             text: result.text.clone(),
         })
         .collect();
-    // Persist surfaces for day-bucket restore (ADR-0009 Stage 2 minimal): save Vec<SurfaceCard> to SessionStore
-    {
-        let config_dir = std::env::var("AIOS_CONFIG").map(std::path::PathBuf::from).map(|p| p.parent().map(|d| d.to_path_buf()).unwrap_or(p)).unwrap_or_else(|_| aios::config::AiosConfig::default_path().parent().map(|d| d.to_path_buf()).unwrap_or_else(|| std::path::PathBuf::from("/tmp")));
-        let store = aios::session::SessionStore::new(&config_dir);
-        let today = aios::session::SessionStore::today();
-        let snap = aios::session::SessionSnapshot {
-            id: today.clone(),
-            history: Vec::new(), // history already persisted via Facade
-            tool_results: Vec::new(),
-            surfaces: surfaces.iter().map(|c| aios::session::StoredSurface { id: c.id.clone(), html: c.html.clone() }).collect(),
-            updated_at: aios::protocol::now(),
-        };
-        if let Some(existing) = store.load(&today) {
-            let mut merged = snap;
-            merged.history = existing.history;
-            merged.tool_results = existing.tool_results;
-            let _ = store.save(&merged);
-        } else {
-            let _ = store.save(&snap);
-        }
-    }
+    persist_surfaces(surfaces.all());
     let result = Ok(PromptResponse {
         answer,
         evidence,
@@ -1146,6 +1567,37 @@ fn handle_prompt(
     }
     emit_graph_activity(worker_handle, GraphPhase::Idle, &[]);
     let _ = response.send(result);
+}
+
+fn persist_surfaces(surfaces: &[SurfaceRecord]) {
+    let config_dir = std::env::var("AIOS_CONFIG")
+        .map(std::path::PathBuf::from)
+        .map(|p| p.parent().map(|d| d.to_path_buf()).unwrap_or(p))
+        .unwrap_or_else(|_| {
+            aios::config::AiosConfig::default_path()
+                .parent()
+                .map(|d| d.to_path_buf())
+                .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+        });
+    let store = aios::session::SessionStore::new(&config_dir);
+    let today = aios::session::SessionStore::today();
+    let mut snapshot = aios::session::SessionSnapshot {
+        id: today.clone(),
+        history: Vec::new(),
+        tool_results: Vec::new(),
+        surfaces: surfaces
+            .iter()
+            .map(aios::session::StoredSurface::from)
+            .collect(),
+        updated_at: aios::protocol::now(),
+    };
+    if let Some(existing) = store.load(&today) {
+        snapshot.history = existing.history;
+        snapshot.tool_results = existing.tool_results;
+    }
+    if let Err(error) = store.save(&snapshot) {
+        eprintln!("Aios surface: failed to persist runtime state: {error}");
+    }
 }
 
 fn refresh_sidebar_status_from_handle(_handle: &tauri::AppHandle, _status: BackendStatus) {
@@ -1258,10 +1710,7 @@ fn sidebar_status_snapshot(
     })
 }
 
-fn refresh_graph_snapshot(
-    target: &Arc<Mutex<Option<SystemGraphSnapshot>>>,
-    facade: &Facade,
-) {
+fn refresh_graph_snapshot(target: &Arc<Mutex<Option<SystemGraphSnapshot>>>, facade: &Facade) {
     let snapshot = build_graph_snapshot(facade);
     if let Ok(mut current) = target.lock() {
         *current = Some(snapshot);
@@ -1320,7 +1769,11 @@ fn build_graph_snapshot(facade: &Facade) -> SystemGraphSnapshot {
         nodes
             .first()
             .filter(|node| node.health != aios::protocol::HealthState::Unknown)
-            .or_else(|| nodes.iter().find(|node| node.health != aios::protocol::HealthState::Unknown))
+            .or_else(|| {
+                nodes
+                    .iter()
+                    .find(|node| node.health != aios::protocol::HealthState::Unknown)
+            })
             .map(|n| format!("{:?}", n.health))
             .unwrap_or_else(|| "Unknown".into())
     };
@@ -1405,7 +1858,10 @@ fn build_graph_snapshot(facade: &Facade) -> SystemGraphSnapshot {
     }
 
     // Provider sub-nodes (max 3 to fit layout)
-    let mut provider_iter = provider_nodes.iter().chain(local_nodes.iter()).chain(lan_nodes.iter());
+    let mut provider_iter = provider_nodes
+        .iter()
+        .chain(local_nodes.iter())
+        .chain(lan_nodes.iter());
     for (i, provider) in provider_iter.by_ref().take(3).enumerate() {
         let pid = format!("provider:{i}");
         nodes.push(GraphNode {
@@ -1457,7 +1913,10 @@ fn build_graph_snapshot(facade: &Facade) -> SystemGraphSnapshot {
                 format!("{}: {:?}", package_id, node.health),
             )
         } else {
-            ("Unknown".into(), format!("{}: not instantiated", package_id))
+            (
+                "Unknown".into(),
+                format!("{}: not instantiated", package_id),
+            )
         };
 
         nodes.push(GraphNode {
@@ -1765,14 +2224,9 @@ fn x11_work_area(
     let Ok(atom) = atom_cookie.reply() else {
         return fallback;
     };
-    let Ok(property_cookie) = connection.get_property(
-        false,
-        root,
-        atom.atom,
-        AtomEnum::CARDINAL,
-        0,
-        4,
-    ) else {
+    let Ok(property_cookie) =
+        connection.get_property(false, root, atom.atom, AtomEnum::CARDINAL, 0, 4)
+    else {
         return fallback;
     };
     let Ok(property) = property_cookie.reply() else {
@@ -1794,18 +2248,21 @@ fn x11_work_area(
 }
 
 #[cfg(target_os = "linux")]
-fn prefer_x11_when_xwayland_is_available() {
+fn prefer_x11_when_requested() {
     let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
     let x11 = std::env::var_os("DISPLAY").is_some();
     let backend = std::env::var("GDK_BACKEND").ok();
 
-    // GNOME/Mutter commonly exposes XWayland even when the desktop session is
-    // Wayland. Using it gives the fallback a real X11 coordinate space instead
-    // of a compositor-centered xdg_toplevel. Respect an explicit backend when
-    // the user or launcher already selected one.
-    if wayland && x11 && backend.is_none() {
+    // Native Wayland is the default. EWMH dock placement requires X11, so
+    // retain that path only as an explicit compatibility opt-in:
+    // AIOS_DISPLAY_BACKEND=x11. An explicit GDK_BACKEND always wins.
+    if wayland
+        && x11
+        && backend.is_none()
+        && std::env::var("AIOS_DISPLAY_BACKEND").ok().as_deref() == Some("x11")
+    {
         std::env::set_var("GDK_BACKEND", "x11");
-        eprintln!("Aios sidebar: using XWayland for controllable dock positioning");
+        eprintln!("Aios sidebar: using requested XWayland dock fallback");
     }
 }
 

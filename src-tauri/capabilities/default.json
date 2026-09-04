@@ -5,6 +5,7 @@
   "windows": ["sidebar", "canvas"],
   "permissions": [
     "core:default",
-    "core:event:allow-listen"
+    "core:event:allow-listen",
+    "wdio-webdriver:default"
   ]
 }
