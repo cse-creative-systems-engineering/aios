@@ -6,6 +6,7 @@ Start here before making changes or answering questions about the repository.
 
 Read the latest dated grounding snapshot:
 
+- [`project_grounding_2026-09-04_22-32-35.md`](docs/grounding/project_grounding_2026-09-04_22-32-35.md) — Ground latest feature branch work for main merge
 - [`project_grounding_2026-09-04_22-28-39.md`](docs/grounding/project_grounding_2026-09-04_22-28-39.md) — Redesign Aios sidebar UI for an ultra-premium instrument look and remove fixed sizing from generated surfaces
 - [`project_grounding_2026-09-04_04-36-39.md`](docs/grounding/project_grounding_2026-09-04_04-36-39.md) — Move A2UI revisions into the Aios chat composer
 - [`project_grounding_2026-09-04_04-33-29.md`](docs/grounding/project_grounding_2026-09-04_04-33-29.md) — Add read-only AMD and Intel GPU collectors
