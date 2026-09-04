@@ -6,6 +6,7 @@ Start here before making changes or answering questions about the repository.
 
 Read the latest dated grounding snapshot:
 
+- [`project_grounding_2026-09-04_00-44-57.md`](docs/grounding/project_grounding_2026-09-04_00-44-57.md) — Prefer native Wayland with explicit XWayland dock fallback
 - [`project_grounding_2026-09-04_00-40-24.md`](docs/grounding/project_grounding_2026-09-04_00-40-24.md) — Add continuously refreshed CPU, process, network, and thermal live state
 - [`project_grounding_2026-09-04_00-18-23.md`](docs/grounding/project_grounding_2026-09-04_00-18-23.md) — Implement live state projections and durable A2UI surface runtime
 - [`project_grounding_2026-09-04_00-07-59.md`](docs/grounding/project_grounding_2026-09-04_00-07-59.md) — Propose live SystemStateStore and durable generative A2UI runtime

@@ -426,10 +426,13 @@ the broker, or the operating system directly.
 
 ## Desktop Compatibility
 
-On the current Ubuntu GNOME Wayland session, Aios selects XWayland when
-available so the sidebar can use EWMH dock behavior. The selected native mode is
-logged at startup. Unsupported desktop behavior must be visible and must not
-be presented as a working dock.
+On Linux, Aios uses native Wayland by default and uses GTK Layer Shell where the
+compositor supports it. When layer-shell support is absent, it presents an
+ordinary Wayland sidebar and logs that it is not a compositor-reserved dock.
+Set `AIOS_DISPLAY_BACKEND=x11` to explicitly request the XWayland/EWMH dock
+fallback on compatible sessions. The selected native mode is logged at startup.
+Unsupported desktop behavior must be visible and must not be presented as a
+working dock.
 
 ## Safety Rules
 

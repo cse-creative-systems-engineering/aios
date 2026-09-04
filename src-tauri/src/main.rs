@@ -698,7 +698,7 @@ async fn submit_prompt(
 }
 
 fn main() {    #[cfg(target_os = "linux")]
-    prefer_x11_when_xwayland_is_available();
+    prefer_x11_when_requested();
 
     tauri::Builder::default()
         .setup(|app| {
@@ -711,13 +711,15 @@ fn main() {    #[cfg(target_os = "linux")]
                             eprintln!("Aios sidebar: failed to show Layer Shell window: {error}");
                         }
                     } else {
-                        eprintln!(
-                            "Aios sidebar: Layer Shell unavailable; configuring X11 dock fallback"
-                        );
-                        prepare_x11_dock_window(&window);
-                        configure_x11_dock(&window);
+                        if std::env::var("GDK_BACKEND").ok().as_deref() == Some("x11") {
+                            eprintln!("Aios sidebar: Layer Shell unavailable; configuring requested X11 dock fallback");
+                            prepare_x11_dock_window(&window);
+                            configure_x11_dock(&window);
+                        } else {
+                            eprintln!("Aios sidebar: Layer Shell unavailable; using ordinary native Wayland window");
+                        }
                         if let Err(error) = window.show() {
-                            eprintln!("Aios sidebar: failed to show X11 fallback: {error}");
+                            eprintln!("Aios sidebar: failed to show fallback: {error}");
                         }
                     }
                 }
@@ -1836,18 +1838,18 @@ fn x11_work_area(
 }
 
 #[cfg(target_os = "linux")]
-fn prefer_x11_when_xwayland_is_available() {
+fn prefer_x11_when_requested() {
     let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
     let x11 = std::env::var_os("DISPLAY").is_some();
     let backend = std::env::var("GDK_BACKEND").ok();
 
-    // GNOME/Mutter commonly exposes XWayland even when the desktop session is
-    // Wayland. Using it gives the fallback a real X11 coordinate space instead
-    // of a compositor-centered xdg_toplevel. Respect an explicit backend when
-    // the user or launcher already selected one.
-    if wayland && x11 && backend.is_none() {
+    // Native Wayland is the default. EWMH dock placement requires X11, so
+    // retain that path only as an explicit compatibility opt-in:
+    // AIOS_DISPLAY_BACKEND=x11. An explicit GDK_BACKEND always wins.
+    if wayland && x11 && backend.is_none()
+        && std::env::var("AIOS_DISPLAY_BACKEND").ok().as_deref() == Some("x11") {
         std::env::set_var("GDK_BACKEND", "x11");
-        eprintln!("Aios sidebar: using XWayland for controllable dock positioning");
+        eprintln!("Aios sidebar: using requested XWayland dock fallback");
     }
 }
 
