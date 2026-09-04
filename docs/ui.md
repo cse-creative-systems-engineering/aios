@@ -60,10 +60,22 @@ discovered model ending in `:free`, and completes a real chat request. That
 live suite is intentionally separate from the default test run because it
 uses a real provider and its free-model availability is external state.
 
-The remaining lifecycle requirements are:
+The lifecycle runtime now owns close, minimize, restore, z-order, user-selected
+size, and stale-binding state. Minimize retains the record in the backend and
+the resident Surfaces inspector restores that exact ID; it does not regenerate
+the presentation. Pointer focus raises a record through backend-owned z-order,
+and the resize grip stores a user-selected size only after the user changes it,
+so new model-authored surfaces retain their intrinsic dimensions. Canvas
+restart reloads every visible record from the backend, including position,
+order, size, revision, bindings, and last valid values.
 
-- close, minimize, restore, z-order, and stale-binding state;
-- reliable input-region behavior across resize, drag, and canvas restart.
+When a declared observation becomes stale, its last verified value remains
+visible but the exact bound element receives `data-aios-stale` and an explicit
+"Live value is stale" tooltip. This is presentation metadata, not generated
+HTML replacement; a fresh value clears the marker through the normal delta.
+The canvas recalculates its native input shape after live updates, drag, resize,
+minimize/restore, and canvas restart. With no visible records it clears that
+shape and hides the canvas.
 
 ### Surface revision
 

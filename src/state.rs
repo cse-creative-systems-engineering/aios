@@ -71,6 +71,15 @@ pub struct ContextProjection {
     pub truncated: bool,
 }
 
+/// Exact values and explicit freshness for one surface's declared bindings.
+/// A missing metric is deliberately absent from both collections: absence is
+/// not a claim that a value was healthy, stale, or zero.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BindingSnapshot {
+    pub values: BTreeMap<String, String>,
+    pub stale_keys: Vec<String>,
+}
+
 impl ContextProjection {
     pub fn as_prompt_context(&self) -> String {
         let mut lines = vec!["Live system context (deterministic observations):".to_string()];
@@ -544,6 +553,28 @@ impl SystemStateStore {
                 (!metric.is_stale(timestamp)).then(|| (key.to_string(), metric.value.clone()))
             })
             .collect()
+    }
+
+    /// Build a presentation-only snapshot for exact declared binding keys.
+    /// Fresh values and stale state are separate so the canvas can retain the
+    /// last verified value while visibly marking it stale.
+    pub fn binding_snapshot<'a>(
+        &self,
+        keys: impl IntoIterator<Item = &'a str>,
+    ) -> BindingSnapshot {
+        let timestamp = now();
+        let mut snapshot = BindingSnapshot::default();
+        for key in keys {
+            let Some(metric) = self.metrics.get(key) else {
+                continue;
+            };
+            if metric.is_stale(timestamp) {
+                snapshot.stale_keys.push(key.to_string());
+            } else {
+                snapshot.values.insert(key.to_string(), metric.value.clone());
+            }
+        }
+        snapshot
     }
 
     pub fn project(&self, query: &str, limit: usize) -> ContextProjection {

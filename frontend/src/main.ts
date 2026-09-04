@@ -6,9 +6,9 @@ import { PhysicalPosition } from '@tauri-apps/api/dpi';
 import { isSectionId, providerCatalog, renderSidebar, roleState, rolesCatalog, settingsForm, updateProviderCatalog, updateRolesCatalog, updateSettingsProviders, type EvidenceItem, type FlightProgress, type SectionId, type SidebarMessage, type SidebarStatus, type SystemGraphSnapshot } from './sidebar';
 // The only dock edge type still shared with the sidebar renderer.
 type DockEdge = 'left' | 'right' | 'top' | 'bottom';
-type SurfaceLayout = { x: number; y: number; zIndex: number; visible: boolean };
-type SurfaceCard = { id: string; revision: number; intent: string; html: string; layout: SurfaceLayout; bindings: string[]; bindingValues: Record<string, string>; dataRevision: number };
-type SurfaceDelta = { id: string; revision: number; dataRevision: number; values: Record<string, string> };
+type SurfaceLayout = { x: number; y: number; zIndex: number; visible: boolean; width?: number; height?: number };
+type SurfaceCard = { id: string; revision: number; intent: string; html: string; layout: SurfaceLayout; bindings: string[]; bindingValues: Record<string, string>; staleBindings: string[]; dataRevision: number };
+type SurfaceDelta = { id: string; revision: number; dataRevision: number; values: Record<string, string>; staleBindings: string[] };
 type PromptResponse = {
   answer: string;
   evidence: EvidenceItem[];
@@ -47,6 +47,8 @@ let dragState: {
   handle: HTMLElement;
   surfaceId: string;
 } | null = null;
+let resizeState: { pointerId: number; startX: number; startY: number; width: number; height: number; surfaceId: string; handle: HTMLElement } | null = null;
+let surfaceIndex: SurfaceCard[] = [];
 const messages: SidebarMessage[] = [{
   role: 'assistant',
   text: 'I’m ready to investigate your system. Ask me what you would like to know.',
@@ -279,11 +281,18 @@ function render(): void {
         requestInFlight,
         flightProgress,
         hasSurface: lastSurfacePresent,
+        surfaces: surfaceIndex.map((surface) => ({ id: surface.id, revision: surface.revision, visible: surface.layout.visible, staleBindings: surface.staleBindings })),
         graph: graphSnapshot,
         graphError: graphSnapshotError,
       }, escapeHtml);
   if (!isCanvasWindow) {
     bindSidebar();
+    document.querySelectorAll<HTMLButtonElement>('[data-surface-hide]').forEach((button) => {
+      button.addEventListener('click', () => void setSurfaceVisibility(button.dataset.surfaceHide ?? '', false));
+    });
+    document.querySelectorAll<HTMLButtonElement>('[data-surface-show]').forEach((button) => {
+      button.addEventListener('click', () => void setSurfaceVisibility(button.dataset.surfaceShow ?? '', true));
+    });
     if (snap) restoreSidebarDom(snap);
   } else {
     document.querySelectorAll<HTMLButtonElement>('[data-dock]').forEach((button) => {
@@ -295,11 +304,18 @@ function render(): void {
     document.querySelectorAll<HTMLButtonElement>('[data-edit]').forEach((button) => {
       button.addEventListener('click', () => void requestSurfaceRevision(button.dataset.edit ?? ''));
     });
+    document.querySelectorAll<HTMLButtonElement>('[data-minimize]').forEach((button) => {
+      button.addEventListener('click', () => void setSurfaceVisibility(button.dataset.minimize ?? '', false));
+    });
     if (surfaces.length) {
       document.querySelectorAll<HTMLElement>('.surface-host').forEach((host) => {
         const surface = findSurface(host.dataset.surfaceId ?? '');
-        if (surface) replaceSurfaceBindingText(host, surface.bindingValues);
+        if (surface) {
+          replaceSurfaceBindingText(host, surface.bindingValues);
+          applyBindingFreshness(host, surface.staleBindings);
+        }
         wireSurfaceDrag(host);
+        wireSurfaceResize(host);
         observeSurfaceSize(host);
       });
     } else {
@@ -333,6 +349,16 @@ async function refreshSidebarStatus(): Promise<void> {
     }
   }
   if (!isCanvasWindow) render();
+}
+
+async function refreshSurfaceIndex(): Promise<void> {
+  try {
+    surfaceIndex = await invoke<SurfaceCard[]>('list_surfaces');
+    lastSurfacePresent = surfaceIndex.some((surface) => surface.layout.visible);
+    if (!isCanvasWindow && activeSection === 'surfaces') render();
+  } catch (error) {
+    console.error(`[Aios] list_surfaces failed: ${String(error)}`);
+  }
 }
 
 // ---- Settings panel actions ----
@@ -582,10 +608,12 @@ function adoptSurfaceHtml(html: string): string {
 
 function renderCanvas(): string {
   if (!surfaces.length) return '';
-  return surfaces.map((surface) =>
-    `<div class="surface-host" data-surface-id="${escapeHtml(surface.id)}" data-surface-revision="${surface.revision}" data-aios-data-revision="${surface.dataRevision}" style="left:${surface.layout.x}px;top:${surface.layout.y}px;z-index:${surface.layout.zIndex}">${adoptSurfaceHtml(surface.html)}` +
+  return surfaces.filter((surface) => surface.layout.visible).map((surface) =>
+    `<div class="surface-host" data-surface-id="${escapeHtml(surface.id)}" data-surface-revision="${surface.revision}" data-aios-data-revision="${surface.dataRevision}" style="left:${surface.layout.x}px;top:${surface.layout.y}px;z-index:${surface.layout.zIndex}${surface.layout.width ? `;width:${surface.layout.width}px` : ''}${surface.layout.height ? `;height:${surface.layout.height}px` : ''}">${adoptSurfaceHtml(surface.html)}` +
     `<button type="button" class="surface-edit" data-edit="${escapeHtml(surface.id)}" aria-label="Revise surface">Edit</button>` +
+    `<button type="button" class="surface-minimize" data-minimize="${escapeHtml(surface.id)}" aria-label="Minimize surface">−</button>` +
     `<button type="button" class="surface-close" data-close="${escapeHtml(surface.id)}" aria-label="Close surface">×</button>` +
+    `<span class="surface-resize" data-resize="${escapeHtml(surface.id)}" aria-label="Resize surface" role="button" tabindex="0"></span>` +
     `</div>`
   ).join('');
 }
@@ -594,12 +622,23 @@ function applySurfaceDelta(delta: SurfaceDelta): void {
   const surface = findSurface(delta.id);
   if (!surface || surface.revision !== delta.revision || delta.dataRevision <= surface.dataRevision) return;
   surface.bindingValues = { ...surface.bindingValues, ...delta.values };
+  surface.staleBindings = delta.staleBindings;
   surface.dataRevision = delta.dataRevision;
   const host = surfaceHosts().find((candidate) => candidate.dataset.surfaceId === delta.id);
   if (!host) return;
   replaceSurfaceBindingText(host, delta.values);
   host.dataset.aiosDataRevision = String(delta.dataRevision);
+  applyBindingFreshness(host, delta.staleBindings);
   scheduleInputRegion();
+}
+
+function applyBindingFreshness(host: HTMLElement, staleBindings: string[]): void {
+  host.querySelectorAll<HTMLElement>('[data-aios]').forEach((element) => {
+    const stale = staleBindings.includes(element.dataset.aios ?? '');
+    element.toggleAttribute('data-aios-stale', stale);
+    if (stale) element.setAttribute('title', 'Live value is stale');
+    else if (element.getAttribute('title') === 'Live value is stale') element.removeAttribute('title');
+  });
 }
 
 function replaceSurfaceBindingText(host: HTMLElement, values: Record<string, string>): void {
@@ -724,6 +763,7 @@ async function runPrompt(text: string, pushUser: boolean): Promise<void> {
     // The canvas window owns surface placement; the sidebar only tracks
     // whether anything is on screen.
     if (response.experimentalHtml) lastSurfacePresent = true;
+    void refreshSurfaceIndex();
     void refreshSidebarStatus();
     void refreshGraph();
   } catch (error) {
@@ -765,6 +805,7 @@ async function closeSurface(id: string): Promise<void> {
     console.error(`[Aios] close_surface failed: ${String(error)}`);
   }
   surfaces = surfaces.filter((surface) => surface.id !== id);
+  surfaceIndex = surfaceIndex.filter((surface) => surface.id !== id);
   lastSurfacePresent = surfaces.length > 0;
   render();
   if (!surfaces.length) {
@@ -772,6 +813,28 @@ async function closeSurface(id: string): Promise<void> {
     // canvas window away until the next generation.
     await invoke('set_input_region', { regions: [] }).catch(() => {});
     await currentWindow.hide();
+  }
+}
+
+async function setSurfaceVisibility(id: string, visible: boolean): Promise<void> {
+  if (!id) return;
+  try {
+    const updated = await invoke<SurfaceCard>('set_surface_visibility', { id, visible });
+    surfaceIndex = surfaceIndex.map((surface) => surface.id === id ? updated : surface);
+    surfaces = surfaces.map((surface) => surface.id === id ? updated : surface);
+    if (visible && !surfaces.some((surface) => surface.id === id)) surfaces.push(updated);
+    lastSurfacePresent = surfaceIndex.some((surface) => surface.layout.visible);
+    render();
+    if (visible) {
+      await currentWindow.show();
+      await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+      await updateInputRegion();
+    } else if (!surfaces.some((surface) => surface.layout.visible)) {
+      await invoke('set_input_region', { regions: [] }).catch(() => {});
+      await currentWindow.hide();
+    }
+  } catch (error) {
+    console.error(`[Aios] set_surface_visibility failed: ${String(error)}`);
   }
 }
 
@@ -789,6 +852,7 @@ async function requestSurfaceRevision(id: string): Promise<void> {
       instruction: instruction.trim(),
     });
     surfaces = surfaces.map((candidate) => candidate.id === revised.id ? revised : candidate);
+    surfaceIndex = surfaceIndex.map((candidate) => candidate.id === revised.id ? revised : candidate);
   } catch (error) {
     console.error(`[Aios] revise_surface failed: ${String(error)}`);
   } finally {
@@ -849,6 +913,7 @@ function wireSurfaceDrag(host: HTMLElement): void {
     };
     handle.setPointerCapture?.(event.pointerId);
     handle.classList.add('surface-dragging');
+    void focusSurface(id);
     event.preventDefault();
   });
   handle.addEventListener('pointermove', (event) => {
@@ -886,6 +951,53 @@ function wireSurfaceDrag(host: HTMLElement): void {
   handle.addEventListener('pointercancel', endDrag);
 }
 
+async function focusSurface(id: string): Promise<void> {
+  if (!id) return;
+  try {
+    const updated = await invoke<SurfaceCard>('focus_surface', { id });
+    surfaces = surfaces.map((surface) => surface.id === id ? updated : surface);
+    surfaceIndex = surfaceIndex.map((surface) => surface.id === id ? updated : surface);
+    const host = surfaceHosts().find((candidate) => candidate.dataset.surfaceId === id);
+    if (host) host.style.zIndex = String(updated.layout.zIndex);
+  } catch (error) {
+    console.error(`[Aios] focus_surface failed: ${String(error)}`);
+  }
+}
+
+function wireSurfaceResize(host: HTMLElement): void {
+  const handle = host.querySelector<HTMLElement>('[data-resize]');
+  if (!handle) return;
+  handle.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0) return;
+    const id = host.dataset.surfaceId ?? '';
+    const rect = host.getBoundingClientRect();
+    resizeState = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, width: rect.width, height: rect.height, surfaceId: id, handle };
+    handle.setPointerCapture?.(event.pointerId);
+    event.preventDefault();
+    event.stopPropagation();
+    void focusSurface(id);
+  });
+  const resize = (event: PointerEvent) => {
+    if (!resizeState || resizeState.pointerId !== event.pointerId) return;
+    const surface = findSurface(resizeState.surfaceId);
+    if (!surface) return;
+    surface.layout.width = Math.max(120, resizeState.width + event.clientX - resizeState.startX);
+    surface.layout.height = Math.max(72, resizeState.height + event.clientY - resizeState.startY);
+    host.style.width = `${surface.layout.width}px`;
+    host.style.height = `${surface.layout.height}px`;
+    scheduleInputRegion();
+  };
+  const end = (event: PointerEvent) => {
+    if (!resizeState || resizeState.pointerId !== event.pointerId) return;
+    const surface = findSurface(resizeState.surfaceId);
+    resizeState = null;
+    if (surface) void invoke('update_surface_layout', { id: surface.id, layout: surface.layout }).catch((error) => console.error(`[Aios] resize persistence failed: ${String(error)}`));
+  };
+  handle.addEventListener('pointermove', resize);
+  handle.addEventListener('pointerup', end);
+  handle.addEventListener('pointercancel', end);
+}
+
 if (isCanvasWindow) {
   // The backend command exists only in embedded-WebDriver builds. Keeping the
   // browser-facing trigger as a DOM event avoids depending on private Tauri
@@ -895,6 +1007,7 @@ if (isCanvasWindow) {
     if (detail?.key && detail.value) void invoke('publish_test_state', detail);
   });
   void invoke<SurfaceCard[]>('list_surfaces').then(async (restored) => {
+    surfaceIndex = restored;
     surfaces = restored.filter((surface) => surface.layout.visible);
     lastSurfacePresent = surfaces.length > 0;
     render();
@@ -907,6 +1020,7 @@ if (isCanvasWindow) {
   void listen<PromptResponse>('canvas_response', async (event) => {
     if (event.payload.experimentalHtml) {
       const incoming = event.payload.experimentalHtml;
+      surfaceIndex = [...surfaceIndex.filter((surface) => surface.id !== incoming.id), incoming];
       const existing = surfaces.findIndex((surface) => surface.id === incoming.id);
       if (existing >= 0) surfaces[existing] = incoming;
       else surfaces.push(incoming);
@@ -928,6 +1042,24 @@ if (isCanvasWindow) {
   }).catch((error) => {
     console.error(`[Aios] surface delta listener failed: ${String(error)}`);
   });
+  void listen<SurfaceCard>('surface_lifecycle', (event) => {
+    const updated = event.payload;
+    surfaceIndex = [...surfaceIndex.filter((surface) => surface.id !== updated.id), updated];
+    surfaces = [...surfaces.filter((surface) => surface.id !== updated.id), updated].filter((surface) => surface.layout.visible);
+    lastSurfacePresent = surfaces.length > 0;
+    render();
+    if (surfaces.length) void updateInputRegion();
+    else {
+      void invoke('set_input_region', { regions: [] }).catch(() => {});
+      void currentWindow.hide();
+    }
+  });
+  void listen<string>('surface_removed', (event) => {
+    surfaceIndex = surfaceIndex.filter((surface) => surface.id !== event.payload);
+    surfaces = surfaces.filter((surface) => surface.id !== event.payload);
+    lastSurfacePresent = surfaces.length > 0;
+    render();
+  });
 }
 
 if (!isCanvasWindow) {
@@ -948,6 +1080,18 @@ if (!isCanvasWindow) {
     render();
   });
   void refreshSidebarStatus();
+  void refreshSurfaceIndex();
+  void listen<SurfaceCard>('surface_lifecycle', (event) => {
+    const updated = event.payload;
+    surfaceIndex = [...surfaceIndex.filter((surface) => surface.id !== updated.id), updated];
+    lastSurfacePresent = surfaceIndex.some((surface) => surface.layout.visible);
+    if (activeSection === 'surfaces') render();
+  });
+  void listen<string>('surface_removed', (event) => {
+    surfaceIndex = surfaceIndex.filter((surface) => surface.id !== event.payload);
+    lastSurfacePresent = surfaceIndex.some((surface) => surface.layout.visible);
+    if (activeSection === 'surfaces') render();
+  });
   void refreshGraph();
   void loadProviderCatalog();
   window.setInterval(() => {

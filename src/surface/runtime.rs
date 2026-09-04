@@ -15,6 +15,12 @@ pub struct SurfaceLayout {
     pub y: f64,
     pub z_index: u32,
     pub visible: bool,
+    /// A user-selected presentation size. `None` leaves the model-authored
+    /// intrinsic CSS entirely unconstrained.
+    #[serde(default)]
+    pub width: Option<f64>,
+    #[serde(default)]
+    pub height: Option<f64>,
 }
 
 impl Default for SurfaceLayout {
@@ -24,6 +30,8 @@ impl Default for SurfaceLayout {
             y: 44.0,
             z_index: 1,
             visible: true,
+            width: None,
+            height: None,
         }
     }
 }
@@ -41,6 +49,11 @@ pub struct SurfaceRecord {
     /// state, not a visual revision: live samples do not regenerate HTML.
     #[serde(default)]
     pub binding_values: BTreeMap<String, String>,
+    /// Exact declared bindings whose source observation is currently stale.
+    /// The last value remains available, but the presentation must expose the
+    /// degraded freshness state rather than implying live data.
+    #[serde(default)]
+    pub stale_bindings: Vec<String>,
     #[serde(default)]
     pub data_revision: u64,
 }
@@ -53,6 +66,8 @@ pub struct SurfaceDelta {
     pub revision: u64,
     pub data_revision: u64,
     pub values: BTreeMap<String, String>,
+    #[serde(default)]
+    pub stale_bindings: Vec<String>,
 }
 
 impl SurfaceRecord {
@@ -66,6 +81,7 @@ impl SurfaceRecord {
             layout,
             bindings,
             binding_values: BTreeMap::new(),
+            stale_bindings: Vec::new(),
             data_revision: 0,
         }
     }
@@ -87,6 +103,13 @@ impl SurfaceRecord {
             .filter(|(key, _)| self.bindings.contains(key))
             .collect();
     }
+
+    pub fn set_stale_bindings(&mut self, stale_bindings: Vec<String>) {
+        self.stale_bindings = stale_bindings
+            .into_iter()
+            .filter(|key| self.bindings.contains(key))
+            .collect();
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -101,6 +124,8 @@ impl SurfaceRuntime {
 
     pub fn open(&mut self, surface: SurfaceRecord) {
         self.surfaces.retain(|existing| existing.id != surface.id);
+        let mut surface = surface;
+        surface.layout.z_index = self.next_z_index();
         self.surfaces.push(surface);
     }
 
@@ -111,8 +136,10 @@ impl SurfaceRuntime {
         SurfaceLayout {
             x: 20.0 + offset,
             y: 16.0 + offset,
-            z_index: self.surfaces.len() as u32 + 1,
+            z_index: self.next_z_index(),
             visible: true,
+            width: None,
+            height: None,
         }
     }
 
@@ -123,6 +150,7 @@ impl SurfaceRuntime {
     }
 
     pub fn set_layout(&mut self, id: &str, layout: SurfaceLayout) -> Result<(), String> {
+        validate_layout(&layout)?;
         let surface = self
             .surfaces
             .iter_mut()
@@ -130,6 +158,40 @@ impl SurfaceRuntime {
             .ok_or_else(|| format!("no surface '{id}' is open"))?;
         surface.layout = layout;
         Ok(())
+    }
+
+    pub fn set_visibility(&mut self, id: &str, visible: bool) -> Result<SurfaceRecord, String> {
+        let next_z_index = self.next_z_index();
+        let surface = self
+            .surfaces
+            .iter_mut()
+            .find(|surface| surface.id == id)
+            .ok_or_else(|| format!("no surface '{id}' is open"))?;
+        surface.layout.visible = visible;
+        if visible {
+            surface.layout.z_index = next_z_index;
+        }
+        Ok(surface.clone())
+    }
+
+    pub fn bring_to_front(&mut self, id: &str) -> Result<SurfaceRecord, String> {
+        let next_z_index = self.next_z_index();
+        let surface = self
+            .surfaces
+            .iter_mut()
+            .find(|surface| surface.id == id)
+            .ok_or_else(|| format!("no surface '{id}' is open"))?;
+        surface.layout.z_index = next_z_index;
+        Ok(surface.clone())
+    }
+
+    fn next_z_index(&self) -> u32 {
+        self.surfaces
+            .iter()
+            .map(|surface| surface.layout.z_index)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1)
     }
 
     pub fn all(&self) -> &[SurfaceRecord] {
@@ -150,6 +212,7 @@ impl SurfaceRuntime {
         intent: String,
         html: String,
         binding_values: BTreeMap<String, String>,
+        stale_bindings: Vec<String>,
     ) -> Result<SurfaceRecord, String> {
         let surface = self
             .surfaces
@@ -164,12 +227,17 @@ impl SurfaceRuntime {
         }
         surface.revise(intent, html);
         surface.set_initial_binding_values(binding_values);
+        surface.set_stale_bindings(stale_bindings);
         Ok(surface.clone())
     }
 
     /// Apply exact binding values without changing the model-authored HTML,
     /// layout, or visual revision. Only changed, declared keys become a delta.
-    pub fn apply_binding_values(&mut self, values: &BTreeMap<String, String>) -> Vec<SurfaceDelta> {
+    pub fn apply_binding_snapshot(
+        &mut self,
+        values: &BTreeMap<String, String>,
+        stale_keys: &[String],
+    ) -> Vec<SurfaceDelta> {
         self.surfaces
             .iter_mut()
             .filter_map(|surface| {
@@ -182,20 +250,45 @@ impl SurfaceRuntime {
                             .then(|| (key.clone(), value.clone()))
                     })
                     .collect::<BTreeMap<_, _>>();
-                if changed.is_empty() {
+                let stale_bindings = surface
+                    .bindings
+                    .iter()
+                    .filter(|key| stale_keys.contains(key))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if changed.is_empty() && stale_bindings == surface.stale_bindings {
                     return None;
                 }
                 surface.binding_values.extend(changed.clone());
+                surface.stale_bindings = stale_bindings.clone();
                 surface.data_revision = surface.data_revision.saturating_add(1);
                 Some(SurfaceDelta {
                     id: surface.id.clone(),
                     revision: surface.revision,
                     data_revision: surface.data_revision,
                     values: changed,
+                    stale_bindings,
                 })
             })
             .collect()
     }
+
+    /// Compatibility helper for callers with known-fresh values only.
+    pub fn apply_binding_values(&mut self, values: &BTreeMap<String, String>) -> Vec<SurfaceDelta> {
+        self.apply_binding_snapshot(values, &[])
+    }
+}
+
+fn validate_layout(layout: &SurfaceLayout) -> Result<(), String> {
+    if !layout.x.is_finite() || !layout.y.is_finite() || layout.x < 0.0 || layout.y < 0.0 {
+        return Err("surface coordinates must be finite and non-negative".into());
+    }
+    for (name, value) in [("width", layout.width), ("height", layout.height)] {
+        if value.is_some_and(|value| !value.is_finite() || value <= 0.0 || value > 100_000.0) {
+            return Err(format!("surface {name} must be finite, positive, and bounded"));
+        }
+    }
+    Ok(())
 }
 
 /// Extract the stable, read-only projection keys declared by generated HTML.
@@ -257,6 +350,8 @@ mod tests {
                     y: 20.0,
                     z_index: 4,
                     visible: true,
+                    width: None,
+                    height: None,
                 },
             )
             .unwrap();
@@ -315,6 +410,7 @@ mod tests {
                 "make it yellow".into(),
                 r#"<span data-aios="cpu.utilization_percent">12</span>"#.into(),
                 BTreeMap::from([("cpu.utilization_percent".into(), "12".into())]),
+                Vec::new(),
             )
             .expect("matching revision should revise only the target");
         assert_eq!(revised.revision, 2);
@@ -327,9 +423,36 @@ mod tests {
                     "stale".into(),
                     "<p>stale</p>".into(),
                     BTreeMap::new(),
+                    Vec::new(),
                 )
                 .is_err()
         );
         assert!(runtime.get("surface-bad").is_none());
+    }
+
+    #[test]
+    fn visibility_and_z_order_are_durable_lifecycle_state() {
+        let mut runtime = SurfaceRuntime::default();
+        runtime.open(SurfaceRecord::new("a".into(), "cpu".into(), "<div/>".into(), SurfaceLayout::default()));
+        runtime.open(SurfaceRecord::new("b".into(), "memory".into(), "<div/>".into(), SurfaceLayout::default()));
+        let hidden = runtime.set_visibility("a", false).unwrap();
+        assert!(!hidden.layout.visible);
+        let raised = runtime.bring_to_front("a").unwrap();
+        assert!(raised.layout.z_index > runtime.get("b").unwrap().layout.z_index);
+        let restored = runtime.set_visibility("a", true).unwrap();
+        assert!(restored.layout.visible);
+        assert_eq!(SurfaceRuntime::restore(runtime.all().to_vec()).get("a"), Some(&restored));
+    }
+
+    #[test]
+    fn stale_binding_status_is_a_delta_without_replacing_the_value() {
+        let mut runtime = SurfaceRuntime::default();
+        let mut surface = SurfaceRecord::new("a".into(), "cpu".into(), r#"<b data-aios="cpu.load">12</b>"#.into(), SurfaceLayout::default());
+        surface.set_initial_binding_values(BTreeMap::from([("cpu.load".into(), "12".into())]));
+        runtime.open(surface);
+        let deltas = runtime.apply_binding_snapshot(&BTreeMap::new(), &["cpu.load".into()]);
+        assert_eq!(deltas[0].values.len(), 0);
+        assert_eq!(deltas[0].stale_bindings, vec!["cpu.load"]);
+        assert_eq!(runtime.get("a").unwrap().binding_values["cpu.load"], "12");
     }
 }

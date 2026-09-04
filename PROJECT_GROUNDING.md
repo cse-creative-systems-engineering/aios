@@ -6,6 +6,7 @@ Start here before making changes or answering questions about the repository.
 
 Read the latest dated grounding snapshot:
 
+- [`project_grounding_2026-09-04_04-23-04.md`](docs/grounding/project_grounding_2026-09-04_04-23-04.md) — Harden A2UI surface lifecycle with durable visibility, z-order, resize, and stale binding state
 - [`project_grounding_2026-09-04_01-42-36.md`](docs/grounding/project_grounding_2026-09-04_01-42-36.md) — Add isolated user-directed A2UI surface revisions
 - [`project_grounding_2026-09-04_01-39-33.md`](docs/grounding/project_grounding_2026-09-04_01-39-33.md) — Add NVIDIA GPU runtime collector and bounded temporal correlations
 - [`project_grounding_2026-09-04_01-23-18.md`](docs/grounding/project_grounding_2026-09-04_01-23-18.md) — Add projection-keyed live surface deltas with in-place canvas updates

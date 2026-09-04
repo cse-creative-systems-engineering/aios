@@ -79,6 +79,15 @@ enum BackendRequest {
         layout: SurfaceLayout,
         response: mpsc::Sender<Result<(), String>>,
     },
+    SetSurfaceVisibility {
+        id: String,
+        visible: bool,
+        response: mpsc::Sender<Result<SurfaceRecord, String>>,
+    },
+    FocusSurface {
+        id: String,
+        response: mpsc::Sender<Result<SurfaceRecord, String>>,
+    },
     ReviseSurface {
         id: String,
         expected_revision: u64,
@@ -337,6 +346,8 @@ fn set_input_region(_app: AppHandle, _regions: Vec<InputRect>) -> Result<(), Str
 #[tauri::command]
 async fn close_surface(id: String, state: tauri::State<'_, AppState>) -> Result<(), String> {
     let requests = state.requests.clone();
+    let app = state.app.clone();
+    let closed_id = id.clone();
     tokio::task::spawn_blocking(move || {
         let (response_tx, response_rx) = mpsc::channel();
         requests
@@ -350,7 +361,11 @@ async fn close_surface(id: String, state: tauri::State<'_, AppState>) -> Result<
             .map_err(|_| "backend worker closed the response channel".to_string())?
     })
     .await
-    .map_err(|error| format!("settings worker failed: {error}"))?
+    .map_err(|error| format!("settings worker failed: {error}"))??;
+    use tauri::Emitter;
+    app.emit("surface_removed", closed_id)
+        .map_err(|error| format!("could not notify surface removal: {error}"))?;
+    Ok(())
 }
 
 /// Persist user placement in the backend-owned surface runtime. The frontend
@@ -377,6 +392,62 @@ async fn update_surface_layout(
     })
     .await
     .map_err(|error| format!("surface worker failed: {error}"))?
+}
+
+/// Minimize or restore one surface while preserving its identity, model HTML,
+/// layout, and last valid binding values. A minimized surface remains in the
+/// durable runtime and can therefore be restored from the resident sidebar.
+#[tauri::command]
+async fn set_surface_visibility(
+    id: String,
+    visible: bool,
+    state: tauri::State<'_, AppState>,
+) -> Result<SurfaceRecord, String> {
+    let requests = state.requests.clone();
+    let app = state.app.clone();
+    let updated = tokio::task::spawn_blocking(move || {
+        let (response_tx, response_rx) = mpsc::channel();
+        requests
+            .send(BackendRequest::SetSurfaceVisibility { id, visible, response: response_tx })
+            .map_err(|_| "backend worker is unavailable".to_string())?;
+        response_rx.recv().map_err(|_| "backend worker closed the response channel".to_string())?
+    })
+    .await
+    .map_err(|error| format!("surface worker failed: {error}"))??;
+    use tauri::{Emitter, Manager};
+    app.emit("surface_lifecycle", updated.clone())
+        .map_err(|error| format!("could not notify surface lifecycle change: {error}"))?;
+    if updated.layout.visible {
+        app.get_webview_window("canvas")
+            .ok_or_else(|| "canvas window is unavailable".to_string())?
+            .show()
+            .map_err(|error| format!("could not show canvas: {error}"))?;
+    }
+    Ok(updated)
+}
+
+/// Raise exactly one surface in backend-owned ordering. This changes no
+/// model-authored content and does not advance the visual revision.
+#[tauri::command]
+async fn focus_surface(
+    id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<SurfaceRecord, String> {
+    let requests = state.requests.clone();
+    let app = state.app.clone();
+    let updated = tokio::task::spawn_blocking(move || {
+        let (response_tx, response_rx) = mpsc::channel();
+        requests
+            .send(BackendRequest::FocusSurface { id, response: response_tx })
+            .map_err(|_| "backend worker is unavailable".to_string())?;
+        response_rx.recv().map_err(|_| "backend worker closed the response channel".to_string())?
+    })
+    .await
+    .map_err(|error| format!("surface worker failed: {error}"))??;
+    use tauri::Emitter;
+    app.emit("surface_lifecycle", updated.clone())
+        .map_err(|error| format!("could not notify surface focus: {error}"))?;
+    Ok(updated)
 }
 
 #[tauri::command]
@@ -953,6 +1024,16 @@ fn main() {
                             if result.is_ok() { persist_surfaces(surfaces.all()); }
                             let _ = response.send(result);
                         }
+                        BackendRequest::SetSurfaceVisibility { id, visible, response } => {
+                            let result = surfaces.set_visibility(&id, visible);
+                            if result.is_ok() { persist_surfaces(surfaces.all()); }
+                            let _ = response.send(result);
+                        }
+                        BackendRequest::FocusSurface { id, response } => {
+                            let result = surfaces.bring_to_front(&id);
+                            if result.is_ok() { persist_surfaces(surfaces.all()); }
+                            let _ = response.send(result);
+                        }
                         BackendRequest::ReviseSurface { id, expected_revision, instruction, response } => {
                             let result = revise_surface_record(
                                 &mut facade,
@@ -1122,6 +1203,8 @@ fn main() {
             set_input_region,
             close_surface,
             update_surface_layout,
+            set_surface_visibility,
+            focus_surface,
             list_surfaces,
             revise_surface,
             submit_prompt,
@@ -1146,13 +1229,14 @@ fn html_escape(s: &str) -> String {
 }
 
 fn initialize_surface_bindings(facade: &Facade, surface: &mut SurfaceRecord) {
-    let values = facade
+    let snapshot = facade
         .coordinator
         .state_store
         .read()
         .expect("state store lock")
-        .binding_values(surface.bindings.iter().map(String::as_str));
-    surface.set_initial_binding_values(values);
+        .binding_snapshot(surface.bindings.iter().map(String::as_str));
+    surface.set_initial_binding_values(snapshot.values);
+    surface.set_stale_bindings(snapshot.stale_keys);
 }
 
 fn revise_surface_record(
@@ -1197,13 +1281,20 @@ fn revise_surface_record(
     aios::surface::verify_value_fidelity(&html, &evidence)
         .map_err(|error| format!("surface revision fidelity check failed: {error}"))?;
     let bindings = aios::surface::declared_bindings(&html);
-    let values = facade
+    let snapshot = facade
         .coordinator
         .state_store
         .read()
         .expect("state store lock")
-        .binding_values(bindings.iter().map(String::as_str));
-    surfaces.revise(id, expected_revision, intent, html, values)
+        .binding_snapshot(bindings.iter().map(String::as_str));
+    surfaces.revise(
+        id,
+        expected_revision,
+        intent,
+        html,
+        snapshot.values,
+        snapshot.stale_keys,
+    )
 }
 
 /// Translate collector-owned observations into the presentation-only delta
@@ -1214,18 +1305,18 @@ fn emit_surface_deltas(
     facade: &Facade,
     surfaces: &mut SurfaceRuntime,
 ) -> bool {
-    let values = facade
+    let snapshot = facade
         .coordinator
         .state_store
         .read()
         .expect("state store lock")
-        .binding_values(
+        .binding_snapshot(
             surfaces
                 .all()
                 .iter()
                 .flat_map(|surface| surface.bindings.iter().map(String::as_str)),
         );
-    let deltas = surfaces.apply_binding_values(&values);
+    let deltas = surfaces.apply_binding_snapshot(&snapshot.values, &snapshot.stale_keys);
     if deltas.is_empty() {
         return false;
     }

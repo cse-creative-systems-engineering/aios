@@ -37,6 +37,8 @@ pub struct StoredSurface {
     #[serde(default)]
     pub binding_values: std::collections::BTreeMap<String, String>,
     #[serde(default)]
+    pub stale_bindings: Vec<String>,
+    #[serde(default)]
     pub data_revision: u64,
 }
 
@@ -50,6 +52,7 @@ impl From<&crate::surface::SurfaceRecord> for StoredSurface {
             layout: surface.layout.clone(),
             bindings: surface.bindings.clone(),
             binding_values: surface.binding_values.clone(),
+            stale_bindings: surface.stale_bindings.clone(),
             data_revision: surface.data_revision,
         }
     }
@@ -68,6 +71,7 @@ impl From<StoredSurface> for crate::surface::SurfaceRecord {
             record.bindings = surface.bindings;
         }
         record.binding_values = surface.binding_values;
+        record.stale_bindings = surface.stale_bindings;
         record.data_revision = surface.data_revision;
         record
     }

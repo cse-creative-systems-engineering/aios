@@ -177,6 +177,45 @@ describe('Aios native desktop surface flow', () => {
     assert.equal(await revisedHost.getAttribute('data-surface-id'), surfaceId, 'revision must retain the targeted surface identity');
     assert.equal((await $$('.surface-host')).length, themes.length, 'revision must not replace another surface');
 
+    // Minimize is not close: it removes the desktop input region but retains
+    // the exact backend-owned record. Restore is intentionally driven from
+    // the resident sidebar, proving canvas visibility can recover without a
+    // generic current-surface pointer.
+    await revisedHost.$('[data-minimize]').click();
+    await browser.waitUntil(async () => !(await $(`[data-surface-id="${surfaceId}"]`).isExisting()), {
+      timeout: 10_000,
+      timeoutMsg: 'minimized surface remained on the canvas',
+    });
+    await browser.switchToWindow(sidebar);
+    await $('.rail-btn[data-section="surfaces"]').click();
+    const record = await $(`[data-surface-record="${surfaceId}"]`);
+    await record.waitForDisplayed({ timeout: 10_000 });
+    assert.match(await record.getText(), /minimized/, 'sidebar should expose retained minimized lifecycle state');
+    await record.$('[data-surface-show]').click();
+    canvas = await withWindowContaining(`[data-surface-id="${surfaceId}"]`, async (handle) => handle);
+    await browser.switchToWindow(canvas);
+    const restoredHost = await $(`[data-surface-id="${surfaceId}"]`);
+    assert.equal(Number(await restoredHost.getAttribute('data-surface-revision')), visualRevisionBefore + 1, 'restore must not revise the model-authored surface');
+
+    // A user resize persists as lifecycle data, rather than a generated
+    // template dimension. Reloading the canvas exercises restore from the
+    // backend record after the webview loses its ephemeral JS state.
+    const resize = await restoredHost.$('[data-resize]');
+    const beforeSize = await restoredHost.getSize();
+    await browser.execute((element) => {
+      element.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerId: 41, clientX: 10, clientY: 10 }));
+      element.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, button: 0, pointerId: 41, clientX: 70, clientY: 45 }));
+      element.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, button: 0, pointerId: 41, clientX: 70, clientY: 45 }));
+    }, resize);
+    await browser.waitUntil(async () => (await restoredHost.getSize()).width >= beforeSize.width + 50, {
+      timeout: 10_000,
+      timeoutMsg: 'surface resize did not change the visible presentation size',
+    });
+    await browser.refresh();
+    const restartedHost = await $(`[data-surface-id="${surfaceId}"]`);
+    await restartedHost.waitForDisplayed({ timeout: 15_000 });
+    assert.ok((await restartedHost.getSize()).width >= beforeSize.width + 50, 'canvas restart must restore the user-selected size');
+
     while (await $('[data-close]').isExisting()) {
       await $('[data-close]').click();
       await browser.pause(100);

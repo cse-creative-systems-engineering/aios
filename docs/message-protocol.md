@@ -145,7 +145,20 @@ keys declared by `data-aios` in that surface's already validated HTML. The
 canvas replaces matching text without regenerating or reparsing the
 model-authored fragment. `data_revision` is monotonic per surface and is
 independent of visual `revision`; a stale, missing, or out-of-order delta is
-ignored, leaving the last valid presentation visible.
+ignored, leaving the last valid presentation visible. `stale_bindings` contains
+only declared keys whose observations expired: it does not replace their last
+verified values, but the canvas must visibly mark matching elements stale.
+
+### 2.1a Surface lifecycle messages
+
+`set_surface_visibility { id, visible }` and `focus_surface { id }` are typed
+commands for backend-owned lifecycle state. They return the complete changed
+`SurfaceRecord` and emit `surface_lifecycle` to both desktop webviews. A
+successful restore raises the record in z-order and shows the canvas; minimize
+retains it durably but removes it from the canvas input shape. `surface_removed`
+contains only an ID and tells both views to discard a closed record. None of
+these lifecycle changes advances visual `revision` or grants generated HTML an
+IPC capability.
 
 ### 2.1 Surface revision request
 
