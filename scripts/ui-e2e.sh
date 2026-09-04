@@ -2,9 +2,9 @@
 # End-to-end UI test for the Aios desktop app.
 #
 # Builds the app and frontend, then drives the real binary over WebDriver the
-# way a user would: sidebar prompt -> canvas window opens -> surface verified
-# -> window closed, repeated across system metric themes. Any fallback render
-# or missing surface fails the run.
+# way a user would: add provider -> enter credential -> discover and assign
+# role models -> chat -> canvas surface -> close, repeated across themes. Any
+# fallback render, leaked credential, or missing user-visible step fails.
 #
 # Requires: a Wayland/X11 desktop session, cargo, npm, and the dependencies
 # installed by `npm install`. The WebDriver server is embedded in the test
@@ -35,11 +35,12 @@ echo "[ui-e2e] building app binary and local model stub"
 cargo build --manifest-path src-tauri/Cargo.toml --features webdriver
 cargo build --bin stub_provider
 
-stub_log="$(mktemp)"
-config="$(mktemp --suffix=.toml)"
+test_dir="$(mktemp -d)"
+stub_log="$test_dir/stub-provider.log"
+config="$test_dir/aios.toml"
 cleanup() {
     if [[ -n "${stub_pid:-}" ]]; then kill "$stub_pid" 2>/dev/null || true; fi
-    rm -f "$stub_log" "$config"
+    rm -rf -- "$test_dir"
 }
 trap cleanup EXIT
 
@@ -55,25 +56,12 @@ if [[ -z "$stub_port" ]]; then
     exit 1
 fi
 cat >"$config" <<EOF
-[[provider]]
-id = "stub"
-kind = "openai-compatible"
-tier = "internet"
-endpoint = "http://127.0.0.1:$stub_port"
-model = "stub-model"
-http_timeout_ms = 5000
-
-[roles]
-chat = { provider = "stub", model = "stub-model" }
-surface = { provider = "stub", model = "stub-model" }
-verification = { provider = "stub", model = "stub-model" }
-
 [shell]
 max_tokens = 1024
 history_len = 3
 EOF
 
 echo "[ui-e2e] running embedded WebDriver desktop suite"
-AIOS_APP_BIN="$repo/src-tauri/target/debug/aios-tauri" AIOS_CONFIG="$config" npm run test:ui
+AIOS_APP_BIN="$repo/src-tauri/target/debug/aios-tauri" AIOS_CONFIG="$config" AIOS_TEST_PROVIDER_ENDPOINT="http://127.0.0.1:$stub_port" npm run test:ui
 
 echo "[ui-e2e] ok"

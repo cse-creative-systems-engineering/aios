@@ -46,6 +46,15 @@ external WebKit driver. A generated surface still receives a static evidence
 snapshot; versioned state deltas and in-place binding replacement are the next
 ADR-0012 slice.
 
+The default harness is self-contained: it uses a local OpenAI-compatible
+fixture and a unique temporary configuration/session directory, then performs
+the visible provider-add, credential, model-discovery, per-role assignment,
+chat, multi-surface, and close journey. An opt-in OpenRouter harness follows
+the same controls with the operator's local key, dynamically chooses a
+discovered model ending in `:free`, and completes a real chat request. That
+live suite is intentionally separate from the default test run because it
+uses a real provider and its free-model availability is external state.
+
 The remaining lifecycle requirements are:
 
 - revisioned updates to an existing surface;

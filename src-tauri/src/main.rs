@@ -5,9 +5,9 @@ use aios::surface::{SurfaceLayout, SurfaceRecord, SurfaceRuntime};
 #[cfg(target_os = "linux")]
 use gdk::prelude::*;
 #[cfg(target_os = "linux")]
-use gtk::prelude::*;
-#[cfg(target_os = "linux")]
 use gtk::cairo::{RectangleInt, Region};
+#[cfg(target_os = "linux")]
+use gtk::prelude::*;
 #[cfg(target_os = "linux")]
 use gtk_layer_shell::{Edge, Layer, LayerShell};
 use serde::{Deserialize, Serialize};
@@ -351,10 +351,19 @@ async fn update_surface_layout(
     let requests = state.requests.clone();
     tokio::task::spawn_blocking(move || {
         let (response_tx, response_rx) = mpsc::channel();
-        requests.send(BackendRequest::UpdateSurfaceLayout { id, layout, response: response_tx })
+        requests
+            .send(BackendRequest::UpdateSurfaceLayout {
+                id,
+                layout,
+                response: response_tx,
+            })
             .map_err(|_| "backend worker is unavailable".to_string())?;
-        response_rx.recv().map_err(|_| "backend worker closed the response channel".to_string())?
-    }).await.map_err(|error| format!("surface worker failed: {error}"))?
+        response_rx
+            .recv()
+            .map_err(|_| "backend worker closed the response channel".to_string())?
+    })
+    .await
+    .map_err(|error| format!("surface worker failed: {error}"))?
 }
 
 #[tauri::command]
@@ -362,10 +371,17 @@ async fn list_surfaces(state: tauri::State<'_, AppState>) -> Result<Vec<SurfaceR
     let requests = state.requests.clone();
     tokio::task::spawn_blocking(move || {
         let (response_tx, response_rx) = mpsc::channel();
-        requests.send(BackendRequest::ListSurfaces { response: response_tx })
+        requests
+            .send(BackendRequest::ListSurfaces {
+                response: response_tx,
+            })
             .map_err(|_| "backend worker is unavailable".to_string())?;
-        response_rx.recv().map_err(|_| "backend worker closed the response channel".to_string())?
-    }).await.map_err(|error| format!("surface worker failed: {error}"))?
+        response_rx
+            .recv()
+            .map_err(|_| "backend worker closed the response channel".to_string())?
+    })
+    .await
+    .map_err(|error| format!("surface worker failed: {error}"))?
 }
 
 #[tauri::command]
@@ -378,9 +394,7 @@ fn backend_status(state: tauri::State<'_, AppState>) -> Result<BackendStatus, St
 }
 
 #[tauri::command]
-fn sidebar_status(
-    state: tauri::State<'_, AppState>,
-) -> Result<SidebarStatusResponse, String> {
+fn sidebar_status(state: tauri::State<'_, AppState>) -> Result<SidebarStatusResponse, String> {
     state
         .sidebar_status
         .lock()
@@ -408,12 +422,20 @@ struct DiscoveredModel {
 
 #[tauri::command]
 fn provider_catalog() -> Vec<CatalogProviderEntry> {
+    // The native WebDriver suite starts with no configured providers and
+    // drives the same catalog form a person uses. Its local OpenAI-style
+    // fixture supplies this override, leaving the production catalog intact.
+    #[cfg(feature = "webdriver")]
+    let test_endpoint = std::env::var("AIOS_TEST_PROVIDER_ENDPOINT").ok();
+    #[cfg(not(feature = "webdriver"))]
+    let test_endpoint: Option<String> = None;
+
     aios::coordinator::PROVIDER_CATALOG
         .iter()
         .map(|p| CatalogProviderEntry {
             id: p.id.into(),
             label: p.label.into(),
-            endpoint: p.endpoint.into(),
+            endpoint: test_endpoint.clone().unwrap_or_else(|| p.endpoint.into()),
             kind: p.kind.into(),
             tier: p.tier.into(),
         })
@@ -465,9 +487,7 @@ async fn discover_models(
 }
 
 #[tauri::command]
-fn system_graph(
-    state: tauri::State<'_, AppState>,
-) -> Result<SystemGraphSnapshot, String> {
+fn system_graph(state: tauri::State<'_, AppState>) -> Result<SystemGraphSnapshot, String> {
     state
         .graph_snapshot
         .lock()
@@ -517,10 +537,7 @@ async fn add_provider(
 }
 
 #[tauri::command]
-async fn remove_provider(
-    id: String,
-    state: tauri::State<'_, AppState>,
-) -> Result<(), String> {
+async fn remove_provider(id: String, state: tauri::State<'_, AppState>) -> Result<(), String> {
     let requests = state.requests.clone();
     tokio::task::spawn_blocking(move || {
         let (response_tx, response_rx) = mpsc::channel();
@@ -651,7 +668,10 @@ fn get_approval_mode(state: tauri::State<'_, AppState>) -> String {
 }
 #[tauri::command]
 fn set_approval_mode(mode: String, state: tauri::State<'_, AppState>) -> String {
-    let m = match mode.as_str() { "default" | "auto" | "yolo" => mode, _ => "auto".to_string() };
+    let m = match mode.as_str() {
+        "default" | "auto" | "yolo" => mode,
+        _ => "auto".to_string(),
+    };
     *state.approval_mode.lock().unwrap() = m.clone();
     m
 }
@@ -674,7 +694,7 @@ async fn submit_prompt(
         let response = response_rx
             .recv()
             .map_err(|_| "backend worker closed the response channel".to_string())?;
-            if let Ok(ref payload) = response {
+        if let Ok(ref payload) = response {
             if payload.experimental_html.is_some() {
                 if let Err(error) = set_input_region(app.clone(), Vec::new()) {
                     eprintln!("Aios canvas: failed to clear input region: {error}");
@@ -697,7 +717,8 @@ async fn submit_prompt(
     .map_err(|error| format!("prompt worker failed: {error}"))?
 }
 
-fn main() {    #[cfg(target_os = "linux")]
+fn main() {
+    #[cfg(target_os = "linux")]
     prefer_x11_when_requested();
 
     let builder = tauri::Builder::default();
@@ -1013,7 +1034,10 @@ fn main() {    #[cfg(target_os = "linux")]
 
 #[allow(clippy::too_many_arguments)]
 fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 fn handle_prompt(
@@ -1039,7 +1063,10 @@ fn handle_prompt(
     // bypasses the LLM fidelity gate (the content is the staged file content
     // itself, not an invented value) and shows the user the actual artifact.
     let artifact_html = {
-        let file_evidence: Vec<_> = evidence.iter().filter(|r| r.tool.starts_with("files.") && r.text.contains("committed=true")).collect();
+        let file_evidence: Vec<_> = evidence
+            .iter()
+            .filter(|r| r.tool.starts_with("files.") && r.text.contains("committed=true"))
+            .collect();
         if file_evidence.is_empty() {
             None
         } else {
@@ -1054,7 +1081,15 @@ fn handle_prompt(
                 let mut found = None;
                 for name in candidates {
                     if prompt.to_ascii_lowercase().contains(name) {
-                        let ws = std::env::var("AIOS_WORKSPACE").map(std::path::PathBuf::from).unwrap_or_else(|_| std::env::var("HOME").map(|h| std::path::PathBuf::from(h).join("workspace")).unwrap_or_else(|_| std::path::PathBuf::from("/tmp/aios-workspace")));
+                        let ws = std::env::var("AIOS_WORKSPACE")
+                            .map(std::path::PathBuf::from)
+                            .unwrap_or_else(|_| {
+                                std::env::var("HOME")
+                                    .map(|h| std::path::PathBuf::from(h).join("workspace"))
+                                    .unwrap_or_else(|_| {
+                                        std::path::PathBuf::from("/tmp/aios-workspace")
+                                    })
+                            });
                         let path = ws.join(name);
                         if let Ok(content) = std::fs::read_to_string(&path) {
                             let snippet = content.chars().take(400).collect::<String>();
@@ -1066,13 +1101,29 @@ fn handle_prompt(
                 // Fallback: try to extract file path from prompt directly
                 if found.is_none() {
                     for token in prompt.split_whitespace() {
-                        let t = token.trim_matches(|c: char| c == '"' || c == '\'' || c == ',' || c == ';');
+                        let t = token
+                            .trim_matches(|c: char| c == '"' || c == '\'' || c == ',' || c == ';');
                         let lower = t.to_ascii_lowercase();
-                        if lower.ends_with(".py") || lower.ends_with(".txt") || lower.ends_with(".html") || lower.ends_with(".md") {
-                            let name = t.trim_start_matches("./").trim_start_matches('/').trim_start_matches("file:/workspace/");
+                        if lower.ends_with(".py")
+                            || lower.ends_with(".txt")
+                            || lower.ends_with(".html")
+                            || lower.ends_with(".md")
+                        {
+                            let name = t
+                                .trim_start_matches("./")
+                                .trim_start_matches('/')
+                                .trim_start_matches("file:/workspace/");
                             // name may still contain file:/workspace prefix handling
                             let bare = name.split('/').last().unwrap_or(name);
-                            let ws = std::env::var("AIOS_WORKSPACE").map(std::path::PathBuf::from).unwrap_or_else(|_| std::env::var("HOME").map(|h| std::path::PathBuf::from(h).join("workspace")).unwrap_or_else(|_| std::path::PathBuf::from("/tmp/aios-workspace")));
+                            let ws = std::env::var("AIOS_WORKSPACE")
+                                .map(std::path::PathBuf::from)
+                                .unwrap_or_else(|_| {
+                                    std::env::var("HOME")
+                                        .map(|h| std::path::PathBuf::from(h).join("workspace"))
+                                        .unwrap_or_else(|_| {
+                                            std::path::PathBuf::from("/tmp/aios-workspace")
+                                        })
+                                });
                             let path = ws.join(bare);
                             if let Ok(content) = std::fs::read_to_string(&path) {
                                 let snippet = content.chars().take(400).collect::<String>();
@@ -1085,7 +1136,11 @@ fn handle_prompt(
                 found
             };
             let preview_html = if let Some((name, snippet)) = preview {
-                format!(r#"<div style="margin-top:8px;padding:8px;background:#020617;border:1px solid #1e293b;border-radius:8px"><div style="font-size:11px;opacity:0.7;margin-bottom:4px">{}</div><pre style="margin:0;white-space:pre-wrap;word-break:break-all;font-size:11px">{}</pre></div>"#, html_escape(name), html_escape(&snippet))
+                format!(
+                    r#"<div style="margin-top:8px;padding:8px;background:#020617;border:1px solid #1e293b;border-radius:8px"><div style="font-size:11px;opacity:0.7;margin-bottom:4px">{}</div><pre style="margin:0;white-space:pre-wrap;word-break:break-all;font-size:11px">{}</pre></div>"#,
+                    html_escape(name),
+                    html_escape(&snippet)
+                )
             } else {
                 String::new()
             };
@@ -1093,7 +1148,12 @@ fn handle_prompt(
                 r#"<div style="width:420px;min-height:120px;padding:16px;background:#0b1220;color:#e2e8f0;border:1px solid #1e293b;border-radius:12px;font-family:system-ui,sans-serif" data-aios-drag-region><div style="font-weight:600;margin-bottom:8px">Artifact — staged file</div><div style="font-size:12px;opacity:0.9">{}</div>{}<div style="margin-top:10px;font-size:11px;opacity:0.6">Staged via broker → FileCheckpoint → health verified → committed. Check ~/workspace.</div></div>"#,
                 body, preview_html
             );
-            let card = SurfaceRecord::new(next_surface_id(), prompt.clone(), html, surfaces.next_layout());
+            let card = SurfaceRecord::new(
+                next_surface_id(),
+                prompt.clone(),
+                html,
+                surfaces.next_layout(),
+            );
             surfaces.open(card.clone());
             Some(card)
         }
@@ -1104,7 +1164,10 @@ fn handle_prompt(
     } else {
         let gaps = aios::surface::coverage_gaps(&prompt, &evidence);
         if !gaps.is_empty() {
-            eprintln!("Aios canvas: coverage gap for {}; no surface", gaps.join(", "));
+            eprintln!(
+                "Aios canvas: coverage gap for {}; no surface",
+                gaps.join(", ")
+            );
             artifact_html
         } else {
             emit_graph_activity(worker_handle, GraphPhase::Composing, &["composer"]);
@@ -1125,7 +1188,12 @@ fn handle_prompt(
                                 Some((&routing, html.len())),
                                 None,
                             );
-                            let card = SurfaceRecord::new(next_surface_id(), prompt.clone(), html, surfaces.next_layout());
+                            let card = SurfaceRecord::new(
+                                next_surface_id(),
+                                prompt.clone(),
+                                html,
+                                surfaces.next_layout(),
+                            );
                             surfaces.open(card.clone());
                             // Prefer the LLM surface, but keep artifact as second card if present.
                             if artifact_html.is_some() {
@@ -1137,20 +1205,20 @@ fn handle_prompt(
                         }
                         Err(error) => {
                             eprintln!("Aios canvas: fidelity check failed: {error}");
-                            write_surface_trace(
-                                &prompt,
-                                &answer,
-                                &evidence,
-                                None,
-                                Some(&error),
-                            );
+                            write_surface_trace(&prompt, &answer, &evidence, None, Some(&error));
                             artifact_html
                         }
                     }
                 }
                 Err(error) => {
                     eprintln!("Aios canvas: composition failed: {error}");
-                    write_surface_trace(&prompt, &answer, &evidence, None, Some(&error.to_string()));
+                    write_surface_trace(
+                        &prompt,
+                        &answer,
+                        &evidence,
+                        None,
+                        Some(&error.to_string()),
+                    );
                     artifact_html
                 }
             }
@@ -1179,12 +1247,25 @@ fn handle_prompt(
 }
 
 fn persist_surfaces(surfaces: &[SurfaceRecord]) {
-    let config_dir = std::env::var("AIOS_CONFIG").map(std::path::PathBuf::from).map(|p| p.parent().map(|d| d.to_path_buf()).unwrap_or(p)).unwrap_or_else(|_| aios::config::AiosConfig::default_path().parent().map(|d| d.to_path_buf()).unwrap_or_else(|| std::path::PathBuf::from("/tmp")));
+    let config_dir = std::env::var("AIOS_CONFIG")
+        .map(std::path::PathBuf::from)
+        .map(|p| p.parent().map(|d| d.to_path_buf()).unwrap_or(p))
+        .unwrap_or_else(|_| {
+            aios::config::AiosConfig::default_path()
+                .parent()
+                .map(|d| d.to_path_buf())
+                .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+        });
     let store = aios::session::SessionStore::new(&config_dir);
     let today = aios::session::SessionStore::today();
     let mut snapshot = aios::session::SessionSnapshot {
-        id: today.clone(), history: Vec::new(), tool_results: Vec::new(),
-        surfaces: surfaces.iter().map(aios::session::StoredSurface::from).collect(),
+        id: today.clone(),
+        history: Vec::new(),
+        tool_results: Vec::new(),
+        surfaces: surfaces
+            .iter()
+            .map(aios::session::StoredSurface::from)
+            .collect(),
         updated_at: aios::protocol::now(),
     };
     if let Some(existing) = store.load(&today) {
@@ -1306,10 +1387,7 @@ fn sidebar_status_snapshot(
     })
 }
 
-fn refresh_graph_snapshot(
-    target: &Arc<Mutex<Option<SystemGraphSnapshot>>>,
-    facade: &Facade,
-) {
+fn refresh_graph_snapshot(target: &Arc<Mutex<Option<SystemGraphSnapshot>>>, facade: &Facade) {
     let snapshot = build_graph_snapshot(facade);
     if let Ok(mut current) = target.lock() {
         *current = Some(snapshot);
@@ -1368,7 +1446,11 @@ fn build_graph_snapshot(facade: &Facade) -> SystemGraphSnapshot {
         nodes
             .first()
             .filter(|node| node.health != aios::protocol::HealthState::Unknown)
-            .or_else(|| nodes.iter().find(|node| node.health != aios::protocol::HealthState::Unknown))
+            .or_else(|| {
+                nodes
+                    .iter()
+                    .find(|node| node.health != aios::protocol::HealthState::Unknown)
+            })
             .map(|n| format!("{:?}", n.health))
             .unwrap_or_else(|| "Unknown".into())
     };
@@ -1453,7 +1535,10 @@ fn build_graph_snapshot(facade: &Facade) -> SystemGraphSnapshot {
     }
 
     // Provider sub-nodes (max 3 to fit layout)
-    let mut provider_iter = provider_nodes.iter().chain(local_nodes.iter()).chain(lan_nodes.iter());
+    let mut provider_iter = provider_nodes
+        .iter()
+        .chain(local_nodes.iter())
+        .chain(lan_nodes.iter());
     for (i, provider) in provider_iter.by_ref().take(3).enumerate() {
         let pid = format!("provider:{i}");
         nodes.push(GraphNode {
@@ -1505,7 +1590,10 @@ fn build_graph_snapshot(facade: &Facade) -> SystemGraphSnapshot {
                 format!("{}: {:?}", package_id, node.health),
             )
         } else {
-            ("Unknown".into(), format!("{}: not instantiated", package_id))
+            (
+                "Unknown".into(),
+                format!("{}: not instantiated", package_id),
+            )
         };
 
         nodes.push(GraphNode {
@@ -1813,14 +1901,9 @@ fn x11_work_area(
     let Ok(atom) = atom_cookie.reply() else {
         return fallback;
     };
-    let Ok(property_cookie) = connection.get_property(
-        false,
-        root,
-        atom.atom,
-        AtomEnum::CARDINAL,
-        0,
-        4,
-    ) else {
+    let Ok(property_cookie) =
+        connection.get_property(false, root, atom.atom, AtomEnum::CARDINAL, 0, 4)
+    else {
         return fallback;
     };
     let Ok(property) = property_cookie.reply() else {
@@ -1850,8 +1933,11 @@ fn prefer_x11_when_requested() {
     // Native Wayland is the default. EWMH dock placement requires X11, so
     // retain that path only as an explicit compatibility opt-in:
     // AIOS_DISPLAY_BACKEND=x11. An explicit GDK_BACKEND always wins.
-    if wayland && x11 && backend.is_none()
-        && std::env::var("AIOS_DISPLAY_BACKEND").ok().as_deref() == Some("x11") {
+    if wayland
+        && x11
+        && backend.is_none()
+        && std::env::var("AIOS_DISPLAY_BACKEND").ok().as_deref() == Some("x11")
+    {
         std::env::set_var("GDK_BACKEND", "x11");
         eprintln!("Aios sidebar: using requested XWayland dock fallback");
     }

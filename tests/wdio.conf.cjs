@@ -5,7 +5,10 @@ const appBinaryPath = process.env.AIOS_APP_BIN || path.join(root, 'src-tauri', '
 
 exports.config = {
   runner: 'local',
-  specs: [path.join(root, 'tests', 'wdio', '*.e2e.cjs')],
+  // The deterministic suite is the default CI-safe regression. The live
+  // OpenRouter suite opts in explicitly through AIOS_UI_SPEC because it
+  // consumes a real credential and must never run in parallel with it.
+  specs: [process.env.AIOS_UI_SPEC || path.join(root, 'tests', 'wdio', 'live-surfaces.e2e.cjs')],
   maxInstances: 1,
   services: [['@wdio/tauri-service', {
     appBinaryPath,
