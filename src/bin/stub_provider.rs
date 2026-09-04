@@ -50,9 +50,8 @@ fn main() {
             body = String::from_utf8_lossy(&buf).into_owned();
         }
         let response_body = respond(&body);
-        let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{response_body}"
-        );
+        let response =
+            format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{response_body}");
         let _ = stream.write_all(response.as_bytes());
         let _ = stream.flush();
     }
@@ -72,10 +71,42 @@ fn openai_response(content: &str) -> String {
 fn respond(body: &str) -> String {
     if body.contains("generative UI designer") {
         openai_response(&themed_surface_html(body))
-    } else if body.contains("tool health result") {
+    } else if body.contains("tool ") && body.contains(" result") {
         openai_response(STUB_ANSWER)
     } else {
-        openai_response(r#"{"tool_calls":[{"tool":"health","args":""}]}"#)
+        let tool = user_intent_from(body)
+            .map(|intent| planner_tool_for(&intent))
+            .unwrap_or("health");
+        openai_response(&format!(
+            r#"{{"tool_calls":[{{"tool":"{tool}","args":""}}]}}"#
+        ))
+    }
+}
+
+fn planner_tool_for(intent: &str) -> &'static str {
+    let intent = intent.to_ascii_lowercase();
+    if ["disk", "drive", "storage", "filesystem", "partition"]
+        .iter()
+        .any(|word| intent.contains(word))
+    {
+        "storage.status"
+    } else if ["memory", "ram", "swap"]
+        .iter()
+        .any(|word| intent.contains(word))
+    {
+        "memory.status"
+    } else if ["cpu", "process", "load"]
+        .iter()
+        .any(|word| intent.contains(word))
+    {
+        "processes.status"
+    } else if ["network", "wifi", "internet", "ethernet", "wireless"]
+        .iter()
+        .any(|word| intent.contains(word))
+    {
+        "network.status"
+    } else {
+        "health"
     }
 }
 
@@ -146,11 +177,28 @@ fn user_intent_from(body: &str) -> Option<String> {
 const FIELDS_HEADER: &str = "Available fields (use these exact names in data-aios):\n";
 
 fn fields_from_body(body: &str) -> Vec<(String, String)> {
-    let Some(start) = body.find(FIELDS_HEADER) else {
+    let value: serde_json::Value = match serde_json::from_str(body) {
+        Ok(value) => value,
+        Err(_) => return Vec::new(),
+    };
+    let Some(content) = value
+        .get("messages")
+        .and_then(|messages| messages.as_array())
+        .and_then(|messages| {
+            messages
+                .iter()
+                .rev()
+                .find(|message| message.get("role").and_then(|role| role.as_str()) == Some("user"))
+        })
+        .and_then(|message| message.get("content").and_then(|content| content.as_str()))
+    else {
+        return Vec::new();
+    };
+    let Some(start) = content.find(FIELDS_HEADER) else {
         return Vec::new();
     };
     let mut fields = Vec::new();
-    for line in body[start + FIELDS_HEADER.len()..].lines() {
+    for line in content[start + FIELDS_HEADER.len()..].lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with("Previous generated design:") {
             break;

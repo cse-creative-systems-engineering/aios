@@ -700,7 +700,11 @@ async fn submit_prompt(
 fn main() {    #[cfg(target_os = "linux")]
     prefer_x11_when_requested();
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(feature = "webdriver")]
+    let builder = builder.plugin(tauri_plugin_wdio_webdriver::init());
+
+    builder
         .setup(|app| {
             if let Some(window) = app.get_webview_window("sidebar") {
                 #[cfg(target_os = "linux")]

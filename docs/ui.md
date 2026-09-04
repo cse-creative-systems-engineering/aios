@@ -38,14 +38,13 @@ system state. Generated presentation remains outside the authority boundary.
 
 ## Current Limits
 
-Multiple generated surfaces, independent movement, close, and unioned
-click-through are now shipped. The current path is still fragile because the
-frontend owns placement in memory while the Tauri worker separately owns the
-HTML list; a generated surface also receives a static evidence snapshot. The
-next architecture is the A2UI runtime in ADR-0012 and
-`docs/milestones/0006-live-system-state-a2ui-runtime.md`. It will preserve
-unrestricted A2UI presentation while making identity, revision, bindings,
-layout, persistence, and failure recovery explicit runtime concerns.
+Multiple generated surfaces, independent movement, close, unioned
+click-through, backend-owned placement, and session restore are now shipped.
+The desktop regression harness drives the real native Tauri app through its
+embedded WebDriver server, so it works in the Wayland path without the obsolete
+external WebKit driver. A generated surface still receives a static evidence
+snapshot; versioned state deltas and in-place binding replacement are the next
+ADR-0012 slice.
 
 The remaining lifecycle requirements are:
 

@@ -6,7 +6,9 @@
 # -> window closed, repeated across system metric themes. Any fallback render
 # or missing surface fails the run.
 #
-# Requires: a display, cargo, npm, `tauri-driver`, and `WebKitWebDriver`.
+# Requires: a Wayland/X11 desktop session, cargo, npm, and the dependencies
+# installed by `npm install`. The WebDriver server is embedded in the test
+# build of Aios; no tauri-driver or WebKitWebDriver process is involved.
 set -euo pipefail
 
 repo="$(cd "$(dirname "$0")/.." && pwd)"
@@ -29,11 +31,49 @@ done
 echo "[ui-e2e] building frontend (embedded into the app binary)"
 npm run build
 
-echo "[ui-e2e] building app binary"
-cargo build --manifest-path src-tauri/Cargo.toml
+echo "[ui-e2e] building app binary and local model stub"
+cargo build --manifest-path src-tauri/Cargo.toml --features webdriver
+cargo build --bin stub_provider
 
-echo "[ui-e2e] running WebDriver suite (this takes a while)"
-AIOS_APP_BIN="$repo/src-tauri/target/debug/aios-tauri" \
-    cargo test --test ui_e2e -- --ignored --nocapture
+stub_log="$(mktemp)"
+config="$(mktemp --suffix=.toml)"
+cleanup() {
+    if [[ -n "${stub_pid:-}" ]]; then kill "$stub_pid" 2>/dev/null || true; fi
+    rm -f "$stub_log" "$config"
+}
+trap cleanup EXIT
+
+"$repo/target/debug/stub_provider" >"$stub_log" 2>&1 &
+stub_pid=$!
+for _ in $(seq 1 100); do
+    if [[ -s "$stub_log" ]]; then break; fi
+    sleep 0.1
+done
+stub_port="$(sed -n 's/.*:\([0-9][0-9]*\)$/\1/p' "$stub_log" | head -n 1)"
+if [[ -z "$stub_port" ]]; then
+    echo "[ui-e2e] stub provider did not announce a port" >&2
+    exit 1
+fi
+cat >"$config" <<EOF
+[[provider]]
+id = "stub"
+kind = "openai-compatible"
+tier = "internet"
+endpoint = "http://127.0.0.1:$stub_port"
+model = "stub-model"
+http_timeout_ms = 5000
+
+[roles]
+chat = { provider = "stub", model = "stub-model" }
+surface = { provider = "stub", model = "stub-model" }
+verification = { provider = "stub", model = "stub-model" }
+
+[shell]
+max_tokens = 1024
+history_len = 3
+EOF
+
+echo "[ui-e2e] running embedded WebDriver desktop suite"
+AIOS_APP_BIN="$repo/src-tauri/target/debug/aios-tauri" AIOS_CONFIG="$config" npm run test:ui
 
 echo "[ui-e2e] ok"
