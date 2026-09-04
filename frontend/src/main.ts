@@ -1,6 +1,6 @@
 import '../index.css';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
+import { emit, listen } from '@tauri-apps/api/event';
 import { currentMonitor, getCurrentWindow } from '@tauri-apps/api/window';
 import { PhysicalPosition } from '@tauri-apps/api/dpi';
 import { isSectionId, providerCatalog, renderSidebar, roleState, rolesCatalog, settingsForm, updateProviderCatalog, updateRolesCatalog, updateSettingsProviders, type EvidenceItem, type FlightProgress, type SectionId, type SidebarMessage, type SidebarStatus, type SystemGraphSnapshot } from './sidebar';
@@ -49,6 +49,7 @@ let dragState: {
 } | null = null;
 let resizeState: { pointerId: number; startX: number; startY: number; width: number; height: number; surfaceId: string; handle: HTMLElement } | null = null;
 let surfaceIndex: SurfaceCard[] = [];
+let revisionTarget: { id: string; expectedRevision: number } | null = null;
 const messages: SidebarMessage[] = [{
   role: 'assistant',
   text: 'I’m ready to investigate your system. Ask me what you would like to know.',
@@ -186,6 +187,10 @@ function bindSidebar(): void {
       void retryLastRequest();
     });
   });
+  document.querySelector<HTMLButtonElement>('[data-cancel-surface-revision]')?.addEventListener('click', () => {
+    revisionTarget = null;
+    render();
+  });
   bindSelectCloser();
 }
 
@@ -281,6 +286,7 @@ function render(): void {
         requestInFlight,
         flightProgress,
         hasSurface: lastSurfacePresent,
+        revisionTarget,
         surfaces: surfaceIndex.map((surface) => ({ id: surface.id, revision: surface.revision, visible: surface.layout.visible, staleBindings: surface.staleBindings })),
         graph: graphSnapshot,
         graphError: graphSnapshotError,
@@ -302,7 +308,7 @@ function render(): void {
       button.addEventListener('click', () => void closeSurface(button.dataset.close ?? ''));
     });
     document.querySelectorAll<HTMLButtonElement>('[data-edit]').forEach((button) => {
-      button.addEventListener('click', () => void requestSurfaceRevision(button.dataset.edit ?? ''));
+      button.addEventListener('click', () => void beginSurfaceRevision(button.dataset.edit ?? ''));
     });
     document.querySelectorAll<HTMLButtonElement>('[data-minimize]').forEach((button) => {
       button.addEventListener('click', () => void setSurfaceVisibility(button.dataset.minimize ?? '', false));
@@ -681,7 +687,32 @@ async function submitPrompt(event: SubmitEvent): Promise<void> {
   input.value = '';
   autosizePrompt(input);
   updatePromptSend(input);
-  await runPrompt(text, true);
+  if (revisionTarget) await runSurfaceRevision(text, revisionTarget);
+  else await runPrompt(text, true);
+}
+
+async function runSurfaceRevision(instruction: string, target: { id: string; expectedRevision: number }): Promise<void> {
+  if (requestInFlight) return;
+  requestInFlight = true;
+  messages.push({ role: 'user', text: `Revise surface ${target.id}: ${instruction}`, state: 'complete' });
+  chatScrollMode = 'end';
+  render();
+  try {
+    const revised = await invoke<SurfaceCard>('revise_surface', {
+      id: target.id,
+      expectedRevision: target.expectedRevision,
+      instruction,
+    });
+    surfaceIndex = [...surfaceIndex.filter((surface) => surface.id !== revised.id), revised];
+    messages.push({ role: 'assistant', text: `Updated surface ${revised.id} to revision ${revised.revision}.`, state: 'complete' });
+    revisionTarget = null;
+  } catch (error) {
+    messages.push({ role: 'assistant', text: `I could not revise that surface: ${String(error)}`, state: 'failed' });
+  } finally {
+    requestInFlight = false;
+    chatScrollMode = 'end';
+    render();
+  }
 }
 
 async function retryLastRequest(): Promise<void> {
@@ -838,26 +869,17 @@ async function setSurfaceVisibility(id: string, visible: boolean): Promise<void>
   }
 }
 
-async function requestSurfaceRevision(id: string): Promise<void> {
+async function beginSurfaceRevision(id: string): Promise<void> {
   const surface = findSurface(id);
-  if (!surface || requestInFlight) return;
-  const instruction = window.prompt('Describe how Aios should revise this surface:', '');
-  if (!instruction?.trim()) return;
-  requestInFlight = true;
-  render();
+  if (!surface) return;
   try {
-    const revised = await invoke<SurfaceCard>('revise_surface', {
+    await emit('surface_revision_requested', {
       id: surface.id,
       expectedRevision: surface.revision,
-      instruction: instruction.trim(),
     });
-    surfaces = surfaces.map((candidate) => candidate.id === revised.id ? revised : candidate);
-    surfaceIndex = surfaceIndex.map((candidate) => candidate.id === revised.id ? revised : candidate);
+    await invoke('focus_sidebar');
   } catch (error) {
-    console.error(`[Aios] revise_surface failed: ${String(error)}`);
-  } finally {
-    requestInFlight = false;
-    render();
+    console.error(`[Aios] surface revision handoff failed: ${String(error)}`);
   }
 }
 
@@ -1086,6 +1108,12 @@ if (!isCanvasWindow) {
     surfaceIndex = [...surfaceIndex.filter((surface) => surface.id !== updated.id), updated];
     lastSurfacePresent = surfaceIndex.some((surface) => surface.layout.visible);
     if (activeSection === 'surfaces') render();
+  });
+  void listen<{ id: string; expectedRevision: number }>('surface_revision_requested', (event) => {
+    revisionTarget = event.payload;
+    activeSection = 'chat';
+    render();
+    requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('#prompt')?.focus());
   });
   void listen<string>('surface_removed', (event) => {
     surfaceIndex = surfaceIndex.filter((surface) => surface.id !== event.payload);

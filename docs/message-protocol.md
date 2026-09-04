@@ -169,6 +169,8 @@ record's prior HTML, and atomically replace only the matched record after the
 normal fidelity gate. A revision response is the complete new `SurfaceRecord`;
 it retains ID and layout, increments visual `revision`, and may change the
 declared bindings. This request carries no tool capability or arbitrary IPC.
+A successful response also emits `surface_lifecycle`, allowing a revision
+submitted through the sidebar's Aios composer to update its canvas host.
 
 ### 2.2 Message type registry
 

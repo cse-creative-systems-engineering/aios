@@ -79,11 +79,13 @@ shape and hides the canvas.
 
 ### Surface revision
 
-The canvas supplies an Edit control for each surface. It sends that surface's
-stable ID, the visual revision the client observed, and the user's revision
-instruction to the backend. The backend regenerates only that surface through
-the assigned surface model, with the previous HTML and a fresh scoped
-projection. It validates fidelity before atomically accepting the replacement.
+The canvas supplies an Edit control for each surface. It hands the target's
+stable ID and observed visual revision to Aios's resident chat composer; the
+user describes the revision there, rather than through a browser prompt. The
+backend regenerates only that surface through the assigned surface model, with
+the previous HTML and a fresh scoped projection. It validates fidelity before
+atomically accepting the replacement, then broadcasts the complete record to
+both desktop webviews.
 
 The expected visual revision is an optimistic-concurrency guard: a delayed
 edit is rejected if the target changed, and no generic "current surface"

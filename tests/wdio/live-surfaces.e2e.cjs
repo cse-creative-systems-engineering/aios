@@ -164,8 +164,16 @@ describe('Aios native desktop surface flow', () => {
     assert.equal(await cpuHost.getAttribute('data-surface-id'), surfaceId, 'live update must retain the surface identity');
     assert.ok(Number(await cpuHost.getAttribute('data-aios-data-revision')) > dataRevisionBefore, 'live update should advance data revision only');
 
-    await browser.execute(() => { window.prompt = () => 'make the title neon yellow'; });
     await cpuHost.$('[data-edit]').click();
+    await browser.switchToWindow(sidebar);
+    const revisionPrompt = await $('#prompt');
+    await browser.waitUntil(async () => (await revisionPrompt.getAttribute('placeholder')) === 'Tell Aios how to change this surface...', {
+      timeout: 10_000,
+      timeoutMsg: 'canvas edit did not hand off a targeted revision request to Aios chat',
+    });
+    await revisionPrompt.setValue('make the title neon yellow');
+    await $('.prompt-send').click();
+    await browser.switchToWindow(canvas);
     await browser.waitUntil(async () => {
       const host = await $(`[data-surface-id="${surfaceId}"]`);
       return Number(await host.getAttribute('data-surface-revision')) === visualRevisionBefore + 1;

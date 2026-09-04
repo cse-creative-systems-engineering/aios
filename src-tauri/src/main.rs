@@ -477,9 +477,10 @@ async fn revise_surface(
     expected_revision: u64,
     instruction: String,
     state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
 ) -> Result<SurfaceRecord, String> {
     let requests = state.requests.clone();
-    tokio::task::spawn_blocking(move || {
+    let revised = tokio::task::spawn_blocking(move || {
         let (response_tx, response_rx) = mpsc::channel();
         requests
             .send(BackendRequest::ReviseSurface {
@@ -494,7 +495,11 @@ async fn revise_surface(
             .map_err(|_| "backend worker closed the response channel".to_string())?
     })
     .await
-    .map_err(|error| format!("surface worker failed: {error}"))?
+    .map_err(|error| format!("surface worker failed: {error}"))??;
+    use tauri::Emitter;
+    app.emit("surface_lifecycle", revised.clone())
+        .map_err(|error| format!("could not notify surface revision: {error}"))?;
+    Ok(revised)
 }
 
 /// Embedded-WebDriver-only sample injection. This has no production build

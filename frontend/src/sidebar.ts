@@ -82,6 +82,7 @@ export type SidebarView = {
   requestInFlight: boolean;
   flightProgress: FlightProgress | null;
   hasSurface: boolean;
+  revisionTarget: { id: string; expectedRevision: number } | null;
   surfaces: { id: string; revision: number; visible: boolean; staleBindings: string[] }[];
   graph: SystemGraphSnapshot | null;
 };
@@ -625,10 +626,14 @@ function renderComposer(view: SidebarView): string {
   const hint = view.requestInFlight
     ? 'Waiting for the backend. Send is paused until this request finishes.'
     : '<kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line';
+  const revision = view.revisionTarget
+    ? `<div class="prompt-revision" role="status">Revising surface <strong>${view.revisionTarget.id}</strong> · revision ${view.revisionTarget.expectedRevision}<button type="button" data-cancel-surface-revision>Cancel</button></div>`
+    : '';
+  const placeholder = view.revisionTarget ? 'Tell Aios how to change this surface...' : 'Ask Aios about your system...';
   return `<form class="prompt-form" id="prompt-form">
     <label class="sr-only" for="prompt">Ask Aios</label>
     <div class="prompt-field">
-      <textarea id="prompt" rows="1" placeholder="Ask Aios about your system..."></textarea>
+      <textarea id="prompt" rows="1" placeholder="${placeholder}"></textarea>
       <button type="submit" class="prompt-send" aria-label="Send" disabled>
         <svg viewBox="0 0 18 18" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9l10-5-3 10-2.5-4.5z"/><path d="M4 9l4.5.5"/></svg>
       </button>
@@ -644,7 +649,7 @@ function renderComposer(view: SidebarView): string {
         <button type="button" class="approval-btn" data-approval="yolo" aria-pressed="false">YOLO</button>
       </div>
     </div>
-    <div class="prompt-hint">${hint}</div>
+    ${revision}<div class="prompt-hint">${hint}</div>
   </form>`;
 }
 
