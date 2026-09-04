@@ -4,6 +4,7 @@
 //! topology and ownership, while this store retains timestamped facts and
 //! bounded history for context projections. Neither is an authority boundary.
 
+use crate::gpu_runtime::{GpuRuntimeAdapter, GpuRuntimeSamples};
 use crate::graph::SystemGraph;
 use crate::protocol::{DataClassification, HealthState, Timestamp, now};
 use serde::{Deserialize, Serialize};
@@ -44,6 +45,10 @@ pub struct StateFinding {
     pub observed_from: Timestamp,
     pub observed_to: Timestamp,
     pub source_keys: Vec<String>,
+    #[serde(default)]
+    pub confidence_rule: String,
+    #[serde(default)]
+    pub freshness: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -84,12 +89,14 @@ impl ContextProjection {
         }
         for finding in &self.findings {
             lines.push(format!(
-                "- finding ({}, non-causal): {} [keys={}, window={}..{}]",
+                "- finding ({}, non-causal): {} [keys={}, window={}..{}, rule={}, freshness={}]",
                 finding.kind,
                 finding.detail,
                 finding.source_keys.join(","),
                 finding.observed_from,
-                finding.observed_to
+                finding.observed_to,
+                finding.confidence_rule,
+                finding.freshness,
             ));
         }
         if self.truncated {
@@ -108,6 +115,9 @@ pub struct SystemStateStore {
     host_cpu_ticks: Option<(u64, u64)>,
     host_process_ticks: HashMap<u32, u64>,
     host_network_bytes: HashMap<String, (u64, u64, Timestamp)>,
+    gpu_adapter: Option<GpuRuntimeAdapter>,
+    gpu_adapter_checked: bool,
+    last_gpu_refresh: Option<Timestamp>,
 }
 
 impl Default for SystemStateStore {
@@ -128,6 +138,9 @@ impl SystemStateStore {
             host_cpu_ticks: None,
             host_process_ticks: HashMap::new(),
             host_network_bytes: HashMap::new(),
+            gpu_adapter: None,
+            gpu_adapter_checked: false,
+            last_gpu_refresh: None,
         }
     }
 
@@ -317,6 +330,7 @@ impl SystemStateStore {
         }
         self.refresh_process_cpu(observed_at);
         self.refresh_thermal(observed_at);
+        self.refresh_gpu(observed_at);
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -418,6 +432,93 @@ impl SystemStateStore {
                 observed_at,
                 Some(observed_at + 15),
                 "sysfs",
+                DataClassification::SystemConfig,
+            );
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn refresh_gpu(&mut self, observed_at: Timestamp) {
+        if !self.gpu_adapter_checked {
+            self.gpu_adapter = GpuRuntimeAdapter::discover();
+            self.gpu_adapter_checked = true;
+        }
+        if self
+            .last_gpu_refresh
+            .is_some_and(|previous| observed_at.saturating_sub(previous) < 5)
+        {
+            return;
+        }
+        let Some(adapter) = &self.gpu_adapter else {
+            return;
+        };
+        if let Ok(samples) = adapter.collect() {
+            self.ingest_gpu_samples(samples, observed_at);
+            self.last_gpu_refresh = Some(observed_at);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn ingest_gpu_samples(&mut self, samples: GpuRuntimeSamples, observed_at: Timestamp) {
+        for device in samples.devices {
+            let prefix = format!("gpu.{}", device.index);
+            let resource = format!("gpu:{}", device.index);
+            self.publish(
+                format!("{prefix}.name"),
+                resource.clone(),
+                device.name,
+                None,
+                observed_at,
+                Some(observed_at + 15),
+                "nvidia_smi",
+                DataClassification::SystemConfig,
+            );
+            for (suffix, value, unit) in [
+                ("temperature_c", device.temperature_c, "C"),
+                ("utilization_percent", device.utilization_percent, "%"),
+                ("memory_used_mib", device.memory_used_mib, "MiB"),
+                ("memory_total_mib", device.memory_total_mib, "MiB"),
+                ("power_draw_w", device.power_draw_w, "W"),
+            ] {
+                if let Some(value) = value {
+                    self.publish(
+                        format!("{prefix}.{suffix}"),
+                        resource.clone(),
+                        format!("{value:.2}"),
+                        Some(unit.into()),
+                        observed_at,
+                        Some(observed_at + 15),
+                        "nvidia_smi",
+                        DataClassification::SystemConfig,
+                    );
+                }
+            }
+        }
+        for process in samples.processes {
+            let Some(memory) = process.memory_used_mib else {
+                continue;
+            };
+            self.publish(
+                format!("process.{}.gpu_memory_mib", process.pid),
+                format!("process:{}", process.pid),
+                format!("{memory:.2}"),
+                Some("MiB".into()),
+                observed_at,
+                Some(observed_at + 15),
+                "nvidia_smi",
+                DataClassification::SystemConfig,
+            );
+            self.publish(
+                format!(
+                    "gpu.{}.process.{}.memory_used_mib",
+                    process.gpu_index, process.pid
+                ),
+                format!("gpu:{}", process.gpu_index),
+                format!("{memory:.2}"),
+                Some("MiB".into()),
+                observed_at,
+                Some(observed_at + 15),
+                "nvidia_smi",
                 DataClassification::SystemConfig,
             );
         }
@@ -559,9 +660,14 @@ impl SystemStateStore {
 
     pub fn findings(&self, query: &str) -> Vec<StateFinding> {
         let terms = query_terms(query);
-        self.metrics
+        let timestamp = now();
+        let mut findings = self
+            .metrics
             .values()
             .filter_map(|metric| {
+                if metric.is_stale(timestamp) {
+                    return None;
+                }
                 if !terms.is_empty()
                     && !terms
                         .iter()
@@ -591,9 +697,111 @@ impl SystemStateStore {
                     observed_from: first.observed_at,
                     observed_to: last.observed_at,
                     source_keys: vec![metric.key.clone()],
+                    confidence_rule: "numeric change across bounded retained samples".into(),
+                    freshness: "fresh".into(),
                 })
             })
-            .collect()
+            .collect::<Vec<_>>();
+        findings.extend(self.gpu_network_correlations(&terms, timestamp));
+        findings
+    }
+
+    fn gpu_network_correlations(
+        &self,
+        terms: &[String],
+        timestamp: Timestamp,
+    ) -> Vec<StateFinding> {
+        let asks_about_gpu = terms
+            .iter()
+            .any(|term| matches!(term.as_str(), "gpu" | "graphics" | "temperature"));
+        let asks_about_network = terms.iter().any(|term| {
+            matches!(
+                term.as_str(),
+                "network" | "wifi" | "lan" | "bandwidth" | "traffic"
+            )
+        });
+        if !asks_about_gpu || !asks_about_network {
+            return Vec::new();
+        }
+        let network = self.metrics.values().filter(|metric| {
+            !metric.is_stale(timestamp)
+                && metric.key.starts_with("network.")
+                && (metric.key.ends_with(".rx_bps") || metric.key.ends_with(".tx_bps"))
+                && !metric.key.starts_with("network.lo.")
+                && metric.value.parse::<f64>().is_ok_and(|value| value > 0.0)
+        });
+        let mut findings = Vec::new();
+        for temperature in self.metrics.values().filter(|metric| {
+            !metric.is_stale(timestamp)
+                && metric.key.starts_with("gpu.")
+                && metric.key.ends_with(".temperature_c")
+        }) {
+            let (Some(first), Some(last)) =
+                (temperature.history.front(), temperature.history.back())
+            else {
+                continue;
+            };
+            let (Ok(from), Ok(to)) = (first.value.parse::<f64>(), last.value.parse::<f64>()) else {
+                continue;
+            };
+            let increase = to - from;
+            if first.observed_at == last.observed_at || increase < 2.0 {
+                continue;
+            }
+            let Some(gpu_index) = temperature
+                .key
+                .strip_prefix("gpu.")
+                .and_then(|key| key.split_once('.'))
+                .map(|(index, _)| index)
+            else {
+                continue;
+            };
+            let process_prefix = format!("gpu.{gpu_index}.process.");
+            for process in self.metrics.values().filter(|metric| {
+                !metric.is_stale(timestamp)
+                    && metric.key.starts_with(&process_prefix)
+                    && metric.key.ends_with(".memory_used_mib")
+                    && metric.value.parse::<f64>().is_ok_and(|value| value > 0.0)
+            }) {
+                let Some(pid) = process
+                    .key
+                    .strip_prefix(&process_prefix)
+                    .and_then(|key| key.strip_suffix(".memory_used_mib"))
+                else {
+                    continue;
+                };
+                for traffic in network.clone() {
+                    let earliest = first
+                        .observed_at
+                        .min(process.observed_at)
+                        .min(traffic.observed_at);
+                    let latest = last
+                        .observed_at
+                        .max(process.observed_at)
+                        .max(traffic.observed_at);
+                    if latest.saturating_sub(earliest) > 15 {
+                        continue;
+                    }
+                    findings.push(StateFinding {
+                        key: format!("correlation.{}.{}.{}", temperature.key, pid, traffic.key),
+                        kind: "temporal_overlap".into(),
+                        detail: format!(
+                            "{} rose {increase:+.2} C while process {pid} held GPU memory and {} carried {} B/s; this is temporal correlation, not causation",
+                            temperature.key, traffic.key, traffic.value,
+                        ),
+                        observed_from: earliest,
+                        observed_to: latest,
+                        source_keys: vec![temperature.key.clone(), process.key.clone(), traffic.key.clone()],
+                        confidence_rule: "GPU temperature rose by at least 2 C across retained samples; nonzero GPU memory and host-interface throughput were observed within 15 seconds".into(),
+                        freshness: "fresh".into(),
+                    });
+                    if findings.len() >= 4 {
+                        return findings;
+                    }
+                }
+            }
+        }
+        findings
     }
 }
 
@@ -879,6 +1087,96 @@ mod tests {
         );
         assert!(!values.contains_key("cpu_stale"));
         assert!(!values.contains_key("cpu.stale"));
+    }
+
+    #[test]
+    fn reports_bounded_gpu_process_network_overlap_without_claiming_causation() {
+        let mut state = SystemStateStore::with_history_limit(4);
+        let timestamp = now();
+        for (value, observed_at) in [(70.0, timestamp - 10), (73.0, timestamp)] {
+            state.publish(
+                "gpu.0.temperature_c",
+                "gpu:0",
+                format!("{value:.2}"),
+                Some("C".into()),
+                observed_at,
+                Some(timestamp + 30),
+                "nvidia_smi",
+                DataClassification::SystemConfig,
+            );
+        }
+        state.publish(
+            "process.4242.gpu_memory_mib",
+            "process:4242",
+            "512.00",
+            Some("MiB".into()),
+            timestamp,
+            Some(timestamp + 30),
+            "nvidia_smi",
+            DataClassification::SystemConfig,
+        );
+        state.publish(
+            "gpu.0.process.4242.memory_used_mib",
+            "gpu:0",
+            "512.00",
+            Some("MiB".into()),
+            timestamp,
+            Some(timestamp + 30),
+            "nvidia_smi",
+            DataClassification::SystemConfig,
+        );
+        state.publish(
+            "network.wlan0.tx_bps",
+            "network:wlan0",
+            "4096",
+            Some("B/s".into()),
+            timestamp,
+            Some(timestamp + 30),
+            "procfs",
+            DataClassification::SystemConfig,
+        );
+
+        let finding = state
+            .findings("GPU temperature and WiFi bandwidth")
+            .into_iter()
+            .find(|finding| finding.kind == "temporal_overlap")
+            .expect("a bounded temporal overlap");
+        assert!(finding.detail.contains("not causation"));
+        assert_eq!(finding.source_keys.len(), 3);
+        assert!(finding.confidence_rule.contains("15 seconds"));
+        assert_eq!(finding.freshness, "fresh");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn ingests_gpu_runtime_samples_using_stable_projection_keys() {
+        let mut state = SystemStateStore::new();
+        let observed_at = now();
+        state.ingest_gpu_samples(
+            GpuRuntimeSamples {
+                devices: vec![crate::gpu_runtime::GpuDeviceSample {
+                    index: 0,
+                    uuid: "GPU-test".into(),
+                    name: "Test GPU".into(),
+                    temperature_c: Some(71.0),
+                    utilization_percent: Some(82.0),
+                    memory_used_mib: Some(2048.0),
+                    memory_total_mib: Some(8192.0),
+                    power_draw_w: Some(125.5),
+                }],
+                processes: vec![crate::gpu_runtime::GpuProcessSample {
+                    gpu_index: 0,
+                    pid: 4242,
+                    memory_used_mib: Some(512.0),
+                }],
+            },
+            observed_at,
+        );
+        assert_eq!(state.metric("gpu.0.temperature_c").unwrap().value, "71.00");
+        assert_eq!(
+            state.metric("process.4242.gpu_memory_mib").unwrap().value,
+            "512.00"
+        );
     }
 
     #[cfg(target_os = "linux")]

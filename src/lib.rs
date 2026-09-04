@@ -11,6 +11,7 @@ pub mod exec;
 pub mod executor;
 pub mod facade;
 pub mod files;
+pub mod gpu_runtime;
 pub mod graph;
 pub mod graphics;
 pub mod guardian;

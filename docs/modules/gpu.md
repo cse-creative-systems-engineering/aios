@@ -41,6 +41,24 @@ Guardian.
 The specialist reports an invariant as unknown when its evidence is missing or
 stale. Unknown evidence cannot authorize a change.
 
+## Live runtime observations
+
+The live-state collector uses a compiled-in, read-only adapter catalog. On
+Linux, the NVIDIA adapter is enabled only when `nvidia-smi` is available and
+successfully responds; it is sampled at most once every five seconds. It
+publishes stable projection keys for each available value, including
+`gpu.<index>.temperature_c`, `gpu.<index>.utilization_percent`, memory,
+power, and GPU-associated process memory. Missing commands, unsupported
+fields, and `N/A` values publish no fact rather than an invented zero or a
+healthy status.
+
+The state store can produce a bounded temporal-overlap finding when a GPU's
+temperature rose by at least 2 C, a process held memory on that same GPU, and
+a non-loopback host interface carried traffic within 15 seconds. The finding
+names all source keys, carries its rule and freshness, and explicitly says it
+is not causal attribution: host-interface traffic cannot prove which process
+caused it.
+
 ## Graph relationships
 
 The specialist is linked to its GPU with `owns`. The GPU retains `depends_on`
