@@ -16,6 +16,7 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
+use std::time::Duration;
 #[cfg(target_os = "linux")]
 use tauri::AppHandle;
 use tauri::{LogicalPosition, Manager, PhysicalPosition, PhysicalSize, Position, Size};
@@ -825,7 +826,16 @@ fn main() {    #[cfg(target_os = "linux")]
                         SurfaceRuntime::restore(snap.surfaces.into_iter().map(Into::into).collect())
                     } else { SurfaceRuntime::default() }
                 };
-                while let Ok(request) = requests_rx.recv() {
+                loop {
+                    let request = match requests_rx.recv_timeout(Duration::from_secs(1)) {
+                        Ok(request) => request,
+                        Err(mpsc::RecvTimeoutError::Timeout) => {
+                            // Keep observations current independently of prompts.
+                            facade.coordinator.state_store.write().expect("state store lock").refresh_host();
+                            continue;
+                        }
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    };
                     match request {
                         BackendRequest::Prompt { prompt, response } => {
                             handle_prompt(&mut facade, &worker_handle, &mut surfaces, prompt, response);
