@@ -6,7 +6,7 @@
 
 use crate::gpu_runtime::{GpuRuntimeAdapter, GpuRuntimeSamples};
 use crate::graph::SystemGraph;
-use crate::protocol::{DataClassification, HealthState, Timestamp, now};
+use crate::protocol::{now, DataClassification, HealthState, Timestamp};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
@@ -124,7 +124,7 @@ pub struct SystemStateStore {
     host_cpu_ticks: Option<(u64, u64)>,
     host_process_ticks: HashMap<u32, u64>,
     host_network_bytes: HashMap<String, (u64, u64, Timestamp)>,
-    gpu_adapter: Option<GpuRuntimeAdapter>,
+    gpu_adapters: Vec<GpuRuntimeAdapter>,
     gpu_adapter_checked: bool,
     last_gpu_refresh: Option<Timestamp>,
 }
@@ -147,7 +147,7 @@ impl SystemStateStore {
             host_cpu_ticks: None,
             host_process_ticks: HashMap::new(),
             host_network_bytes: HashMap::new(),
-            gpu_adapter: None,
+            gpu_adapters: Vec::new(),
             gpu_adapter_checked: false,
             last_gpu_refresh: None,
         }
@@ -449,7 +449,7 @@ impl SystemStateStore {
     #[cfg(target_os = "linux")]
     fn refresh_gpu(&mut self, observed_at: Timestamp) {
         if !self.gpu_adapter_checked {
-            self.gpu_adapter = GpuRuntimeAdapter::discover();
+            self.gpu_adapters = GpuRuntimeAdapter::discover();
             self.gpu_adapter_checked = true;
         }
         if self
@@ -458,20 +458,32 @@ impl SystemStateStore {
         {
             return;
         }
-        let Some(adapter) = &self.gpu_adapter else {
-            return;
-        };
-        if let Ok(samples) = adapter.collect() {
-            self.ingest_gpu_samples(samples, observed_at);
+        let samples = self
+            .gpu_adapters
+            .iter()
+            .filter_map(|adapter| {
+                adapter
+                    .collect()
+                    .ok()
+                    .map(|samples| (adapter.source(), samples))
+            })
+            .collect::<Vec<_>>();
+        for (source, samples) in samples {
+            self.ingest_gpu_samples(samples, observed_at, source);
             self.last_gpu_refresh = Some(observed_at);
         }
     }
 
     #[cfg(target_os = "linux")]
-    fn ingest_gpu_samples(&mut self, samples: GpuRuntimeSamples, observed_at: Timestamp) {
+    fn ingest_gpu_samples(
+        &mut self,
+        samples: GpuRuntimeSamples,
+        observed_at: Timestamp,
+        source: &str,
+    ) {
         for device in samples.devices {
-            let prefix = format!("gpu.{}", device.index);
-            let resource = format!("gpu:{}", device.index);
+            let prefix = format!("gpu.{}", device.key);
+            let resource = format!("gpu:{}", device.key);
             self.publish(
                 format!("{prefix}.name"),
                 resource.clone(),
@@ -479,7 +491,7 @@ impl SystemStateStore {
                 None,
                 observed_at,
                 Some(observed_at + 15),
-                "nvidia_smi",
+                source,
                 DataClassification::SystemConfig,
             );
             for (suffix, value, unit) in [
@@ -497,7 +509,7 @@ impl SystemStateStore {
                         Some(unit.into()),
                         observed_at,
                         Some(observed_at + 15),
-                        "nvidia_smi",
+                        source,
                         DataClassification::SystemConfig,
                     );
                 }
@@ -514,20 +526,20 @@ impl SystemStateStore {
                 Some("MiB".into()),
                 observed_at,
                 Some(observed_at + 15),
-                "nvidia_smi",
+                source,
                 DataClassification::SystemConfig,
             );
             self.publish(
                 format!(
                     "gpu.{}.process.{}.memory_used_mib",
-                    process.gpu_index, process.pid
+                    process.gpu_key, process.pid
                 ),
-                format!("gpu:{}", process.gpu_index),
+                format!("gpu:{}", process.gpu_key),
                 format!("{memory:.2}"),
                 Some("MiB".into()),
                 observed_at,
                 Some(observed_at + 15),
-                "nvidia_smi",
+                source,
                 DataClassification::SystemConfig,
             );
         }
@@ -558,10 +570,7 @@ impl SystemStateStore {
     /// Build a presentation-only snapshot for exact declared binding keys.
     /// Fresh values and stale state are separate so the canvas can retain the
     /// last verified value while visibly marking it stale.
-    pub fn binding_snapshot<'a>(
-        &self,
-        keys: impl IntoIterator<Item = &'a str>,
-    ) -> BindingSnapshot {
+    pub fn binding_snapshot<'a>(&self, keys: impl IntoIterator<Item = &'a str>) -> BindingSnapshot {
         let timestamp = now();
         let mut snapshot = BindingSnapshot::default();
         for key in keys {
@@ -571,7 +580,9 @@ impl SystemStateStore {
             if metric.is_stale(timestamp) {
                 snapshot.stale_keys.push(key.to_string());
             } else {
-                snapshot.values.insert(key.to_string(), metric.value.clone());
+                snapshot
+                    .values
+                    .insert(key.to_string(), metric.value.clone());
             }
         }
         snapshot
@@ -1186,7 +1197,7 @@ mod tests {
         state.ingest_gpu_samples(
             GpuRuntimeSamples {
                 devices: vec![crate::gpu_runtime::GpuDeviceSample {
-                    index: 0,
+                    key: "0".into(),
                     uuid: "GPU-test".into(),
                     name: "Test GPU".into(),
                     temperature_c: Some(71.0),
@@ -1196,12 +1207,13 @@ mod tests {
                     power_draw_w: Some(125.5),
                 }],
                 processes: vec![crate::gpu_runtime::GpuProcessSample {
-                    gpu_index: 0,
+                    gpu_key: "0".into(),
                     pid: 4242,
                     memory_used_mib: Some(512.0),
                 }],
             },
             observed_at,
+            "fixture",
         );
         assert_eq!(state.metric("gpu.0.temperature_c").unwrap().value, "71.00");
         assert_eq!(
